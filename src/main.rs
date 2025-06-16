@@ -153,8 +153,16 @@ impl Minerve {
                     .unwrap()
                     .push(("minerve".to_string(), reply.clone()));
 
-                if tool_result.is_some() {
-                    should_continue = true;
+                match tool_result {
+                    Some(r) => {
+                        messages_clone
+                            .lock()
+                            .unwrap()
+                            .push(("tool".to_string(), r));
+
+                        should_continue = true;
+                    },
+                    None => {}
                 }
             }
 
