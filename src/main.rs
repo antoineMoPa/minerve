@@ -1,4 +1,6 @@
+use cursive::theme::ColorStyle;
 use cursive::traits::*;
+use cursive::utils::markup::StyledString;
 use cursive::views::{Dialog, LinearLayout, TextArea, TextView};
 use dotenvy::from_path;
 use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole};
@@ -6,7 +8,7 @@ use openai::Credentials;
 use std::env;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
-use cursive::theme::{BaseColor::*, Color, Palette, PaletteColor, Theme};
+use cursive::theme::{BaseColor::{self, *}, Color, Palette, PaletteColor, Theme};
 
 fn custom_theme() -> Theme {
     let mut palette = Palette::default();
@@ -26,13 +28,13 @@ fn custom_theme() -> Theme {
 }
 
 /// Holds app state and the OpenAI runtime
-struct Assistant {
+struct Minerve {
     messages: Arc<Mutex<Vec<(String, String)>>>,
     rt: Runtime,
     credentials: Credentials,
 }
 
-impl Assistant {
+impl Minerve {
     fn new() -> Self {
         if let Some(home_dir) = dirs::home_dir() {
             let dotenv_path = home_dir.join(".env");
@@ -71,7 +73,7 @@ impl Assistant {
                     role: match role.as_str() {
                         "system" => ChatCompletionMessageRole::System,
                         "user" => ChatCompletionMessageRole::User,
-                        "assistant" => ChatCompletionMessageRole::Assistant,
+                        "minerve" => ChatCompletionMessageRole::Assistant,
                         _ => ChatCompletionMessageRole::User,
                     },
                     content: Some(content.clone()),
@@ -99,7 +101,7 @@ impl Assistant {
             messages_clone
                 .lock()
                 .unwrap()
-                .push(("assistant".to_string(), reply.clone()));
+                .push(("minerve".to_string(), reply.clone()));
 
             cb_sink
                 .send(Box::new(move |s| {
@@ -108,13 +110,20 @@ impl Assistant {
                         .expect("TextView 'chat' not found");
                     let all_msgs = messages_clone.lock().unwrap();
 
-                    let text = all_msgs
-                        .iter()
-                        .filter(|(r, _)| r != "system")
-                        .map(|(r, c)| format!("{}:\n{}\n\n", r, c))
-                        .collect::<String>();
+                    let mut styled = StyledString::new();
 
-                    view.set_content(text);
+                    for (role, content) in all_msgs.iter().filter(|(r, _)| r != "system") {
+                        let (label_style, prefix) = match role.as_str() {
+                            "user" => (ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault), "You"),
+                            "minerve" => (ColorStyle::new(Color::Dark(BaseColor::Cyan), Color::TerminalDefault), "Minerve"),
+                            _ => (ColorStyle::primary(), role.as_str()),
+                        };
+
+                        styled.append_styled(format!("{}:\n", prefix), label_style);
+                        styled.append(format!("{}\n\n", content));
+                    }
+
+                    view.set_content(styled);
                 }))
                 .unwrap();
         });
@@ -123,8 +132,46 @@ impl Assistant {
 
 fn get_system_prompt() -> String {
     r#"
-You are a shell assistant that acts like a pro software developer.
-Use tools effectively and act swiftly.
+const SYSTEM_PROMPT = `
+You are minerve, a shell assistant that acts like a pro software developper.
+
+To use a tool, respond with:
+
+<tool name="TOOL_NAME">
+{
+"param1": "value",
+"param2": "value"
+}
+</tool>
+
+You can also use the following tools:
+
+${tools}
+
+Guidance:
+1. Be proactive at using tools instead of asking.
+2. Assume you are somewhere in a repository with files.
+3. Confirm your changes worked
+- Example: read the file after editing it.
+4. Think and act swiftly, like a developper. You have limited tools, but use them effectively.
+5. Be curious and explore the environment before asking questions.
+6. First thing you should do is likely to use a tool to get context.
+
+Dont's:
+
+Don't answer stuff like "I'm sorry for the confusion, but as an AI, I don't have the ability to directly modify files or write code to your project. I can provide guidance and code snippets, but you'll need to implement the changes in your project."
+
+  - Instead, directly use the tools available to you to help the user with their coding tasks.
+
+Don't answer stuff like "Sure, I can help with that. However, I need to know the file you want to get the code listing from. Could you please provide the file path?".
+
+ - Instead use the tools available to you to explore the environment and find the file.
+
+Don't answer stuff like "Now you can implement the bingBong function to get a file code listing with line numbers.   - Instead, go and implement that new function.
+
+Don't ask questions that can be figured out from prompt, context or by using the tools available to you, like "Now, could you please specify which file you want to add the tool to?"
+ - Instead, figure out yourself.
+`;
 "#
     .trim()
     .to_string()
@@ -133,7 +180,7 @@ Use tools effectively and act swiftly.
 fn main() {
     let mut siv = cursive::default();
     siv.set_theme(custom_theme());
-    let assistant = Arc::new(Assistant::new());
+    let minerve = Arc::new(Minerve::new());
 
     let submit_button = cursive::views::Button::new("Send (Ctrl+L)", move |s| {
         let content = s
@@ -144,7 +191,7 @@ fn main() {
             return;
         }
 
-        assistant.chat(content, s.cb_sink().clone());
+        minerve.chat(content, s.cb_sink().clone());
 
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
@@ -160,10 +207,10 @@ fn main() {
                 .child(input_view.full_width())
                 .child(submit_button)
 
-        ).title("assistant"),
+        ).title("minerve"),
     );
 
-    let assistant = Arc::new(Assistant::new());
+    let minerve = Arc::new(Minerve::new());
 
     siv.add_global_callback(cursive::event::Event::CtrlChar('l'), move |s| {
         let content = s
@@ -174,7 +221,7 @@ fn main() {
             return;
         }
 
-        assistant.chat(content, s.cb_sink().clone());
+        minerve.chat(content, s.cb_sink().clone());
 
         s.call_on_name("input", |v: &mut TextArea| v.set_content(""));
     });
