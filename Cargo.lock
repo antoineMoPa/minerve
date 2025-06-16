@@ -218,22 +218,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "assistant"
-version = "0.1.0"
-dependencies = [
- "crossterm 0.29.0",
- "cursive",
- "dirs",
- "dotenvy",
- "eframe",
- "openai",
- "serde",
- "serde_json",
- "smol",
- "tokio",
-]
-
-[[package]]
 name = "async-broadcast"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1207,7 +1191,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2478,6 +2462,24 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
+]
+
+[[package]]
+name = "minerve"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crossterm 0.29.0",
+ "cursive",
+ "dirs",
+ "dotenvy",
+ "eframe",
+ "openai",
+ "regex",
+ "serde",
+ "serde_json",
+ "smol",
+ "tokio",
 ]
 
 [[package]]
@@ -4674,6 +4676,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.60.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
+dependencies = [
+ "windows-targets 0.53.2",
 ]
 
 [[package]]

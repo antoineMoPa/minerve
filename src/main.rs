@@ -5,10 +5,17 @@ use cursive::views::{Dialog, LinearLayout, TextArea, TextView};
 use dotenvy::from_path;
 use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole};
 use openai::Credentials;
+use regex::Regex;
+use tools::registry::get_tool_registry;
+use tools::Tool;
+use std::collections::HashMap;
 use std::env;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use cursive::theme::{BaseColor::{self, *}, Color, Palette, PaletteColor, Theme};
+use std::fmt::Write;
+
+mod tools;
 
 fn custom_theme() -> Theme {
     let mut palette = Palette::default();
@@ -32,6 +39,23 @@ struct Minerve {
     messages: Arc<Mutex<Vec<(String, String)>>>,
     rt: Runtime,
     credentials: Credentials,
+}
+
+pub async fn handle_tool_call(input: &str) -> Option<String> {
+    let registry = get_tool_registry();
+
+    if let Some(caps) = Regex::new(r#"(?s)<tool name="(.*?)">(.*?)</tool>"#).unwrap()
+.captures(input) {
+        let name = caps.get(1).unwrap().as_str();
+        let args_json = caps.get(2).unwrap().as_str();
+
+        if let Some(tool) = registry.get(name) {
+            let args: HashMap<String, String> = serde_json::from_str(args_json).unwrap_or_default();
+            let result = tool.run(args).await;
+            return Some(result);
+        }
+    }
+    None
 }
 
 impl Minerve {
@@ -84,24 +108,57 @@ impl Minerve {
                 })
                 .collect();
 
-            let chat = ChatCompletion::builder("gpt-4", history)
-                .credentials(credentials)
-                .create()
-                .await;
+            let mut tool_result: Option<String> = None;
+            let mut should_continue = true;
 
-            let reply = match chat {
-                Ok(response) => response
-                    .choices
-                    .first()
-                    .and_then(|c| c.message.content.clone())
-                    .unwrap_or("<empty response>".to_string()),
-                Err(err) => format!("Error: {}", err),
-            };
+            while should_continue {
+                should_continue = false;
+                let mut history = history.clone();
 
-            messages_clone
-                .lock()
-                .unwrap()
-                .push(("minerve".to_string(), reply.clone()));
+                if let Some(ref result) = tool_result {
+                    history.push(ChatCompletionMessage {
+                        role: ChatCompletionMessageRole::User, // OR Assistant if tool result is simulated as a response
+                        content: Some(format!("Tool output:\n{}", result)),
+                        name: None,
+                        function_call: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                }
+
+                tool_result = None;
+
+                let chat = ChatCompletion::builder("gpt-4", history)
+                    .credentials(credentials.clone())
+                    .create()
+                    .await;
+
+                let (reply, tool_result) = match chat {
+                    Ok(response) => {
+
+                        let r = response
+                            .choices
+                            .first()
+                            .and_then(|c| c.message.content.clone())
+                            .unwrap_or("<empty response>".to_string());
+
+                        tool_result = handle_tool_call(&r).await;
+
+                        (r, tool_result.clone())
+                    },
+                    Err(err) => (format!("Error: {}", err), None),
+                };
+
+                messages_clone
+                    .lock()
+                    .unwrap()
+                    .push(("minerve".to_string(), reply.clone()));
+
+                if tool_result.is_some() {
+                    should_continue = true;
+                }
+            }
+
 
             cb_sink
                 .send(Box::new(move |s| {
@@ -130,23 +187,54 @@ impl Minerve {
     }
 }
 
-fn get_system_prompt() -> String {
-    r#"
+pub fn get_system_prompt() -> String {
+    let registry = get_tool_registry(); // Returns HashMap<&str, Arc<dyn Tool>>
+
+    let mut tools_description = String::from("You can use the following tools:\n");
+
+    let mut tool_descriptions: Vec<String> = Vec::new();
+
+    for tool in registry.values() {
+        let mut param_string = String::new();
+
+        for (key, ty) in tool.parameters() {
+            let _ = write!(&mut param_string, "{}: {}, ", key, ty);
+        }
+
+        // Trim trailing comma and space, if any
+        if param_string.ends_with(", ") {
+            param_string.truncate(param_string.len() - 2);
+        }
+
+        let description = format!(
+            "- {}: {}. Params: {}",
+            tool.name(),
+            tool.description(),
+            if param_string.is_empty() { "none".to_string() } else { param_string }
+        );
+
+        tool_descriptions.push(description);
+    }
+
+    tools_description.push_str(&tool_descriptions.join("\n"));
+
+    format!(
+        r#"
 const SYSTEM_PROMPT = `
 You are minerve, a shell assistant that acts like a pro software developper.
 
 To use a tool, respond with:
 
 <tool name="TOOL_NAME">
-{
+{{
 "param1": "value",
 "param2": "value"
-}
+}}
 </tool>
 
 You can also use the following tools:
 
-${tools}
+{}
 
 Guidance:
 1. Be proactive at using tools instead of asking.
@@ -172,9 +260,10 @@ Don't answer stuff like "Now you can implement the bingBong function to get a fi
 Don't ask questions that can be figured out from prompt, context or by using the tools available to you, like "Now, could you please specify which file you want to add the tool to?"
  - Instead, figure out yourself.
 `;
-"#
-    .trim()
-    .to_string()
+
+"#,
+        tools_description
+    )
 }
 
 fn main() {
@@ -182,7 +271,7 @@ fn main() {
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
 
-    let submit_button = cursive::views::Button::new("Send (Ctrl+L)", move |s| {
+    let submit_button = cursive::views::Button::new("Send (Ctrl+L or Tab-Enter)", move |s| {
         let content = s
             .call_on_name("input", |view: &mut TextArea| view.get_content().to_string())
             .unwrap();
@@ -195,6 +284,8 @@ fn main() {
 
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
+
+        s.focus_name("input").unwrap();
     });
 
     let chat_view = TextView::new("").with_name("chat").scrollable();
@@ -224,6 +315,8 @@ fn main() {
         minerve.chat(content, s.cb_sink().clone());
 
         s.call_on_name("input", |v: &mut TextArea| v.set_content(""));
+
+        s.focus_name("input").unwrap();
     });
 
     siv.run();
