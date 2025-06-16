@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 pub mod registry;
-mod get_general_context;
 
 #[async_trait]
 pub trait Tool: Send + Sync {

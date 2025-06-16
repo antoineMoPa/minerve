@@ -7,7 +7,6 @@ use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageR
 use openai::Credentials;
 use regex::Regex;
 use tools::registry::get_tool_registry;
-use tools::Tool;
 use std::collections::HashMap;
 use std::env;
 use std::sync::{Arc, Mutex};
