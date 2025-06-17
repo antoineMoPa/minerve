@@ -1,7 +1,7 @@
 use cursive::theme::ColorStyle;
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
-use cursive::views::{Dialog, LinearLayout, TextArea, TextView};
+use cursive::views::{Dialog, LinearLayout, NamedView, ScrollView, TextArea, TextView};
 use dotenvy::from_path;
 use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole};
 use openai::Credentials;
@@ -83,6 +83,8 @@ impl Minerve {
         let mut msgs = self.messages.lock().unwrap();
         msgs.push(("user".to_string(), user_input.clone()));
 
+        update_chat_ui(cb_sink.clone(), msgs.clone());
+
         let messages = msgs.clone();
         drop(msgs); // unlock before async
 
@@ -127,7 +129,7 @@ impl Minerve {
 
                 tool_result = None;
 
-                let chat = ChatCompletion::builder("gpt-4", history)
+                let chat = ChatCompletion::builder("gpt-4o", history)
                     .credentials(credentials.clone())
                     .create()
                     .await;
@@ -142,6 +144,15 @@ impl Minerve {
                             .unwrap_or("<empty response>".to_string());
 
                         tool_result = handle_tool_call(&r).await;
+
+                        let debug = format!("{:?}", response);
+
+                        messages_clone
+                            .lock()
+                            .unwrap()
+                            .push(("debug".to_string(), debug));
+
+                        update_chat_ui(cb_sink.clone(), messages_clone.lock().unwrap().clone());
 
                         (r, tool_result.clone())
                     },
@@ -160,38 +171,42 @@ impl Minerve {
                             .unwrap()
                             .push(("tool".to_string(), r));
 
+                        update_chat_ui(cb_sink.clone(), messages_clone.lock().unwrap().clone());
+
                         should_continue = true;
                     },
                     None => {}
                 }
+
+                update_chat_ui(cb_sink.clone(), messages_clone.lock().unwrap().clone());
             }
-
-
-            cb_sink
-                .send(Box::new(move |s| {
-                    let mut view = s
-                        .find_name::<TextView>("chat")
-                        .expect("TextView 'chat' not found");
-                    let all_msgs = messages_clone.lock().unwrap();
-
-                    let mut styled = StyledString::new();
-
-                    for (role, content) in all_msgs.iter().filter(|(r, _)| r != "system") {
-                        let (label_style, prefix) = match role.as_str() {
-                            "user" => (ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault), "You"),
-                            "minerve" => (ColorStyle::new(Color::Dark(BaseColor::Cyan), Color::TerminalDefault), "Minerve"),
-                            _ => (ColorStyle::primary(), role.as_str()),
-                        };
-
-                        styled.append_styled(format!("{}:\n", prefix), label_style);
-                        styled.append(format!("{}\n\n", content));
-                    }
-
-                    view.set_content(styled);
-                }))
-                .unwrap();
         });
     }
+}
+
+fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
+    cb_sink.send(Box::new(move |s| {
+        let mut view = s
+            .find_name::<TextView>("chat")
+            .expect("TextView 'chat' not found");
+
+        let mut styled = StyledString::new();
+
+        // can be useful to know the sys prompt.
+        //for (role, content) in messages.iter().filter(|(r, _)| r != "system") {
+        for (role, content) in messages.iter() {
+            let (label_style, prefix) = match role.as_str() {
+                "user" => (ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault), "You"),
+                "minerve" => (ColorStyle::new(Color::Dark(BaseColor::Cyan), Color::TerminalDefault), "Minerve"),
+                _ => (ColorStyle::primary(), role.as_str()),
+            };
+
+            styled.append_styled(format!("{}:\n", prefix), label_style);
+            styled.append(format!("{}\n\n", content));
+        }
+
+        view.set_content(styled);
+    })).unwrap();
 }
 
 pub fn get_system_prompt() -> String {
@@ -228,18 +243,24 @@ pub fn get_system_prompt() -> String {
     format!(
         r#"
 const SYSTEM_PROMPT = `
-You are minerve, a shell assistant that acts like a pro software developper.
+You are **Minerve**, a shell assistant that behaves like a professional software developer.
 
-To use a tool, respond with:
+
+## 🔧 TOOL SYNTAX
 
 <tool name="TOOL_NAME">
 {{
-"param1": "value",
-"param2": "value"
+  "param1": "value",
+  "param2": "value"
 }}
 </tool>
 
-You can also use the following tools:
+❗️ **DO NOT use** incorrect syntax like:
+- \`<tool_name>...</tool_name>\` ❌
+- \`<toolName="...">...</tool>\` ❌
+- Missing or malformed JSON ❌
+
+## 🧰 AVAILABLE TOOLS
 
 {}
 
@@ -266,7 +287,21 @@ Don't answer stuff like "Now you can implement the bingBong function to get a fi
 
 Don't ask questions that can be figured out from prompt, context or by using the tools available to you, like "Now, could you please specify which file you want to add the tool to?"
  - Instead, figure out yourself.
+
+Don't say "I read file XYZ". just read it directly with the tools.
 `;
+
+Immediately use the tools available after stating your intention.
+
+Example good chats:
+
+Q: What is this repo about?
+
+A: <tool name="get_general_context"></tool>
+
+Tool: ...
+
+A: This appears to be a repo about XYZ.
 
 "#,
         tools_description
@@ -295,13 +330,14 @@ fn main() {
         s.focus_name("input").unwrap();
     });
 
-    let chat_view = TextView::new("").with_name("chat").scrollable();
+    let chat_view = TextView::new("").with_name("chat").full_height();
     let input_view = TextArea::new().with_name("input");
+    let scroll_chat_view = ScrollView::new(chat_view).scroll_strategy(cursive::view::ScrollStrategy::StickToBottom).with_name("chat_scroll");
 
     siv.add_fullscreen_layer(
         Dialog::around(
             LinearLayout::vertical()
-                .child(chat_view.full_height().scrollable())
+                .child(scroll_chat_view)
                 .child(input_view.full_width())
                 .child(submit_button)
 
