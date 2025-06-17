@@ -278,7 +278,7 @@ fn main() {
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
 
-    let submit_button = cursive::views::Button::new("Send (Ctrl+L or Tab-Enter)", move |s| {
+    let submit_button = cursive::views::Button::new("Send (Tab-Enter)", move |s| {
         let content = s
             .call_on_name("input", |view: &mut TextArea| view.get_content().to_string())
             .unwrap();
@@ -307,24 +307,6 @@ fn main() {
 
         ).title("minerve"),
     );
-
-    let minerve = Arc::new(Minerve::new());
-
-    siv.add_global_callback(cursive::event::Event::CtrlChar('l'), move |s| {
-        let content = s
-            .call_on_name("input", |v: &mut TextArea| v.get_content().to_string())
-            .unwrap();
-
-        if content.trim().is_empty() {
-            return;
-        }
-
-        minerve.chat(content, s.cb_sink().clone());
-
-        s.call_on_name("input", |v: &mut TextArea| v.set_content(""));
-
-        s.focus_name("input").unwrap();
-    });
 
     siv.run();
 }

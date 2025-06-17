@@ -7,6 +7,15 @@ use std::process::Command;
 
 pub struct GetGeneralContext;
 
+fn truncate(s: String, limit: usize) -> String {
+    if s.len() > limit {
+        format!("{}\n...[truncated]", &s[..limit])
+    } else {
+        s
+    }
+}
+
+
 #[async_trait]
 impl Tool for GetGeneralContext {
     fn name(&self) -> &'static str {
@@ -22,13 +31,6 @@ impl Tool for GetGeneralContext {
     }
 
     async fn run(&self, _args: HashMap<String, String>) -> String {
-        let truncate = |s: String, limit: usize| {
-            if s.len() > limit {
-                format!("{}\n...[truncated]", &s[..limit])
-            } else {
-                s
-            }
-        };
 
         let exec = |cmd: &str| {
             Command::new("sh")
@@ -80,14 +82,6 @@ impl Tool for SearchForStringTool {
             return "[Error] searchString parameter is required.".into();
         }
 
-        let truncate = |s: String, limit: usize| {
-            if s.len() > limit {
-                format!("{}\n...[truncated]", &s[..limit])
-            } else {
-                s
-            }
-        };
-
         let ag_check = Command::new("sh")
             .arg("-c")
             .arg("command -v ag")
@@ -138,14 +132,6 @@ impl Tool for SearchForPathPatternTool {
         if pattern.is_empty() {
             return "[Error] pathPattern parameter is required.".into();
         }
-
-        let truncate = |s: String, limit: usize| {
-            if s.len() > limit {
-                format!("{}\n...[truncated]", &s[..limit])
-            } else {
-                s
-            }
-        };
 
         let ag_check = Command::new("sh")
             .arg("-c")
@@ -274,6 +260,177 @@ impl Tool for EditFileTool {
     }
 }
 
+pub struct GitStatusTool;
+
+#[async_trait]
+impl Tool for GitStatusTool {
+    fn name(&self) -> &'static str {
+        "git_status"
+    }
+
+    fn description(&self) -> &'static str {
+        "Gets the current git status of the repository."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        HashMap::new()
+    }
+
+    async fn run(&self, _args: HashMap<String, String>) -> String {
+        let output = Command::new("git")
+            .arg("status")
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .unwrap_or_else(|e| format!("[Error] {}", e));
+
+        output
+    }
+}
+
+pub struct GitDiffTool;
+
+#[async_trait]
+impl Tool for GitDiffTool {
+    fn name(&self) -> &'static str {
+        "git_diff"
+    }
+
+    fn description(&self) -> &'static str {
+        "Gets the current git diff of the repository."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        HashMap::new()
+    }
+
+    async fn run(&self, _args: HashMap<String, String>) -> String {
+        let output = Command::new("git")
+            .arg("diff")
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .unwrap_or_else(|e| format!("[Error] {}", e));
+
+        output
+    }
+}
+
+pub struct ShowFileWithLineNumbers;
+
+#[async_trait]
+impl Tool for ShowFileWithLineNumbers {
+    fn name(&self) -> &'static str {
+        "show_file_with_line_numbers"
+    }
+
+    fn description(&self) -> &'static str {
+        "Shows the content of a file with line numbers."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("path", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>) -> String {
+        let path = args.get("path").cloned().unwrap_or_default();
+        match fs::read_to_string(&path) {
+            Ok(content) => content.lines()
+                .enumerate()
+                .map(|(i, line)| format!("{:>4}: {}", i + 1, line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(e) => format!("[Error] Failed to read file: {}", e),
+        }
+    }
+}
+
+pub struct ReplaceFileContentFromLineToLine;
+
+#[async_trait]
+impl Tool for ReplaceFileContentFromLineToLine {
+    fn name(&self) -> &'static str {
+        "replace_file_content_from_line_to_line"
+    }
+
+    fn description(&self) -> &'static str {
+        "Replaces content in a file from a specific start line to an end line."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("filepath", "string");
+        params.insert("start_line", "integer");
+        params.insert("end_line", "integer");
+        params.insert("new_content", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>) -> String {
+        let path = args.get("filepath").cloned().unwrap_or_default();
+        let start_line: usize = args.get("start_line").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let end_line: usize = args.get("end_line").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let new_content = args.get("new_content").cloned().unwrap_or_default();
+
+        if path.is_empty() || new_content.is_empty() || start_line > end_line {
+            return "[Error] 'filepath', 'start_line', 'end_line', and 'new_content' must be provided correctly.".into();
+        }
+
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                let lines: Vec<&str> = content.lines().collect();
+                let mut modified_lines = lines.clone();
+
+                for i in start_line..=end_line.min(lines.len() - 1) {
+                    modified_lines[i] = &new_content;
+                }
+
+                let final_content = modified_lines.join("\n");
+
+                match fs::write(&path, final_content) {
+                    Ok(_) => format!("✅ File content replaced successfully: {}", path),
+                    Err(e) => format!("[Error] Failed to replace file content: {}", e),
+                }
+            }
+            Err(e) => format!("[Error] Failed to read file: {}", e),
+        }
+    }
+}
+
+pub struct ReplaceEntireFile;
+
+#[async_trait]
+impl Tool for ReplaceEntireFile {
+    fn name(&self) -> &'static str {
+        "replace_entire_file"
+    }
+
+    fn description(&self) -> &'static str {
+        "Replaces the entire content of a file with new content."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("filepath", "string");
+        params.insert("new_content", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>) -> String {
+        let path = args.get("filepath").cloned().unwrap_or_default();
+        let new_content = args.get("new_content").cloned().unwrap_or_default();
+
+        if path.is_empty() || new_content.is_empty() {
+            return "[Error] 'filepath' and 'new_content' must be provided.".into();
+        }
+
+        match fs::write(&path, new_content) {
+            Ok(_) => format!("✅ File replaced successfully: {}", path),
+            Err(e) => format!("[Error] Failed to replace file: {}", e),
+        }
+    }
+}
+
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
@@ -282,7 +439,11 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("search_for_path_pattern", Arc::new(SearchForPathPatternTool));
     map.insert("read_file", Arc::new(ReadFileTool));
     map.insert("list_files", Arc::new(ListFilesTool));
-    map.insert("edit_file", Arc::new(EditFileTool));
+    map.insert("git_status", Arc::new(GitStatusTool));
+    map.insert("git_diff", Arc::new(GitDiffTool));
+    map.insert("show_file_with_line_numbers", Arc::new(ShowFileWithLineNumbers));
+    map.insert("replace_file_content_from_line_to_line", Arc::new(ReplaceFileContentFromLineToLine));
+    map.insert("replace_entire_file", Arc::new(ReplaceEntireFile));
 
     map
 }
