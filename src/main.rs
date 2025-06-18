@@ -3,16 +3,14 @@ use cursive::traits::*;
 use cursive::utils::markup::StyledString;
 use cursive::views::{Dialog, LinearLayout, ScrollView, TextArea, TextView};
 use dotenvy::from_path;
-use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole};
+use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionFunctionDefinition};
 use openai::Credentials;
-use regex::Regex;
 use tools::registry::get_tool_registry;
 use std::collections::HashMap;
 use std::env;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use cursive::theme::{BaseColor::{self, *}, Color, Palette, PaletteColor, Theme};
-use std::fmt::Write;
 
 mod tools;
 
@@ -28,7 +26,6 @@ struct Cli {
     #[arg(short, long)]
     prompt: Option<String>,
 }
-
 
 
 const HISTORY_PATH: &str = ".minerve_chat_history.json";
@@ -52,26 +49,38 @@ fn custom_theme() -> Theme {
 
 /// Holds app state and the OpenAI runtime
 struct Minerve {
-    messages: Arc<Mutex<Vec<(String, String)>>>,
+    messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     rt: Runtime,
     credentials: Credentials,
 }
 
-pub async fn handle_tool_call(input: &str) -> Option<String> {
+pub async fn handle_function_call(function_call: &openai::chat::ChatCompletionFunctionCall) -> ChatCompletionMessage {
     let registry = get_tool_registry();
+    let function_name = &function_call.name;
+    let args_str = &function_call.arguments;
 
-    if let Some(caps) = Regex::new(r#"(?s)<tool name="(.*?)">(.*?)</tool>"#).unwrap()
-.captures(input) {
-        let name = caps.get(1).unwrap().as_str();
-        let args_json = caps.get(2).unwrap().as_str();
+    if let Some(tool) = registry.get(function_name.as_str()) {
+        let args: HashMap<String, String> = serde_json::from_str(args_str).unwrap_or_default();
+        let result = tool.run(args).await;
 
-        if let Some(tool) = registry.get(name) {
-            let args: HashMap<String, String> = serde_json::from_str(args_json).unwrap_or_default();
-            let result = tool.run(args).await;
-            return Some(result);
+        ChatCompletionMessage {
+            role: ChatCompletionMessageRole::Function,
+            content: Some(result),
+            name: Some(function_name.clone()),
+            function_call: None,
+            tool_call_id: Some(function_call.name.clone()),
+            tool_calls: None,
+        }
+    } else {
+        ChatCompletionMessage {
+            role: ChatCompletionMessageRole::Function,
+            content: Some(format!("Error: Function '{}' not found", function_name)),
+            name: Some(function_name.clone()),
+            function_call: None,
+            tool_call_id: None,
+            tool_calls: None,
         }
     }
-    None
 }
 
 impl Minerve {
@@ -89,8 +98,17 @@ impl Minerve {
 
         let credentials = Credentials::new(api_key, base_url);
 
+        let system_message = ChatCompletionMessage {
+            role: ChatCompletionMessageRole::System,
+            content: Some(get_system_prompt()),
+            name: None,
+            function_call: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+
         Self {
-            messages: Arc::new(Mutex::new(vec![("system".into(), get_system_prompt())])),
+            messages: Arc::new(Mutex::new(vec![system_message])),
             rt: Runtime::new().unwrap(),
             credentials,
         }
@@ -98,9 +116,28 @@ impl Minerve {
 
     fn chat(&self, user_input: String, cb_sink: cursive::CbSink) {
         let mut msgs = self.messages.lock().unwrap();
-        msgs.push(("user".to_string(), user_input.clone()));
+        let user_message = ChatCompletionMessage {
+            role: ChatCompletionMessageRole::User,
+            content: Some(user_input.clone()),
+            name: None,
+            function_call: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        msgs.push(user_message);
 
-        update_chat_ui(cb_sink.clone(), msgs.clone());
+        let ui_messages = msgs.iter().map(|msg| {
+            let role = match msg.role {
+                ChatCompletionMessageRole::System => "system".to_string(),
+                ChatCompletionMessageRole::User => "user".to_string(),
+                ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                ChatCompletionMessageRole::Function => "function".to_string(),
+                _ => "unknown".to_string(),
+            };
+            (role, msg.content.clone().unwrap_or_default())
+        }).collect();
+
+        update_chat_ui(cb_sink.clone(), ui_messages);
 
         let messages = msgs.clone();
         drop(msgs); // unlock before async
@@ -109,93 +146,109 @@ impl Minerve {
         let messages_clone = self.messages.clone();
 
         self.rt.spawn(async move {
-            let history: Vec<ChatCompletionMessage> = messages
-                .iter()
-                .map(|(role, content)| ChatCompletionMessage {
-                    role: match role.as_str() {
-                        "system" => ChatCompletionMessageRole::System,
-                        "user" => ChatCompletionMessageRole::User,
-                        "minerve" => ChatCompletionMessageRole::Assistant,
-                        _ => ChatCompletionMessageRole::User,
-                    },
-                    content: Some(content.clone()),
-                    name: None,
-                    function_call: None,
-                    tool_call_id: None,
-                    tool_calls: None,
+            let mut history: Vec<ChatCompletionMessage> = messages;
+            let registry = get_tool_registry();
+            let functions: Vec<ChatCompletionFunctionDefinition> = registry
+                .values()
+                .map(|tool| ChatCompletionFunctionDefinition {
+                    name: tool.name().to_string(),
+                    description: Some(tool.description().to_string()),
+                    parameters: Some(tool.function_definition()),
                 })
                 .collect();
 
-            let mut tool_result: Option<String> = None;
             let mut should_continue = true;
 
             while should_continue {
                 should_continue = false;
-                let mut history = history.clone();
 
-                if let Some(ref result) = tool_result {
-                    history.push(ChatCompletionMessage {
-                        role: ChatCompletionMessageRole::User, // OR Assistant if tool result is simulated as a response
-                        content: Some(format!("Tool output:\n{}", result)),
-                        name: None,
-                        function_call: None,
-                        tool_call_id: None,
-                        tool_calls: None,
-                    });
-                }
-
-                tool_result = None;
-
-                let chat = ChatCompletion::builder("gpt-4o", history)
+                let chat = ChatCompletion::builder("gpt-4o", history.clone())
                     .credentials(credentials.clone())
+                    .functions(functions.clone())
                     .create()
                     .await;
 
-                let (reply, tool_result) = match chat {
+                match chat {
                     Ok(response) => {
+                        let choice = response.choices.first().unwrap();
+                        let assistant_message = &choice.message;
 
-                        let r = response
-                            .choices
-                            .first()
-                            .and_then(|c| c.message.content.clone())
-                            .unwrap_or("<empty response>".to_string());
+                        // Add assistant message to history
+                        history.push(ChatCompletionMessage {
+                            role: ChatCompletionMessageRole::Assistant,
+                            content: assistant_message.content.clone(),
+                            name: None,
+                            function_call: assistant_message.function_call.clone(),
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
 
-                        tool_result = handle_tool_call(&r).await;
+                        // Add assistant response to UI
+                        if let Some(content) = &assistant_message.content {
+                            let mut msgs = messages_clone.lock().unwrap();
+                            msgs.push(ChatCompletionMessage {
+                                role: ChatCompletionMessageRole::Assistant,
+                                content: Some(content.clone()),
+                                name: None,
+                                function_call: None,
+                                tool_call_id: None,
+                                tool_calls: None,
+                            });
+                        }
 
-                        let debug = format!("{:?}", response);
+                        // Handle function call if present
+                        if let Some(function_call) = &assistant_message.function_call {
+                            let function_message = handle_function_call(function_call).await;
 
-                        messages_clone
-                            .lock()
-                            .unwrap()
-                            .push(("debug".to_string(), debug));
+                            if function_message.content.is_some() {
+                                let mut msgs = messages_clone.lock().unwrap();
+                                msgs.push(function_message.clone());
+                            }
 
-                        update_chat_ui(cb_sink.clone(), messages_clone.lock().unwrap().clone());
+                            history.push(function_message);
+                            should_continue = true;
+                        }
 
-                        (r, tool_result.clone())
+                        let ui_messages = messages_clone.lock().unwrap().iter().map(|msg| {
+                            let role = match msg.role {
+                                ChatCompletionMessageRole::System => "system".to_string(),
+                                ChatCompletionMessageRole::User => "user".to_string(),
+                                ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                                ChatCompletionMessageRole::Function => "function".to_string(),
+                                _ => "unknown".to_string(),
+                            };
+                            (role, msg.content.clone().unwrap_or_default())
+                        }).collect();
+
+                        update_chat_ui(cb_sink.clone(), ui_messages);
                     },
-                    Err(err) => (format!("Error: {}", err), None),
-                };
+                    Err(err) => {
+                        let error_msg = format!("Error: {}", err);
+                        let mut msgs = messages_clone.lock().unwrap();
+                        msgs.push(ChatCompletionMessage {
+                            role: ChatCompletionMessageRole::Assistant,
+                            content: Some(error_msg),
+                            name: None,
+                            function_call: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
 
-                messages_clone
-                    .lock()
-                    .unwrap()
-                    .push(("minerve".to_string(), reply.clone()));
+                        let ui_messages = msgs.iter().map(|msg| {
+                            let role = match msg.role {
+                                ChatCompletionMessageRole::System => "system".to_string(),
+                                ChatCompletionMessageRole::User => "user".to_string(),
+                                ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                                ChatCompletionMessageRole::Function => "function".to_string(),
+                                _ => "unknown".to_string(),
+                            };
+                            (role, msg.content.clone().unwrap_or_default())
+                        }).collect();
 
-                match tool_result {
-                    Some(r) => {
-                        messages_clone
-                            .lock()
-                            .unwrap()
-                            .push(("tool".to_string(), r));
-
-                        update_chat_ui(cb_sink.clone(), messages_clone.lock().unwrap().clone());
-
-                        should_continue = true;
-                    },
-                    None => {}
+                        update_chat_ui(cb_sink.clone(), ui_messages);
+                        break;
+                    }
                 }
-
-                update_chat_ui(cb_sink.clone(), messages_clone.lock().unwrap().clone());
             }
         });
     }
@@ -215,6 +268,7 @@ fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
             let (label_style, prefix) = match role.as_str() {
                 "user" => (ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault), "You"),
                 "minerve" => (ColorStyle::new(Color::Dark(BaseColor::Cyan), Color::TerminalDefault), "Minerve"),
+                "function" => (ColorStyle::new(Color::Dark(BaseColor::Yellow), Color::TerminalDefault), "Function"),
                 _ => (ColorStyle::primary(), role.as_str()),
             };
 
@@ -227,59 +281,9 @@ fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
 }
 
 pub fn get_system_prompt() -> String {
-    let registry = get_tool_registry(); // Returns HashMap<&str, Arc<dyn Tool>>
-
-    let mut tools_description = String::from("You can use the following tools:\n");
-
-    let mut tool_descriptions: Vec<String> = Vec::new();
-
-    for tool in registry.values() {
-        let mut param_string = String::new();
-
-        for (key, ty) in tool.parameters() {
-            let _ = write!(&mut param_string, "{}: {}, ", key, ty);
-        }
-
-        // Trim trailing comma and space, if any
-        if param_string.ends_with(", ") {
-            param_string.truncate(param_string.len() - 2);
-        }
-
-        let description = format!(
-            "- {}: {}. Params: {}",
-            tool.name(),
-            tool.description(),
-            if param_string.is_empty() { "none".to_string() } else { param_string }
-        );
-
-        tool_descriptions.push(description);
-    }
-
-    tools_description.push_str(&tool_descriptions.join("\n"));
-
-    format!(
-        r#"
+    return String::from(r#"
 const SYSTEM_PROMPT = `
 You are **Minerve**, a shell assistant that behaves like a professional software developer.
-
-
-## 🔧 TOOL SYNTAX
-
-<tool name="TOOL_NAME">
-{{
-  "param1": "value",
-  "param2": "value"
-}}
-</tool>
-
-❗️ **DO NOT use** incorrect syntax like:
-- \`<tool_name>...</tool_name>\` ❌
-- \`<toolName="...">...</tool>\` ❌
-- Missing or malformed JSON ❌
-
-## 🧰 AVAILABLE TOOLS
-
-{}
 
 Guidance:
 1. Be proactive at using tools instead of asking.
@@ -320,9 +324,7 @@ Tool: ...
 
 A: This appears to be a repo about XYZ.
 
-"#,
-        tools_description
-    )
+"#);
 }
 
 struct HistoryTracker {
@@ -406,65 +408,79 @@ fn run_headless(prompt: String) {
     let minerve = Minerve::new();
     let rt = Runtime::new().unwrap();
 
-    let messages: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(vec![
-        ("system".into(), get_system_prompt()),
-        ("user".into(), prompt.clone()),
+    let system_message = ChatCompletionMessage {
+        role: ChatCompletionMessageRole::System,
+        content: Some(get_system_prompt()),
+        name: None,
+        function_call: None,
+        tool_call_id: None,
+        tool_calls: None,
+    };
+
+    let user_message = ChatCompletionMessage {
+        role: ChatCompletionMessageRole::User,
+        content: Some(prompt.clone()),
+        name: None,
+        function_call: None,
+        tool_call_id: None,
+        tool_calls: None,
+    };
+
+    let messages: Arc<Mutex<Vec<ChatCompletionMessage>>> = Arc::new(Mutex::new(vec![
+        system_message,
+        user_message,
     ]));
 
     rt.block_on(async {
         let messages = messages.lock().unwrap();
-        let history: Vec<ChatCompletionMessage> = messages
-                .iter()
-                .map(|(role, content)| ChatCompletionMessage {
-                    role: match role.as_str() {
-                        "system" => ChatCompletionMessageRole::System,
-                        "user" => ChatCompletionMessageRole::User,
-                        "minerve" => ChatCompletionMessageRole::Assistant,
-                        _ => ChatCompletionMessageRole::User,
-                    },
-                    content: Some(content.clone()),
-                    name: None,
-                    function_call: None,
-                    tool_call_id: None,
-                    tool_calls: None,
-                })
-                .collect();
+        let mut history: Vec<ChatCompletionMessage> = messages.clone();
+
+        let registry = get_tool_registry();
+        let functions: Vec<ChatCompletionFunctionDefinition> = registry
+            .values()
+            .map(|tool| ChatCompletionFunctionDefinition {
+                name: tool.name().to_string(),
+                description: Some(tool.description().to_string()),
+                parameters: Some(tool.function_definition()),
+            })
+            .collect();
 
         let mut should_continue = true;
-        let mut tool_result: Option<String> = None;
         let credentials = minerve.credentials.clone();
 
         while should_continue {
             should_continue = false;
 
-            let mut full_history = history.clone();
-
-            if let Some(result) = &tool_result {
-                full_history.push(ChatCompletionMessage {
-                    role: ChatCompletionMessageRole::User,
-                    content: Some(format!("Tool output:\n{}", result)),
-                    name: None,
-                    function_call: None,
-                    tool_call_id: None,
-                    tool_calls: None,
-                });
-            }
-
-            let chat = ChatCompletion::builder("gpt-4o", full_history)
+            let chat = ChatCompletion::builder("gpt-4o", history.clone())
                 .credentials(credentials.clone())
+                .functions(functions.clone())
                 .create()
                 .await;
 
             match chat {
                 Ok(response) => {
-                    let reply = response.choices.first()
-                        .and_then(|c| c.message.content.clone())
-                        .unwrap_or("<empty response>".to_string());
+                    let choice = response.choices.first().unwrap();
+                    let assistant_message = &choice.message;
 
-                    println!("{}", reply);
-                    tool_result = handle_tool_call(&reply).await;
+                    // Add assistant message to history
+                    history.push(ChatCompletionMessage {
+                        role: ChatCompletionMessageRole::Assistant,
+                        content: assistant_message.content.clone(),
+                        name: None,
+                        function_call: assistant_message.function_call.clone(),
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
 
-                    if tool_result.is_some() {
+                    // Print assistant response
+                    if let Some(content) = &assistant_message.content {
+                        println!("{}", content);
+                    }
+
+                    // Handle function call if present
+                    if let Some(function_call) = &assistant_message.function_call {
+                        let function_message = handle_function_call(function_call).await;
+                        history.push(function_message);
                         should_continue = true;
                     }
                 }
