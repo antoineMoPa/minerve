@@ -1,7 +1,8 @@
+use cursive::event::EventResult;
 use cursive::theme::ColorStyle;
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
-use cursive::views::{Dialog, LinearLayout, ScrollView, TextArea, TextView};
+use cursive::views::{Dialog, LinearLayout, OnEventView, ScrollView, TextArea, TextView};
 use dotenvy::from_path;
 use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionFunctionDefinition};
 use openai::Credentials;
@@ -521,7 +522,58 @@ fn launch_tui() {
 
     let chat_view = TextView::new("").with_name("chat").full_height();
     let input_view = TextArea::new().with_name("input");
-    let scroll_chat_view = ScrollView::new(chat_view).scroll_strategy(cursive::view::ScrollStrategy::StickToBottom).with_name("chat_scroll");
+    let history_tracker_for_up = history_tracker.clone();
+    let history_tracker_for_down = history_tracker.clone();
+
+    let input_view = OnEventView::new(input_view)
+        .on_event_inner(cursive::event::Key::Up, move |s, _e| {
+            let mut cursor_position = 0;
+            s.call_on_name("input", |view: &mut TextArea| {
+                cursor_position = view.cursor();
+            });
+
+            if cursor_position > 0 {
+                // If the cursor is not at the start, do nothing.
+                // Let original handler process:
+                return Some(EventResult::Ignored);
+            }
+
+            let previous_prompt = history_tracker_for_up
+                .lock()
+                .unwrap()
+                .get_previous_prompt()
+                .unwrap_or_default();
+            s.call_on_name("input", |view: &mut TextArea| view.set_content(previous_prompt));
+
+            return Some(EventResult::consumed());
+        })
+        .on_event_inner(cursive::event::Key::Down, move |s, _e| {
+            let next_prompt = history_tracker_for_down
+                .lock()
+                .unwrap()
+                .get_next_prompt()
+                .unwrap_or_default();
+            s.call_on_name("input", |view: &mut TextArea| view.set_content(next_prompt));
+
+            return Some(EventResult::consumed());
+        })
+        .on_event_inner(cursive::event::Event::CtrlChar('a'), |s, _e| {
+            s.call_on_name("input", |view: &mut TextArea| view.set_cursor(0));
+            return Some(EventResult::consumed());
+        })
+        .on_event_inner(cursive::event::Event::CtrlChar('e'), |s, _e| {
+            s.call_on_name("input", |view: &mut TextArea| view.set_cursor(view.get_content().len()));
+            return Some(EventResult::consumed());
+        })
+        .on_event_inner(cursive::event::Event::CtrlChar('k'), |s, _e| {
+            s.call_on_name("input", |view: &mut TextArea| { view.set_content(""); });
+            return Some(EventResult::consumed());
+        });
+
+
+    let scroll_chat_view = ScrollView::new(chat_view)
+        .scroll_strategy(cursive::view::ScrollStrategy::StickToBottom)
+        .with_name("chat_scroll");
 
     siv.add_fullscreen_layer(
         Dialog::around(
@@ -532,20 +584,6 @@ fn launch_tui() {
 
         ).title("minerve"),
     );
-
-    let history_tracker_for_up = history_tracker.clone();
-
-    siv.add_global_callback(cursive::event::Event::Key(cursive::event::Key::Up), move |s| {
-        let previous_prompt = history_tracker_for_up.lock().unwrap().get_previous_prompt().unwrap_or_default();
-        s.call_on_name("input", |view: &mut TextArea| view.set_content(previous_prompt));
-    });
-
-    let history_tracker_for_down = history_tracker.clone();
-
-    siv.add_global_callback(cursive::event::Event::Key(cursive::event::Key::Down), move |s| {
-        let next_prompt = history_tracker_for_down.lock().unwrap().get_next_prompt().unwrap_or_default();
-        s.call_on_name("input", |view: &mut TextArea| view.set_content(next_prompt));
-    });
 
     siv.run();
 }
