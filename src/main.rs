@@ -16,6 +16,21 @@ use std::fmt::Write;
 
 mod tools;
 
+use clap::Parser;
+use clap::command;
+
+/// Minerve: A terminal-based assistant with headless support
+#[derive(Parser)]
+#[command(name = "Minerve")]
+#[command(about = "Terminal assistant", long_about = None)]
+struct Cli {
+    /// Run a one-off prompt without UI
+    #[arg(short, long)]
+    prompt: Option<String>,
+}
+
+
+
 const HISTORY_PATH: &str = ".minerve_chat_history.json";
 
 fn custom_theme() -> Theme {
@@ -397,7 +412,82 @@ impl HistoryTracker {
     }
 }
 
-fn main() {
+fn run_headless(prompt: String) {
+    let minerve = Minerve::new();
+    let rt = Runtime::new().unwrap();
+
+    let messages: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(vec![
+        ("system".into(), get_system_prompt()),
+        ("user".into(), prompt.clone()),
+    ]));
+
+    rt.block_on(async {
+        let messages = messages.lock().unwrap();
+        let history: Vec<ChatCompletionMessage> = messages
+                .iter()
+                .map(|(role, content)| ChatCompletionMessage {
+                    role: match role.as_str() {
+                        "system" => ChatCompletionMessageRole::System,
+                        "user" => ChatCompletionMessageRole::User,
+                        "minerve" => ChatCompletionMessageRole::Assistant,
+                        _ => ChatCompletionMessageRole::User,
+                    },
+                    content: Some(content.clone()),
+                    name: None,
+                    function_call: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                })
+                .collect();
+
+        let mut should_continue = true;
+        let mut tool_result: Option<String> = None;
+        let credentials = minerve.credentials.clone();
+
+        while should_continue {
+            should_continue = false;
+
+            let mut full_history = history.clone();
+
+            if let Some(result) = &tool_result {
+                full_history.push(ChatCompletionMessage {
+                    role: ChatCompletionMessageRole::User,
+                    content: Some(format!("Tool output:\n{}", result)),
+                    name: None,
+                    function_call: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                });
+            }
+
+            let chat = ChatCompletion::builder("gpt-4o", full_history)
+                .credentials(credentials.clone())
+                .create()
+                .await;
+
+            match chat {
+                Ok(response) => {
+                    let reply = response.choices.first()
+                        .and_then(|c| c.message.content.clone())
+                        .unwrap_or("<empty response>".to_string());
+
+                    println!("{}", reply);
+                    tool_result = handle_tool_call(&reply).await;
+
+                    if tool_result.is_some() {
+                        should_continue = true;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn launch_tui() {
     let mut siv = cursive::default();
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
@@ -452,4 +542,17 @@ fn main() {
     });
 
     siv.run();
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    if let Some(prompt) = cli.prompt {
+        run_headless(prompt);
+        return;
+    }
+
+    // Otherwise, launch full TUI
+    launch_tui();
+
 }
