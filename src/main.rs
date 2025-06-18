@@ -76,7 +76,6 @@ pub async fn handle_tool_call(input: &str) -> Option<String> {
 
 impl Minerve {
     fn new() -> Self {
-        // - Open AI -
         if let Some(home_dir) = dirs::home_dir() {
             let dotenv_path = home_dir.join(".env");
             if dotenv_path.exists() {
@@ -89,15 +88,6 @@ impl Minerve {
             env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1/".into());
 
         let credentials = Credentials::new(api_key, base_url);
-
-        // - History -
-        let history_path = dirs::home_dir().unwrap().join(HISTORY_PATH);
-        let prompts = if history_path.exists() {
-            let content = std::fs::read_to_string(&history_path).unwrap_or_default();
-            serde_json::from_str::<Vec<String>>(&content).unwrap_or_else(|_| vec![])
-        } else {
-            vec![]
-        };
 
         Self {
             messages: Arc::new(Mutex::new(vec![("system".into(), get_system_prompt())])),
