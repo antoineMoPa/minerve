@@ -1,7 +1,7 @@
 use cursive::theme::ColorStyle;
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
-use cursive::views::{Dialog, LinearLayout, NamedView, ScrollView, TextArea, TextView};
+use cursive::views::{Dialog, LinearLayout, ScrollView, TextArea, TextView};
 use dotenvy::from_path;
 use openai::chat::{ChatCompletion, ChatCompletionMessage, ChatCompletionMessageRole};
 use openai::Credentials;
@@ -15,6 +15,8 @@ use cursive::theme::{BaseColor::{self, *}, Color, Palette, PaletteColor, Theme};
 use std::fmt::Write;
 
 mod tools;
+
+const HISTORY_PATH: &str = ".minerve_chat_history.json";
 
 fn custom_theme() -> Theme {
     let mut palette = Palette::default();
@@ -59,6 +61,7 @@ pub async fn handle_tool_call(input: &str) -> Option<String> {
 
 impl Minerve {
     fn new() -> Self {
+        // - Open AI -
         if let Some(home_dir) = dirs::home_dir() {
             let dotenv_path = home_dir.join(".env");
             if dotenv_path.exists() {
@@ -71,6 +74,15 @@ impl Minerve {
             env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1/".into());
 
         let credentials = Credentials::new(api_key, base_url);
+
+        // - History -
+        let history_path = dirs::home_dir().unwrap().join(HISTORY_PATH);
+        let prompts = if history_path.exists() {
+            let content = std::fs::read_to_string(&history_path).unwrap_or_default();
+            serde_json::from_str::<Vec<String>>(&content).unwrap_or_else(|_| vec![])
+        } else {
+            vec![]
+        };
 
         Self {
             messages: Arc::new(Mutex::new(vec![("system".into(), get_system_prompt())])),
@@ -308,12 +320,92 @@ A: This appears to be a repo about XYZ.
     )
 }
 
+struct HistoryTracker {
+    previous_prompts: Arc<Mutex<Vec<String>>>,
+    index: Option<usize>,
+}
+
+impl HistoryTracker {
+    fn new() -> Self {
+        let mut tracker = Self {
+            previous_prompts: Arc::new(Mutex::new(vec![])),
+            index: None,
+        };
+        tracker.load_history();
+        tracker
+    }
+
+    fn load_history(&mut self) {
+        let history_path = dirs::home_dir().unwrap().join(HISTORY_PATH);
+        if history_path.exists() {
+            let content = std::fs::read_to_string(&history_path).unwrap_or_default();
+            let prompts: Vec<String> = serde_json::from_str(&content).unwrap_or_else(|_| vec![]);
+            *self.previous_prompts.lock().unwrap() = prompts;
+        }
+    }
+
+    fn save_history(&self) {
+        let history_path = dirs::home_dir().unwrap().join(HISTORY_PATH);
+        if let Ok(json) = serde_json::to_string(&*self.previous_prompts.lock().unwrap()) {
+            let _ = std::fs::write(history_path, json);
+        }
+    }
+
+    fn add_prompt(&mut self, prompt: String) {
+        {
+            let mut prompts = self.previous_prompts.lock().unwrap();
+            prompts.push(prompt);
+        }
+        self.index = None;
+        self.save_history();
+    }
+
+    fn get_previous_prompt(&mut self) -> Option<String> {
+        let prompts = self.previous_prompts.lock().unwrap();
+
+        if prompts.is_empty() {
+            return None;
+        }
+
+        self.index = match self.index {
+            None => Some(prompts.len().saturating_sub(1)),
+            Some(0) => Some(0), // stay at the oldest
+            Some(i) => Some(i - 1),
+        };
+
+        self.index.and_then(|i| prompts.get(i).cloned())
+    }
+
+    fn get_next_prompt(&mut self) -> Option<String> {
+        let prompts = self.previous_prompts.lock().unwrap();
+
+        if prompts.is_empty() {
+            return None;
+        }
+
+        match self.index {
+            None => Some(String::new()), // already at fresh input
+            Some(i) if i + 1 >= prompts.len() => {
+                self.index = None;
+                Some(String::new()) // move out of history
+            }
+            Some(i) => {
+                self.index = Some(i + 1);
+                prompts.get(i + 1).cloned()
+            }
+        }
+    }
+}
+
 fn main() {
     let mut siv = cursive::default();
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
+    let history_tracker = Arc::new(Mutex::new(HistoryTracker::new()));
 
-    let submit_button = cursive::views::Button::new("Send (Tab-Enter)", move |s| {
+    let history_tracker_for_submit = history_tracker.clone();
+
+    let submit_button = cursive::views::Button::new("Send (Tab-Enter)", move|s| {
         let content = s
             .call_on_name("input", |view: &mut TextArea| view.get_content().to_string())
             .unwrap();
@@ -322,6 +414,7 @@ fn main() {
             return;
         }
 
+        history_tracker_for_submit.lock().unwrap().add_prompt(content.clone());
         minerve.chat(content, s.cb_sink().clone());
 
         // Clear input
@@ -343,6 +436,20 @@ fn main() {
 
         ).title("minerve"),
     );
+
+    let history_tracker_for_up = history_tracker.clone();
+
+    siv.add_global_callback(cursive::event::Event::Key(cursive::event::Key::Up), move |s| {
+        let previous_prompt = history_tracker_for_up.lock().unwrap().get_previous_prompt().unwrap_or_default();
+        s.call_on_name("input", |view: &mut TextArea| view.set_content(previous_prompt));
+    });
+
+    let history_tracker_for_down = history_tracker.clone();
+
+    siv.add_global_callback(cursive::event::Event::Key(cursive::event::Key::Down), move |s| {
+        let next_prompt = history_tracker_for_down.lock().unwrap().get_next_prompt().unwrap_or_default();
+        s.call_on_name("input", |view: &mut TextArea| view.set_content(next_prompt));
+    });
 
     siv.run();
 }
