@@ -363,16 +363,16 @@ impl Tool for ShowFileWithLineNumbers {
     }
 }
 
-pub struct ShowFileRangeTool;
+pub struct ShowFileRangeWithLineNumbers;
 
 #[async_trait]
-impl Tool for ShowFileRangeTool {
+impl Tool for ShowFileRangeWithLineNumbers {
     fn name(&self) -> &'static str {
-        "show_file_range"
+        "show_file_range_with_line_numbers"
     }
 
     fn description(&self) -> &'static str {
-        "Shows a specific range of lines from a file with line numbers."
+        "Shows a specific range of lines from a file with line numbers (inclusive start and end)."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
@@ -409,21 +409,19 @@ impl Tool for ShowFileRangeTool {
         match fs::read_to_string(&filepath) {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
+                let total = lines.len();
 
                 if lines.is_empty() {
                     return "[Info] File is empty.".into();
                 }
 
-                if start_line > lines.len() {
-                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, lines.len());
+                if start_line > total {
+                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, total);
                 }
 
-                if end_line > lines.len() {
-                    return format!("[Error] End line {} is beyond file length ({} lines).", end_line, lines.len());
-                }
-
-                let start_idx = start_line - 1; // Convert to 0-based
-                let end_idx = end_line; // end_line is inclusive, so we don't subtract 1
+                let end_line = end_line.min(total); // clamp to file length
+                let start_idx = start_line - 1;
+                let end_idx = end_line;
 
                 lines[start_idx..end_idx]
                     .iter()
@@ -484,49 +482,36 @@ impl Tool for ReplaceLineRangeTool {
         match fs::read_to_string(&filepath) {
             Ok(content) => {
                 let original_lines: Vec<&str> = content.lines().collect();
-                
-                if start_line > original_lines.len() {
-                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, original_lines.len());
+                let total = original_lines.len();
+
+                if start_line > total {
+                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, total);
                 }
 
-                if end_line > original_lines.len() {
-                    return format!("[Error] End line {} is beyond file length ({} lines).", end_line, original_lines.len());
-                }
+                let end_line = end_line.min(total); // Clamp if end line exceeds length
+                let start_idx = start_line - 1;
+                let end_idx = end_line;
 
-                let start_idx = start_line - 1; // Convert to 0-based
-                let end_idx = end_line - 1;     // Convert to 0-based (inclusive)
-
-                // Build the new file content
                 let mut result_lines = Vec::new();
-                
-                // Add lines before the replacement range
-                if start_idx > 0 {
-                    result_lines.extend(original_lines[0..start_idx].iter().map(|s| s.to_string()));
-                }
-                
-                // Add the new content lines
-                if !new_content.is_empty() {
-                    result_lines.extend(new_content.lines().map(|s| s.to_string()));
-                }
-                
-                // Add lines after the replacement range
-                if end_idx + 1 < original_lines.len() {
-                    result_lines.extend(original_lines[end_idx + 1..].iter().map(|s| s.to_string()));
-                }
+                result_lines.extend_from_slice(&original_lines[..start_idx]);
+                result_lines.extend(new_content.lines().map(|s| s));
+                result_lines.extend_from_slice(&original_lines[end_idx..]);
 
-                let final_content = if result_lines.is_empty() {
-                    String::new()
-                } else {
-                    result_lines.join("\n") + "\n"
-                };
+                let final_content = result_lines.join("\n") + "\n";
 
                 match fs::write(&filepath, final_content) {
                     Ok(_) => {
-                        let replaced_count = end_idx - start_idx + 1;
+                        let replaced_count = end_idx - start_idx;
                         let new_count = new_content.lines().count();
-                        format!("✅ Successfully replaced {} lines ({}-{}) with {} lines in {}", 
-                               replaced_count, start_line, end_line, new_count, filepath)
-                    },
+                        format!(
+                            "✅ Successfully replaced {} lines ({}-{}) with {} lines in {}",
+                            replaced_count,
+                            start_line,
+                            end_line,
+                            new_count,
+                            filepath
+                        )
+                    }
                     Err(e) => format!("[Error] Failed to write file: {}", e),
                 }
             }
@@ -580,7 +565,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("git_diff", Arc::new(GitDiffTool));
     map.insert("edit_file", Arc::new(EditFileTool));
     map.insert("show_file_with_line_numbers", Arc::new(ShowFileWithLineNumbers));
-    map.insert("show_file_range", Arc::new(ShowFileRangeTool));
+    map.insert("show_file_range_with_line_numbers", Arc::new(ShowFileRangeWithLineNumbers));
     map.insert("replace_line_range", Arc::new(ReplaceLineRangeTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
 
