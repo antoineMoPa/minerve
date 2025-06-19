@@ -483,42 +483,40 @@ impl Tool for ReplaceLineRangeTool {
             Ok(content) => {
                 let original_lines: Vec<&str> = content.lines().collect();
                 let start_idx = start_line - 1; // Convert to 0-based
-                let end_idx = end_line - 1;     // Convert to 0-based
+                let end_idx = end_line - 1;     // Convert to 0-based (inclusive)
 
                 if start_idx >= original_lines.len() {
                     return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, original_lines.len());
                 }
 
-                let actual_end_idx = end_idx.min(original_lines.len() - 1);
+                if end_idx >= original_lines.len() {
+                    return format!("[Error] End line {} is beyond file length ({} lines).", end_line, original_lines.len());
+                }
 
                 // Build the new file content
                 let mut result_lines = Vec::new();
                 
                 // Add lines before the replacement range
-                for line in &original_lines[0..start_idx] {
-                    result_lines.push(line.to_string());
-                }
+                result_lines.extend(original_lines[0..start_idx].iter().map(|s| s.to_string()));
                 
                 // Add the new content lines
-                for line in new_content.lines() {
-                    result_lines.push(line.to_string());
+                if !new_content.is_empty() {
+                    result_lines.extend(new_content.lines().map(|s| s.to_string()));
                 }
                 
                 // Add lines after the replacement range
-                if actual_end_idx + 1 < original_lines.len() {
-                    for line in &original_lines[actual_end_idx + 1..] {
-                        result_lines.push(line.to_string());
-                    }
+                if end_idx + 1 < original_lines.len() {
+                    result_lines.extend(original_lines[end_idx + 1..].iter().map(|s| s.to_string()));
                 }
 
                 let final_content = result_lines.join("\n");
 
                 match fs::write(&filepath, final_content) {
                     Ok(_) => {
-                        let replaced_count = actual_end_idx - start_idx + 1;
+                        let replaced_count = end_idx - start_idx + 1;
                         let new_count = new_content.lines().count();
                         format!("✅ Successfully replaced {} lines ({}-{}) with {} lines in {}", 
-                               replaced_count, start_line, actual_end_idx + 1, new_count, filepath)
+                               replaced_count, start_line, end_line, new_count, filepath)
                     },
                     Err(e) => format!("[Error] Failed to write file: {}", e),
                 }
