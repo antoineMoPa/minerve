@@ -534,7 +534,13 @@ impl Tool for RunCargoCheckTool {
         let output = Command::new("cargo")
             .arg("check")
             .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .map(|out| {
+                if out.status.success() {
+                    String::from_utf8_lossy(&out.stdout).to_string()
+                } else {
+                    format!("[Error] {}", String::from_utf8_lossy(&out.stderr))
+                }
+            })
             .unwrap_or_else(|e| format!("[Error] {}", e));
 
         output
