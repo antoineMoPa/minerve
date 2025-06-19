@@ -38,14 +38,14 @@ OPENAI_BASE_URL=https://api.openai.com/v1/
 
 Run the terminal UI with:
 
-```bash
-cargo run
+```
+minerve
 ```
 
-For headless mode:
+For executing a command with a specific prompt:
 
-```bash
-cargo run -- --prompt "Your query here"
+```
+minerve -p "Your query here"
 ```
 
 ## License
