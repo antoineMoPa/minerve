@@ -162,40 +162,6 @@ impl Tool for SearchForPathPatternTool {
     }
 }
 
-pub struct ReadFileTool;
-
-#[async_trait]
-impl Tool for ReadFileTool {
-    fn name(&self) -> &'static str {
-        "read_file"
-    }
-
-    fn description(&self) -> &'static str {
-        "Reads the content of a file with line numbers"
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        let mut params = HashMap::new();
-        params.insert(ParamName::FilePath.as_str(), "string");
-        params
-    }
-
-    async fn run(&self, args: HashMap<String, String>) -> String {
-        let params = ToolParams::new(args);
-        let path = match params.get_string(ParamName::FilePath.as_str()) {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
-        match fs::read_to_string(&path) {
-            Ok(content) => content.lines()
-                .enumerate()
-                .map(|(i, line)| format!("{:>4}: {}", i + 1, line))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Err(e) => format!("[Error] Failed to read file: {}", e),
-        }
-    }
-}
 
 pub struct ListFilesTool;
 
@@ -328,16 +294,19 @@ impl Tool for GitDiffTool {
     }
 }
 
-pub struct ShowFileWithLineNumbers;
+
+
+
+pub struct ShowFileTool;
 
 #[async_trait]
-impl Tool for ShowFileWithLineNumbers {
+impl Tool for ShowFileTool {
     fn name(&self) -> &'static str {
-        "show_file_with_line_numbers"
+        "show_file"
     }
 
     fn description(&self) -> &'static str {
-        "Shows the content of a file with line numbers."
+        "Shows the content of a file without line numbers for easier content-based editing."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
@@ -353,33 +322,29 @@ impl Tool for ShowFileWithLineNumbers {
             Err(e) => return e,
         };
         match fs::read_to_string(&path) {
-            Ok(content) => content.lines()
-                .enumerate()
-                .map(|(i, line)| format!("{:>4}: {}", i + 1, line))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            Ok(content) => content,
             Err(e) => format!("[Error] Failed to read file: {}", e),
         }
     }
 }
 
-pub struct ShowFileRangeWithLineNumbers;
+pub struct ReplaceContentTool;
 
 #[async_trait]
-impl Tool for ShowFileRangeWithLineNumbers {
+impl Tool for ReplaceContentTool {
     fn name(&self) -> &'static str {
-        "show_file_range_with_line_numbers"
+        "replace_content"
     }
 
     fn description(&self) -> &'static str {
-        "Shows a specific range of lines from a file with line numbers (inclusive start and end)."
+        "Replaces existing content in a file with new content by searching for the old content. Use this for precise content-based editing."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
         params.insert(ParamName::FilePath.as_str(), "string");
-        params.insert(ParamName::StartLine.as_str(), "integer");
-        params.insert(ParamName::EndLine.as_str(), "integer");
+        params.insert("old_content", "string");
+        params.insert("new_content", "string");
         params
     }
 
@@ -389,129 +354,25 @@ impl Tool for ShowFileRangeWithLineNumbers {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let start_line = match params.get_integer(ParamName::StartLine.as_str()) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let end_line = match params.get_integer(ParamName::EndLine.as_str()) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-
-        if start_line == 0 || end_line == 0 {
-            return "[Error] Line numbers must be >= 1 (lines are 1-indexed).".into();
-        }
-
-        if start_line > end_line {
-            return "[Error] start_line must be <= end_line.".into();
-        }
-
-        match fs::read_to_string(&filepath) {
-            Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let total = lines.len();
-
-                if lines.is_empty() {
-                    return "[Info] File is empty.".into();
-                }
-
-                if start_line > total {
-                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, total);
-                }
-
-                let end_line = end_line.min(total); // clamp to file length
-                let start_idx = start_line - 1;
-                let end_idx = end_line;
-
-                lines[start_idx..end_idx]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| format!("{:>4}: {}", start_idx + i + 1, line))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
-            Err(e) => format!("[Error] Failed to read file: {}", e),
-        }
-    }
-}
-
-pub struct ReplaceLineRangeTool;
-
-#[async_trait]
-impl Tool for ReplaceLineRangeTool {
-    fn name(&self) -> &'static str {
-        "replace_line_range"
-    }
-
-    fn description(&self) -> &'static str {
-        "Replaces a range of lines in a file with new content. Use this for iterative editing by first viewing lines with show_file_range, then replacing specific ranges."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        let mut params = HashMap::new();
-        params.insert(ParamName::FilePath.as_str(), "string");
-        params.insert(ParamName::StartLine.as_str(), "integer");
-        params.insert(ParamName::EndLine.as_str(), "integer");
-        params.insert(ParamName::NewContent.as_str(), "string");
-        params
-    }
-
-    async fn run(&self, args: HashMap<String, String>) -> String {
-        let params = ToolParams::new(args);
-        let filepath = match params.get_string(ParamName::FilePath.as_str()) {
+        let old_content = match params.get_string("old_content") {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let start_line = match params.get_integer(ParamName::StartLine.as_str()) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let end_line = match params.get_integer(ParamName::EndLine.as_str()) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let new_content = match params.get_string(ParamName::NewContent.as_str()) {
+        let new_content = match params.get_string("new_content") {
             Ok(s) => s,
             Err(e) => return e,
         };
 
-        if start_line == 0 || end_line == 0 || start_line > end_line {
-            return "[Error] Invalid line range. Lines are 1-indexed and start_line must be <= end_line.".into();
-        }
-
         match fs::read_to_string(&filepath) {
             Ok(content) => {
-                let original_lines: Vec<&str> = content.lines().collect();
-                let total = original_lines.len();
-
-                if start_line > total {
-                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, total);
+                if !content.contains(&old_content) {
+                    return format!("[Error] Old content not found in file: {}", filepath);
                 }
 
-                let end_line = end_line.min(total); // Clamp if end line exceeds length
-                let start_idx = start_line - 1;
-                let end_idx = end_line;
-
-                let mut result_lines = Vec::new();
-                result_lines.extend_from_slice(&original_lines[..start_idx]);
-                result_lines.extend(new_content.lines().map(|s| s));
-                result_lines.extend_from_slice(&original_lines[end_idx..]);
-
-                let final_content = result_lines.join("\n") + "\n";
-
-                match fs::write(&filepath, final_content) {
-                    Ok(_) => {
-                        let replaced_count = end_idx - start_idx;
-                        let new_count = new_content.lines().count();
-                        format!(
-                            "✅ Successfully replaced {} lines ({}-{}) with {} lines in {}",
-                            replaced_count,
-                            start_line,
-                            end_line,
-                            new_count,
-                            filepath
-                        )
-                    }
+                let updated_content = content.replace(&old_content, &new_content);
+                
+                match fs::write(&filepath, updated_content) {
+                    Ok(_) => format!("✅ Successfully replaced content in {}", filepath),
                     Err(e) => format!("[Error] Failed to write file: {}", e),
                 }
             }
@@ -559,14 +420,12 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("get_general_context", Arc::new(GetGeneralContext));
     map.insert("search_for_string", Arc::new(SearchForStringTool));
     map.insert("search_for_path_pattern", Arc::new(SearchForPathPatternTool));
-    map.insert("read_file", Arc::new(ReadFileTool));
     map.insert("list_files", Arc::new(ListFilesTool));
     map.insert("git_status", Arc::new(GitStatusTool));
     map.insert("git_diff", Arc::new(GitDiffTool));
     map.insert("edit_file", Arc::new(EditFileTool));
-    map.insert("show_file_with_line_numbers", Arc::new(ShowFileWithLineNumbers));
-    map.insert("show_file_range_with_line_numbers", Arc::new(ShowFileRangeWithLineNumbers));
-    map.insert("replace_line_range", Arc::new(ReplaceLineRangeTool));
+    map.insert("show_file", Arc::new(ShowFileTool));
+    map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
 
     map

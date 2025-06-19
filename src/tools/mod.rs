@@ -13,9 +13,6 @@ pub enum ParamName {
     PathPattern,
     Mode,
     Content,
-    StartLine,
-    EndLine,
-    NewContent,
 }
 
 impl ParamName {
@@ -27,9 +24,6 @@ impl ParamName {
             ParamName::PathPattern => "path_pattern",
             ParamName::Mode => "mode",
             ParamName::Content => "content",
-            ParamName::StartLine => "start_line",
-            ParamName::EndLine => "end_line",
-            ParamName::NewContent => "new_content",
         }
     }
 }
@@ -55,12 +49,6 @@ impl ToolParams {
         self.args.get(param).cloned().unwrap_or_else(|| default.to_string())
     }
 
-    pub fn get_integer(&self, param: &str) -> Result<usize, String> {
-        self.args.get(param)
-            .ok_or_else(|| format!("[Error] Parameter '{}' is required.", param))?
-            .parse::<usize>()
-            .map_err(|_| format!("[Error] Parameter '{}' must be a valid integer.", param))
-    }
 
 }
 
