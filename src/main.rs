@@ -171,26 +171,6 @@ impl Minerve {
         }
     }
 
-    async fn create_chat_completion(&self, messages: Vec<ChatCompletionMessage>, functions: Vec<ChatCompletionFunctionDefinition>) -> Result<ChatCompletionResponse, reqwest::Error> {
-        let request = ChatCompletionRequest {
-            model: "gpt-4o".to_string(),
-            messages,
-            functions: if functions.is_empty() { None } else { Some(functions) },
-        };
-
-        let url = format!("{}/chat/completions", self.base_url);
-        
-        let response = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
-
-        response.json::<ChatCompletionResponse>().await
-    }
-
     fn chat(&self, user_input: String, cb_sink: cursive::CbSink) {
         let mut msgs = self.messages.lock().unwrap();
         let user_message = ChatCompletionMessage {
@@ -209,7 +189,6 @@ impl Minerve {
                 ChatCompletionMessageRole::User => "user".to_string(),
                 ChatCompletionMessageRole::Assistant => "minerve".to_string(),
                 ChatCompletionMessageRole::Function => "function".to_string(),
-                _ => "unknown".to_string(),
             };
             (role, msg.content.clone().unwrap_or_default())
         }).collect();
@@ -242,13 +221,13 @@ impl Minerve {
                 should_continue = false;
 
                 let request = ChatCompletionRequest {
-                    model: "gpt-4o".to_string(),
+                    model: "gpt-4.1-mini".to_string(),
                     messages: history.clone(),
                     functions: if functions.is_empty() { None } else { Some(functions.clone()) },
                 };
 
                 let url = format!("{}/chat/completions", base_url);
-                
+
                 let chat_result = client
                     .post(&url)
                     .header("Authorization", format!("Bearer {}", api_key))
@@ -576,7 +555,7 @@ fn run_headless(prompt: String) {
             };
 
             let url = format!("{}/chat/completions", base_url);
-            
+
             let chat_result = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", api_key))
