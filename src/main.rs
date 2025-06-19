@@ -118,7 +118,23 @@ pub async fn handle_function_call(function_call: &ChatCompletionFunctionCall) ->
     let args_str = &function_call.arguments;
 
     if let Some(tool) = registry.get(function_name.as_str()) {
-        let args: HashMap<String, String> = serde_json::from_str(args_str).unwrap_or_default();
+        // Parse as generic JSON value first, then convert all values to strings
+        let args: HashMap<String, String> = match serde_json::from_str::<serde_json::Value>(args_str) {
+            Ok(serde_json::Value::Object(map)) => {
+                map.into_iter()
+                    .map(|(k, v)| {
+                        let string_value = match v {
+                            serde_json::Value::String(s) => s,
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            _ => v.to_string(),
+                        };
+                        (k, string_value)
+                    })
+                    .collect()
+            }
+            _ => HashMap::new(),
+        };
         let result = tool.run(args).await;
 
         ChatCompletionMessage {

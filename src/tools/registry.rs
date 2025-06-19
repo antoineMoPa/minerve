@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolParams, PARAM_FILEPATH, PARAM_DIR, PARAM_SEARCH_STRING, 
+                   PARAM_PATH_PATTERN, PARAM_MODE, PARAM_CONTENT, PARAM_START_LINE, 
+                   PARAM_END_LINE, PARAM_NEW_CONTENT};
 use async_trait::async_trait;
 use std::fs;
 use std::process::Command;
@@ -72,15 +74,16 @@ impl Tool for SearchForStringTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("searchString", "string");
+        params.insert(PARAM_SEARCH_STRING, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let search_string = args.get("searchString").cloned().unwrap_or_default();
-        if search_string.is_empty() {
-            return "[Error] searchString parameter is required.".into();
-        }
+        let params = ToolParams::new(args);
+        let search_string = match params.get_string(PARAM_SEARCH_STRING) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
 
         let ag_check = Command::new("sh")
             .arg("-c")
@@ -123,15 +126,16 @@ impl Tool for SearchForPathPatternTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("pathPattern", "string");
+        params.insert(PARAM_PATH_PATTERN, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let pattern = args.get("pathPattern").cloned().unwrap_or_default();
-        if pattern.is_empty() {
-            return "[Error] pathPattern parameter is required.".into();
-        }
+        let params = ToolParams::new(args);
+        let pattern = match params.get_string(PARAM_PATH_PATTERN) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
 
         let ag_check = Command::new("sh")
             .arg("-c")
@@ -174,12 +178,16 @@ impl Tool for ReadFileTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("path", "string");
+        params.insert(PARAM_FILEPATH, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let path = args.get("path").cloned().unwrap_or_default();
+        let params = ToolParams::new(args);
+        let path = match params.get_string(PARAM_FILEPATH) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
         match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) => format!("[Error] Failed to read file: {}", e),
@@ -201,12 +209,13 @@ impl Tool for ListFilesTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("dir", "string");
+        params.insert(PARAM_DIR, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let dir = args.get("dir").cloned().unwrap_or_else(|| ".".into());
+        let params = ToolParams::new(args);
+        let dir = params.get_string_optional(PARAM_DIR, ".");
         match fs::read_dir(&dir) {
             Ok(entries) => entries
                 .filter_map(|e| e.ok().map(|f| f.file_name().to_string_lossy().into_owned()))
@@ -231,20 +240,23 @@ impl Tool for EditFileTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("filepath", "string");
-        params.insert("mode", "string (append|prepend)");
-        params.insert("content", "string");
+        params.insert(PARAM_FILEPATH, "string");
+        params.insert(PARAM_MODE, "string");
+        params.insert(PARAM_CONTENT, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let path = args.get("filepath").cloned().unwrap_or_default();
-        let mode = args.get("mode").cloned().unwrap_or_else(|| "append".into());
-        let new_content = args.get("content").cloned().unwrap_or_default();
-
-        if path.is_empty() || new_content.is_empty() {
-            return "[Error] 'filepath' and 'content' must be provided.".into();
-        }
+        let params = ToolParams::new(args);
+        let path = match params.get_string(PARAM_FILEPATH) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let mode = params.get_string_optional(PARAM_MODE, "append");
+        let new_content = match params.get_string(PARAM_CONTENT) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
 
         let existing = fs::read_to_string(&path).unwrap_or_default();
 
@@ -328,12 +340,16 @@ impl Tool for ShowFileWithLineNumbers {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("path", "string");
+        params.insert(PARAM_FILEPATH, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let path = args.get("path").cloned().unwrap_or_default();
+        let params = ToolParams::new(args);
+        let path = match params.get_string(PARAM_FILEPATH) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
         match fs::read_to_string(&path) {
             Ok(content) => content.lines()
                 .enumerate()
@@ -359,29 +375,48 @@ impl Tool for ShowFileRangeTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("filepath", "string");
-        params.insert("start_line", "integer");
-        params.insert("end_line", "integer");
+        params.insert(PARAM_FILEPATH, "string");
+        params.insert(PARAM_START_LINE, "integer");
+        params.insert(PARAM_END_LINE, "integer");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let filepath = args.get("filepath").cloned().unwrap_or_default();
-        let start_line: usize = args.get("start_line").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let end_line: usize = args.get("end_line").and_then(|s| s.parse().ok()).unwrap_or(10);
+        let params = ToolParams::new(args);
+        let filepath = match params.get_string(PARAM_FILEPATH) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let start_line = match params.get_integer(PARAM_START_LINE) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        let end_line = match params.get_integer(PARAM_END_LINE) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
 
-        if filepath.is_empty() {
-            return "[Error] 'filepath' must be provided.".into();
+        if start_line == 0 {
+            return "[Error] start_line must be >= 1 (lines are 1-indexed).".into();
+        }
+
+        if start_line > end_line {
+            return "[Error] start_line must be <= end_line.".into();
         }
 
         match fs::read_to_string(&filepath) {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
+                
+                if lines.is_empty() {
+                    return "[Info] File is empty.".into();
+                }
+
                 let start_idx = start_line.saturating_sub(1);
                 let end_idx = end_line.min(lines.len());
 
                 if start_idx >= lines.len() {
-                    return "[Error] Start line is beyond file length.".into();
+                    return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, lines.len());
                 }
 
                 lines[start_idx..end_idx]
@@ -410,22 +445,31 @@ impl Tool for ReplaceLineRangeTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("filepath", "string");
-        params.insert("start_line", "integer");
-        params.insert("end_line", "integer");
-        params.insert("new_content", "string");
+        params.insert(PARAM_FILEPATH, "string");
+        params.insert(PARAM_START_LINE, "integer");
+        params.insert(PARAM_END_LINE, "integer");
+        params.insert(PARAM_NEW_CONTENT, "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
-        let filepath = args.get("filepath").cloned().unwrap_or_default();
-        let start_line: usize = args.get("start_line").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let end_line: usize = args.get("end_line").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let new_content = args.get("new_content").cloned().unwrap_or_default();
-
-        if filepath.is_empty() {
-            return "[Error] 'filepath' must be provided.".into();
-        }
+        let params = ToolParams::new(args);
+        let filepath = match params.get_string(PARAM_FILEPATH) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let start_line = match params.get_integer(PARAM_START_LINE) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        let end_line = match params.get_integer(PARAM_END_LINE) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        let new_content = match params.get_string(PARAM_NEW_CONTENT) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
 
         if start_line == 0 || end_line == 0 || start_line > end_line {
             return "[Error] Invalid line range. Lines are 1-indexed and start_line must be <= end_line.".into();
@@ -477,6 +521,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("list_files", Arc::new(ListFilesTool));
     map.insert("git_status", Arc::new(GitStatusTool));
     map.insert("git_diff", Arc::new(GitDiffTool));
+    map.insert("edit_file", Arc::new(EditFileTool));
     map.insert("show_file_with_line_numbers", Arc::new(ShowFileWithLineNumbers));
     map.insert("show_file_range", Arc::new(ShowFileRangeTool));
     map.insert("replace_line_range", Arc::new(ReplaceLineRangeTool));
