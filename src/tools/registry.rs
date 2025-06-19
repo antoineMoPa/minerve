@@ -431,6 +431,94 @@ impl Tool for ReplaceEntireFile {
     }
 }
 
+// New iterative tool
+pub struct IterativeLineEditor;
+
+#[async_trait]
+impl Tool for IterativeLineEditor {
+    fn name(&self) -> &'static str {
+        "iterative_line_editor"
+    }
+
+    fn description(&self) -> &'static str {
+        "Allows iterative processing of file lines in chunks of 10, with commands to KEEP, REPLACE, SEARCH, STOP, and REWIND."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("filepath", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>) -> String {
+        use std::io::{self, Write};
+
+        let filepath = args.get("filepath").cloned().unwrap_or_default();
+        match fs::read_to_string(&filepath) {
+            Ok(content) => {
+                let mut lines: Vec<&str> = content.lines().collect();
+                let line_count = lines.len();
+                let mut index = 0;
+                let mut recent_replacement = Vec::new();
+
+                while index < line_count {
+                    let end = (index + 10).min(line_count);
+
+                    // Print current block of lines
+                    for (i, line) in lines[index..end].iter().enumerate() {
+                        println!("{:>4}: {}", index + i + 1, line);
+                    }
+
+                    // Get user command
+                    print!("Command: ");
+                    io::stdout().flush().unwrap();
+                    let mut command = String::new();
+                    io::stdin().read_line(&mut command).unwrap();
+                    let command = command.trim();
+
+                    match command {
+                        "KEEP" => {
+                            // Do nothing, just move to the next block
+                            index = end;
+                        }
+                        cmd if cmd.starts_with("REPLACE ") => {
+                            let replacement: String = cmd[8..].to_string();
+                            recent_replacement = replacement.lines().map(|s| s.to_string()).collect();
+
+                            for (i, rep_line) in recent_replacement.iter().enumerate() {
+                                if index + i < line_count {
+                                    lines[index + i] = rep_line;
+                                }
+                            }
+                            index = end;
+                        }
+                        "STOP" => break,
+                        "REWIND" => index = 0,
+                        cmd if cmd.starts_with("SEARCH ") => {
+                            let term = &cmd[7..];
+                            if let Some(position) = lines.iter().skip(end).position(|&line| line.contains(term)) {
+                                index = end + position;
+                            } else {
+                                println!("Search term not found after current position.");
+                            }
+                        }
+                        _ => println!("Unknown command or missing REPLACE content"),
+                    }
+                }
+
+                let final_content = lines.join("\n");
+                match fs::write(&filepath, final_content) {
+                    Ok(_) => "✅ File processed and saved successfully".into(),
+                    Err(e) => format!("[Error] Failed to save file: {}", e),
+                }
+
+            }
+            Err(e) => format!("[Error] Failed to read file: {}", e),
+        }
+    }
+}
+
+
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
@@ -444,6 +532,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("show_file_with_line_numbers", Arc::new(ShowFileWithLineNumbers));
     map.insert("replace_file_content_from_line_to_line", Arc::new(ReplaceFileContentFromLineToLine));
     map.insert("replace_entire_file", Arc::new(ReplaceEntireFile));
+    map.insert("iterative_line_editor", Arc::new(IterativeLineEditor));
 
     map
 }
