@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::tools::{Tool, ToolParams, PARAM_FILEPATH, PARAM_DIR, PARAM_SEARCH_STRING,
-                   PARAM_PATH_PATTERN, PARAM_MODE, PARAM_CONTENT, PARAM_START_LINE,
-                   PARAM_END_LINE, PARAM_NEW_CONTENT};
+use crate::tools::{Tool, ToolParams, ParamName};
 use async_trait::async_trait;
 use std::fs;
 use std::process::Command;
@@ -74,13 +72,13 @@ impl Tool for SearchForStringTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_SEARCH_STRING, "string");
+        params.insert(ParamName::SearchString.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let search_string = match params.get_string(PARAM_SEARCH_STRING) {
+        let search_string = match params.get_string(ParamName::SearchString.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
@@ -126,13 +124,13 @@ impl Tool for SearchForPathPatternTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_PATH_PATTERN, "string");
+        params.insert(ParamName::PathPattern.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let pattern = match params.get_string(PARAM_PATH_PATTERN) {
+        let pattern = match params.get_string(ParamName::PathPattern.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
@@ -178,13 +176,13 @@ impl Tool for ReadFileTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_FILEPATH, "string");
+        params.insert(ParamName::FilePath.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let path = match params.get_string(PARAM_FILEPATH) {
+        let path = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
@@ -213,13 +211,13 @@ impl Tool for ListFilesTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_DIR, "string");
+        params.insert(ParamName::Dir.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let dir = params.get_string_optional(PARAM_DIR, ".");
+        let dir = params.get_string_optional(ParamName::Dir.as_str(), ".");
         match fs::read_dir(&dir) {
             Ok(entries) => entries
                 .filter_map(|e| e.ok().map(|f| f.file_name().to_string_lossy().into_owned()))
@@ -244,20 +242,20 @@ impl Tool for EditFileTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_FILEPATH, "string");
-        params.insert(PARAM_MODE, "string");
-        params.insert(PARAM_CONTENT, "string");
+        params.insert(ParamName::FilePath.as_str(), "string");
+        params.insert(ParamName::Mode.as_str(), "string");
+        params.insert(ParamName::Content.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let path = match params.get_string(PARAM_FILEPATH) {
+        let path = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let mode = params.get_string_optional(PARAM_MODE, "append");
-        let new_content = match params.get_string(PARAM_CONTENT) {
+        let mode = params.get_string_optional(ParamName::Mode.as_str(), "append");
+        let new_content = match params.get_string(ParamName::Content.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
@@ -344,13 +342,13 @@ impl Tool for ShowFileWithLineNumbers {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_FILEPATH, "string");
+        params.insert(ParamName::FilePath.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let path = match params.get_string(PARAM_FILEPATH) {
+        let path = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
@@ -379,23 +377,23 @@ impl Tool for ShowFileRangeTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_FILEPATH, "string");
-        params.insert(PARAM_START_LINE, "integer");
-        params.insert(PARAM_END_LINE, "integer");
+        params.insert(ParamName::FilePath.as_str(), "string");
+        params.insert(ParamName::StartLine.as_str(), "integer");
+        params.insert(ParamName::EndLine.as_str(), "integer");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let filepath = match params.get_string(PARAM_FILEPATH) {
+        let filepath = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let start_line = match params.get_integer(PARAM_START_LINE) {
+        let start_line = match params.get_integer(ParamName::StartLine.as_str()) {
             Ok(n) => n,
             Err(e) => return e,
         };
-        let end_line = match params.get_integer(PARAM_END_LINE) {
+        let end_line = match params.get_integer(ParamName::EndLine.as_str()) {
             Ok(n) => n,
             Err(e) => return e,
         };
@@ -449,28 +447,28 @@ impl Tool for ReplaceLineRangeTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(PARAM_FILEPATH, "string");
-        params.insert(PARAM_START_LINE, "integer");
-        params.insert(PARAM_END_LINE, "integer");
-        params.insert(PARAM_NEW_CONTENT, "string");
+        params.insert(ParamName::FilePath.as_str(), "string");
+        params.insert(ParamName::StartLine.as_str(), "integer");
+        params.insert(ParamName::EndLine.as_str(), "integer");
+        params.insert(ParamName::NewContent.as_str(), "string");
         params
     }
 
     async fn run(&self, args: HashMap<String, String>) -> String {
         let params = ToolParams::new(args);
-        let filepath = match params.get_string(PARAM_FILEPATH) {
+        let filepath = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let start_line = match params.get_integer(PARAM_START_LINE) {
+        let start_line = match params.get_integer(ParamName::StartLine.as_str()) {
             Ok(n) => n,
             Err(e) => return e,
         };
-        let end_line = match params.get_integer(PARAM_END_LINE) {
+        let end_line = match params.get_integer(ParamName::EndLine.as_str()) {
             Ok(n) => n,
             Err(e) => return e,
         };
-        let new_content = match params.get_string(PARAM_NEW_CONTENT) {
+        let new_content = match params.get_string(ParamName::NewContent.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };

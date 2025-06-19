@@ -5,15 +5,34 @@ use serde_json::Value;
 pub mod registry;
 
 // Parameter name constants to prevent typos
-pub const PARAM_FILEPATH: &str = "filepath";
-pub const PARAM_DIR: &str = "dir";
-pub const PARAM_SEARCH_STRING: &str = "search_string";
-pub const PARAM_PATH_PATTERN: &str = "path_pattern";
-pub const PARAM_MODE: &str = "mode";
-pub const PARAM_CONTENT: &str = "content";
-pub const PARAM_START_LINE: &str = "start_line";
-pub const PARAM_END_LINE: &str = "end_line";
-pub const PARAM_NEW_CONTENT: &str = "new_content";
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamName {
+    FilePath,
+    Dir,
+    SearchString,
+    PathPattern,
+    Mode,
+    Content,
+    StartLine,
+    EndLine,
+    NewContent,
+}
+
+impl ParamName {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ParamName::FilePath => "filepath",
+            ParamName::Dir => "dir",
+            ParamName::SearchString => "search_string",
+            ParamName::PathPattern => "path_pattern",
+            ParamName::Mode => "mode",
+            ParamName::Content => "content",
+            ParamName::StartLine => "start_line",
+            ParamName::EndLine => "end_line",
+            ParamName::NewContent => "new_content",
+        }
+    }
+}
 
 // Centralized parameter validation
 pub struct ToolParams {
