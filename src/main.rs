@@ -30,6 +30,7 @@ struct Cli {
 
 
 const HISTORY_PATH: &str = ".minerve_chat_history.json";
+const MODEL_NAME: &str = "gpt-4.1-mini";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -221,7 +222,7 @@ impl Minerve {
                 should_continue = false;
 
                 let request = ChatCompletionRequest {
-                    model: "gpt-4.1-mini".to_string(),
+                    model: String::from(MODEL_NAME),
                     messages: history.clone(),
                     functions: if functions.is_empty() { None } else { Some(functions.clone()) },
                 };
@@ -549,7 +550,7 @@ fn run_headless(prompt: String) {
             should_continue = false;
 
             let request = ChatCompletionRequest {
-                model: "gpt-4o".to_string(),
+                model: String::from(MODEL_NAME),
                 messages: history.clone(),
                 functions: if functions.is_empty() { None } else { Some(functions.clone()) },
             };
