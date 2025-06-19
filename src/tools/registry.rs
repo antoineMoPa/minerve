@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::tools::{Tool, ToolParams, PARAM_FILEPATH, PARAM_DIR, PARAM_SEARCH_STRING, 
-                   PARAM_PATH_PATTERN, PARAM_MODE, PARAM_CONTENT, PARAM_START_LINE, 
+use crate::tools::{Tool, ToolParams, PARAM_FILEPATH, PARAM_DIR, PARAM_SEARCH_STRING,
+                   PARAM_PATH_PATTERN, PARAM_MODE, PARAM_CONTENT, PARAM_START_LINE,
                    PARAM_END_LINE, PARAM_NEW_CONTENT};
 use async_trait::async_trait;
 use std::fs;
@@ -411,7 +411,7 @@ impl Tool for ShowFileRangeTool {
         match fs::read_to_string(&filepath) {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
-                
+
                 if lines.is_empty() {
                     return "[Info] File is empty.".into();
                 }
@@ -514,6 +514,32 @@ impl Tool for ReplaceLineRangeTool {
     }
 }
 
+pub struct RunCargoCheckTool;
+
+#[async_trait]
+impl Tool for RunCargoCheckTool {
+    fn name(&self) -> &'static str {
+        "run_cargo_check"
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs `cargo check` in the current directory."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        HashMap::new()
+    }
+
+    async fn run(&self, _args: HashMap<String, String>) -> String {
+        let output = Command::new("cargo")
+            .arg("check")
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .unwrap_or_else(|e| format!("[Error] {}", e));
+
+        output
+    }
+}
 
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
@@ -529,6 +555,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("show_file_with_line_numbers", Arc::new(ShowFileWithLineNumbers));
     map.insert("show_file_range", Arc::new(ShowFileRangeTool));
     map.insert("replace_line_range", Arc::new(ReplaceLineRangeTool));
+    map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
 
     map
 }
