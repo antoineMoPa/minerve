@@ -173,7 +173,7 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Reads the content of a file"
+        "Reads the content of a file with line numbers"
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
@@ -189,7 +189,11 @@ impl Tool for ReadFileTool {
             Err(e) => return e,
         };
         match fs::read_to_string(&path) {
-            Ok(content) => content,
+            Ok(content) => content.lines()
+                .enumerate()
+                .map(|(i, line)| format!("{:>4}: {}", i + 1, line))
+                .collect::<Vec<_>>()
+                .join("\n"),
             Err(e) => format!("[Error] Failed to read file: {}", e),
         }
     }
