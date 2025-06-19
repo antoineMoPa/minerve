@@ -398,8 +398,8 @@ impl Tool for ShowFileRangeTool {
             Err(e) => return e,
         };
 
-        if start_line == 0 {
-            return "[Error] start_line must be >= 1 (lines are 1-indexed).".into();
+        if start_line == 0 || end_line == 0 {
+            return "[Error] Line numbers must be >= 1 (lines are 1-indexed).".into();
         }
 
         if start_line > end_line {
@@ -414,12 +414,16 @@ impl Tool for ShowFileRangeTool {
                     return "[Info] File is empty.".into();
                 }
 
-                let start_idx = start_line.saturating_sub(1);
-                let end_idx = end_line.min(lines.len());
-
-                if start_idx >= lines.len() {
+                if start_line > lines.len() {
                     return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, lines.len());
                 }
+
+                if end_line > lines.len() {
+                    return format!("[Error] End line {} is beyond file length ({} lines).", end_line, lines.len());
+                }
+
+                let start_idx = start_line - 1; // Convert to 0-based
+                let end_idx = end_line; // end_line is inclusive, so we don't subtract 1
 
                 lines[start_idx..end_idx]
                     .iter()
@@ -480,22 +484,25 @@ impl Tool for ReplaceLineRangeTool {
         match fs::read_to_string(&filepath) {
             Ok(content) => {
                 let original_lines: Vec<&str> = content.lines().collect();
-                let start_idx = start_line - 1; // Convert to 0-based
-                let end_idx = end_line - 1;     // Convert to 0-based (inclusive)
-
-                if start_idx >= original_lines.len() {
+                
+                if start_line > original_lines.len() {
                     return format!("[Error] Start line {} is beyond file length ({} lines).", start_line, original_lines.len());
                 }
 
-                if end_idx >= original_lines.len() {
+                if end_line > original_lines.len() {
                     return format!("[Error] End line {} is beyond file length ({} lines).", end_line, original_lines.len());
                 }
+
+                let start_idx = start_line - 1; // Convert to 0-based
+                let end_idx = end_line - 1;     // Convert to 0-based (inclusive)
 
                 // Build the new file content
                 let mut result_lines = Vec::new();
                 
                 // Add lines before the replacement range
-                result_lines.extend(original_lines[0..start_idx].iter().map(|s| s.to_string()));
+                if start_idx > 0 {
+                    result_lines.extend(original_lines[0..start_idx].iter().map(|s| s.to_string()));
+                }
                 
                 // Add the new content lines
                 if !new_content.is_empty() {
@@ -507,7 +514,11 @@ impl Tool for ReplaceLineRangeTool {
                     result_lines.extend(original_lines[end_idx + 1..].iter().map(|s| s.to_string()));
                 }
 
-                let final_content = result_lines.join("\n");
+                let final_content = if result_lines.is_empty() {
+                    String::new()
+                } else {
+                    result_lines.join("\n") + "\n"
+                };
 
                 match fs::write(&filepath, final_content) {
                     Ok(_) => {
