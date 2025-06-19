@@ -389,6 +389,10 @@ fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
         }
 
         view.set_content(styled);
+
+        if let Some(mut scroll_view) = s.find_name::<ScrollView<TextView>>("chat_scroll") {
+            scroll_view.scroll_to_bottom();
+        }
     })).unwrap();
 }
 
