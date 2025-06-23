@@ -1,12 +1,12 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use crate::tools::{Tool, ToolParams, ParamName};
+use crate::tools::{ParamName, Tool, ToolParams};
 use async_trait::async_trait;
+use chrono::Utc;
+use std::collections::HashMap;
 use std::fs;
-use std::process::Command;
 use std::fs::OpenOptions;
 use std::io::Write;
-use chrono::Utc;
+use std::process::Command;
+use std::sync::Arc;
 
 pub struct GetGeneralContext;
 
@@ -43,7 +43,6 @@ fn log_search_replace(filepath: &str, old_content: &str, new_content: &str, succ
         .unwrap_or_else(|e| panic!("Failed to write to log file: {}", e));
 }
 
-
 #[async_trait]
 impl Tool for GetGeneralContext {
     fn name(&self) -> &'static str {
@@ -59,7 +58,6 @@ impl Tool for GetGeneralContext {
     }
 
     async fn run(&self, _args: HashMap<String, String>) -> String {
-
         let exec = |cmd: &str| {
             Command::new("sh")
                 .arg("-c")
@@ -71,7 +69,10 @@ impl Tool for GetGeneralContext {
 
         let dir = fs::read_dir(".")
             .map(|entries| {
-                entries.filter_map(|e| e.ok().map(|f| f.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>().join("\n")
+                entries
+                    .filter_map(|e| e.ok().map(|f| f.file_name().to_string_lossy().into_owned()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .unwrap_or_else(|e| format!("[Error] Failed to list dir: {}", e));
 
@@ -119,7 +120,10 @@ impl Tool for SearchForStringTool {
             .unwrap_or(false);
 
         let command = if ag_check {
-            format!("ag --ignore .git --ignore node_modules \"{}\"", search_string)
+            format!(
+                "ag --ignore .git --ignore node_modules \"{}\"",
+                search_string
+            )
         } else {
             format!(
                 "grep -r --exclude-dir={{.git,node_modules}} \"{}\" .",
@@ -189,7 +193,6 @@ impl Tool for SearchForPathPatternTool {
         truncate(output, 2000)
     }
 }
-
 
 pub struct ListFilesTool;
 
@@ -276,9 +279,6 @@ impl Tool for GitDiffTool {
     }
 }
 
-
-
-
 pub struct ShowFileTool;
 
 #[async_trait]
@@ -346,9 +346,8 @@ impl Tool for ReplaceContentTool {
         };
 
         // Helper function to normalize whitespace for comparison
-        let normalize_whitespace = |s: &str| -> String {
-            s.split_whitespace().collect::<Vec<_>>().join(" ")
-        };
+        let normalize_whitespace =
+            |s: &str| -> String { s.split_whitespace().collect::<Vec<_>>().join(" ") };
 
         match fs::read_to_string(&filepath) {
             Ok(content) => {
@@ -359,11 +358,11 @@ impl Tool for ReplaceContentTool {
                         Ok(_) => {
                             log_search_replace(&filepath, &old_content, &new_content, true);
                             return format!("✅ Successfully replaced content in {}", filepath);
-                        },
+                        }
                         Err(e) => {
                             log_search_replace(&filepath, &old_content, &new_content, false);
                             return format!("[Error] Failed to write file: {}", e);
-                        },
+                        }
                     }
                 }
 
@@ -420,7 +419,10 @@ impl Tool for ReplaceContentTool {
                 }
 
                 // Handle case where match ends at end of file
-                if !current_word.is_empty() && word_idx < old_words.len() && current_word == old_words[word_idx] {
+                if !current_word.is_empty()
+                    && word_idx < old_words.len()
+                    && current_word == old_words[word_idx]
+                {
                     if word_idx == 0 {
                         start_idx = Some(char_idx - current_word.len());
                     }
@@ -441,17 +443,20 @@ impl Tool for ReplaceContentTool {
                             Ok(_) => {
                                 log_search_replace(&filepath, &old_content, &new_content, true);
                                 format!("✅ Successfully replaced content in {}", filepath)
-                            },
+                            }
                             Err(e) => {
                                 log_search_replace(&filepath, &old_content, &new_content, false);
                                 format!("[Error] Failed to write file: {}", e)
-                            },
+                            }
                         }
                     }
                     _ => {
                         log_search_replace(&filepath, &old_content, &new_content, false);
-                        format!("[Error] Could not locate exact position of old content in file: {}", filepath)
-                    },
+                        format!(
+                            "[Error] Could not locate exact position of old content in file: {}",
+                            filepath
+                        )
+                    }
                 }
             }
             Err(e) => format!("[Error] Failed to read file: {}", e),
@@ -518,11 +523,7 @@ impl Tool for RunShellCommandTool {
         };
 
         // Note: This runs through 'sh -c' to support complex commands
-        match Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .output()
-        {
+        match Command::new("sh").arg("-c").arg(&command).output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -542,7 +543,10 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
 
     map.insert("get_general_context", Arc::new(GetGeneralContext));
     map.insert("search_for_string", Arc::new(SearchForStringTool));
-    map.insert("search_for_path_pattern", Arc::new(SearchForPathPatternTool));
+    map.insert(
+        "search_for_path_pattern",
+        Arc::new(SearchForPathPatternTool),
+    );
     map.insert("list_files", Arc::new(ListFilesTool));
     map.insert("git_status", Arc::new(GitStatusTool));
     map.insert("git_diff", Arc::new(GitDiffTool));

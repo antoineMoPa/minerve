@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 pub mod registry;
 
@@ -35,14 +35,23 @@ impl ToolParams {
     }
 
     pub fn get_string(&self, param: &str) -> Result<String, String> {
-        self.args.get(param)
+        self.args
+            .get(param)
             .cloned()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("[Error] Parameter '{}' is required and must be a non-empty string.", param))
+            .ok_or_else(|| {
+                format!(
+                    "[Error] Parameter '{}' is required and must be a non-empty string.",
+                    param
+                )
+            })
     }
 
     pub fn get_string_optional(&self, param: &str, default: &str) -> String {
-        self.args.get(param).cloned().unwrap_or_else(|| default.to_string())
+        self.args
+            .get(param)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -60,10 +69,15 @@ pub trait Tool: Send + Sync {
 
         for (param_name, param_type) in self.parameters() {
             if param_type == "string" {
-                properties.insert(param_name.to_string(), serde_json::json!({"type": "string"}));
-            }
-            else if param_type == "integer" {
-                properties.insert(param_name.to_string(), serde_json::json!({"type": "integer"}));
+                properties.insert(
+                    param_name.to_string(),
+                    serde_json::json!({"type": "string"}),
+                );
+            } else if param_type == "integer" {
+                properties.insert(
+                    param_name.to_string(),
+                    serde_json::json!({"type": "integer"}),
+                );
             }
             required.push(param_name.to_string());
         }
