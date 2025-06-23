@@ -768,8 +768,12 @@ fn launch_tui() {
         minerve.chat(content, s.cb_sink().clone());
 
         // Clear input
-        s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
+        s.call_on_name("input", |view: &mut TextArea| view.set_content("") );
 
+        // Select the input for better UX after querying OpenAPI
+        s.call_on_name("input", |view: &mut TextArea| {
+            view.set_cursor(0);
+        });
         s.focus_name("input").unwrap();
     });
 
