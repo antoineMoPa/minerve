@@ -193,6 +193,41 @@ pub async fn handle_function_call(
 }
 
 impl Minerve {
+    fn add_assistant_message_with_update_ui(
+        messages: &Arc<Mutex<Vec<ChatCompletionMessage>>>,
+        message_content: String,
+        cb_sink: &cursive::CbSink,
+    ) {
+        let mut msgs = messages.lock().unwrap();
+        msgs.push(ChatCompletionMessage {
+            role: ChatCompletionMessageRole::Assistant,
+            content: Some(message_content),
+            name: None,
+            function_call: None,
+            tool_call_id: None,
+            tool_calls: None,
+        });
+
+        let ui_messages = msgs
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    ChatCompletionMessageRole::System => "system".to_string(),
+                    ChatCompletionMessageRole::User => "user".to_string(),
+                    ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                    ChatCompletionMessageRole::Function => msg
+                        .tool_call_id
+                        .clone()
+                        .unwrap_or(String::from("unknown function call")),
+                };
+                (role, msg.content.clone().unwrap_or_default())
+            })
+            .collect();
+
+        let request_status = false;
+        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+    }
+
     fn new() -> Self {
         if let Some(home_dir) = dirs::home_dir() {
             let dotenv_path = home_dir.join(".env");
@@ -399,72 +434,14 @@ impl Minerve {
                             }
                             Err(json_err) => {
                                 let error_msg = format!("JSON Error: {}", json_err);
-                                let mut msgs = messages_clone.lock().unwrap();
-                                msgs.push(ChatCompletionMessage {
-                                    role: ChatCompletionMessageRole::Assistant,
-                                    content: Some(error_msg),
-                                    name: None,
-                                    function_call: None,
-                                    tool_call_id: None,
-                                    tool_calls: None,
-                                });
-
-                                let ui_messages = msgs
-                                    .iter()
-                                    .map(|msg| {
-                                        let role = match msg.role {
-                                            ChatCompletionMessageRole::System => {
-                                                "system".to_string()
-                                            }
-                                            ChatCompletionMessageRole::User => "user".to_string(),
-                                            ChatCompletionMessageRole::Assistant => {
-                                                "minerve".to_string()
-                                            }
-                                            ChatCompletionMessageRole::Function => msg
-                                                .tool_call_id
-                                                .clone()
-                                                .unwrap_or(String::from("unknown function call")),
-                                        };
-                                        (role, msg.content.clone().unwrap_or_default())
-                                    })
-                                    .collect();
-
-                                let request_status = false;
-                                update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+                                Self::add_assistant_message_with_update_ui(&messages_clone, error_msg, &cb_sink);
                                 break;
                             }
                         }
                     }
                     Err(req_err) => {
                         let error_msg = format!("Request Error: {}", req_err);
-                        let mut msgs = messages_clone.lock().unwrap();
-                        msgs.push(ChatCompletionMessage {
-                            role: ChatCompletionMessageRole::Assistant,
-                            content: Some(error_msg),
-                            name: None,
-                            function_call: None,
-                            tool_call_id: None,
-                            tool_calls: None,
-                        });
-
-                        let ui_messages = msgs
-                            .iter()
-                            .map(|msg| {
-                                let role = match msg.role {
-                                    ChatCompletionMessageRole::System => "system".to_string(),
-                                    ChatCompletionMessageRole::User => "user".to_string(),
-                                    ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                                    ChatCompletionMessageRole::Function => msg
-                                        .tool_call_id
-                                        .clone()
-                                        .unwrap_or(String::from("unknown function call")),
-                                };
-                                (role, msg.content.clone().unwrap_or_default())
-                            })
-                            .collect();
-
-                        let request_status = false;
-                        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+                        Self::add_assistant_message_with_update_ui(&messages_clone, error_msg, &cb_sink);
                         break;
                     }
                 }
