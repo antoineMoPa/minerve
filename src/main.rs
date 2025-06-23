@@ -495,7 +495,11 @@ fn update_chat_ui(
 
                 // Truncate content if too long
                 let truncated_content = if content.len() > MAX_OUTPUT_LEN {
-                    format!("{}\n...[truncated]", &content[..MAX_OUTPUT_LEN])
+                    if role == "function" {
+                        format!("{}\n...[truncated]", &content[..MAX_OUTPUT_LEN])
+                    } else {
+                        content.to_string()
+                    }
                 } else {
                     content.to_string()
                 };
