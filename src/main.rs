@@ -7,7 +7,7 @@ use cursive::theme::{
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
 use cursive::views::{
-    Dialog, LinearLayout, OnEventView, ResizedView, ScrollView, TextArea, TextView,
+    Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView
 };
 use dotenvy::from_path;
 use reqwest::Client;
@@ -239,6 +239,8 @@ impl Minerve {
             .send(Box::new(|s| {
                 if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
                     view.get_inner_mut().set_content("working...");
+                } else {
+                    panic!("working_panel view not found");
                 }
             }))
             .unwrap();
@@ -283,7 +285,11 @@ impl Minerve {
                 let request = ChatCompletionRequest {
                     model: String::from(MODEL_NAME),
                     messages: cleaned_history,
-                    functions: if functions.is_empty() { None } else { Some(functions.clone()) },
+                    functions: if functions.is_empty() {
+                        None
+                    } else {
+                        Some(functions.clone())
+                    },
                 };
 
                 let url = format!("{}/chat/completions", base_url);
@@ -444,6 +450,8 @@ impl Minerve {
                 .send(Box::new(|s| {
                     if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
                         view.get_inner_mut().set_content("");
+                    } else {
+                        panic!("working_panel view not found");
                     }
                 }))
                 .unwrap();
@@ -465,12 +473,8 @@ fn update_chat_ui(
             let mut styled = StyledString::new();
 
             // only keep last 10 messages
-            let messages: Vec<(String, String)> = messages
-                .into_iter()
-                .rev()
-                .take(10)
-                .rev()
-                .collect();
+            let messages: Vec<(String, String)> =
+                messages.into_iter().rev().take(10).rev().collect();
 
             for (role, content) in messages.iter().filter(|(r, _)| r != "system") {
                 let (label_style, prefix) = match role.as_str() {
@@ -491,8 +495,10 @@ fn update_chat_ui(
 
             view.set_content(styled);
 
-            if let Some(mut scroll_view) = s.find_name::<ScrollView<TextView>>("chat_scroll") {
+            if let Some(mut scroll_view) = s.find_name::<ScrollView<ResizedView<NamedView<TextView>>>>("chat_scroll") {
                 scroll_view.scroll_to_bottom();
+            } else {
+                panic!("ScrollView 'chat_scroll' not found");
             }
 
             // Update working indicator visibility
@@ -502,6 +508,8 @@ fn update_chat_ui(
                 } else {
                     view.get_inner_mut().set_content("");
                 }
+            } else {
+                panic!("working_panel view not found");
             }
         }))
         .unwrap();
@@ -768,7 +776,7 @@ fn launch_tui() {
         minerve.chat(content, s.cb_sink().clone());
 
         // Clear input
-        s.call_on_name("input", |view: &mut TextArea| view.set_content("") );
+        s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
 
         // Select the input for better UX after querying OpenAPI
         s.call_on_name("input", |view: &mut TextArea| {
@@ -857,13 +865,46 @@ fn launch_tui() {
                 .child(input_view.full_width())
                 .child(submit_button),
         )
-            .title("minerve"),
+        .title("minerve"),
     );
 
     siv.run();
 }
 
+use std::fs::OpenOptions;
+use std::io::Write;
+
 fn main() {
+    // Open panic.log file for appending
+    let panic_log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("panic.log")
+        .expect("Failed to open panic.log");
+
+    let panic_log_file = std::sync::Mutex::new(panic_log_file);
+
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let mut file = panic_log_file.lock().unwrap();
+        let msg = match panic_info.payload().downcast_ref::<&str>() {
+            Some(s) => *s,
+            None => match panic_info.payload().downcast_ref::<String>() {
+                Some(s) => &s[..],
+                None => "Unknown panic payload",
+            },
+        };
+
+        let location = if let Some(location) = panic_info.location() {
+            format!("{}:{}", location.file(), location.line())
+        } else {
+            "Unknown location".to_string()
+        };
+
+        let log_message = format!("Panic occurred at {}: {}\n", location, msg);
+
+        let _ = file.write_all(log_message.as_bytes());
+    }));
+
     let cli = Cli::parse();
 
     if let Some(prompt) = cli.prompt {
