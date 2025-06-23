@@ -669,9 +669,11 @@ impl HistoryTracker {
     }
 }
 
-// Removed dummy_cb_sink as it's no longer needed.
+use std::fs::OpenOptions;
+use std::io::Write;
 
 fn run_headless(prompt: String) {
+    println!("run_headless started with prompt: {}", prompt);
     let minerve = Minerve::new();
     let rt = Runtime::new().unwrap();
 
@@ -738,6 +740,7 @@ fn run_headless(prompt: String) {
 
             let url = format!("{}/chat/completions", base_url);
 
+            println!("Sending POST request to {}", url);
             let chat_result = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", api_key))
@@ -745,11 +748,14 @@ fn run_headless(prompt: String) {
                 .json(&request)
                 .send()
                 .await;
+            println!("POST request sent, awaiting response...");
 
             match chat_result {
                 Ok(response) => {
+                    println!("Response received, attempting to parse JSON...");
                     match response.json::<ChatCompletionResponse>().await {
                         Ok(chat_response) => {
+                            println!("JSON parsing succeeded.");
                             let choice = chat_response.choices.first().unwrap();
                             let assistant_message = &choice.message;
 
@@ -770,6 +776,7 @@ fn run_headless(prompt: String) {
 
                             // Handle function call if present
                             if let Some(function_call) = &assistant_message.function_call {
+                                println!("Handling function call: {}", function_call.name);
                                 let function_message =
                                     handle_function_call(function_call, None).await;
                                 history.push(function_message);
@@ -789,7 +796,9 @@ fn run_headless(prompt: String) {
             }
         }
     });
+    println!("run_headless completed.");
 }
+
 
 fn launch_tui() {
     let mut siv = cursive::default();
@@ -911,9 +920,6 @@ fn launch_tui() {
 
     siv.run();
 }
-
-use std::fs::OpenOptions;
-use std::io::Write;
 
 fn main() {
     // Open panic.log file for appending
