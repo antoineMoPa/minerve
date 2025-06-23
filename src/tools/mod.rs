@@ -11,8 +11,6 @@ pub enum ParamName {
     Dir,
     SearchString,
     PathPattern,
-    Mode,
-    Content,
 }
 
 impl ParamName {
@@ -22,8 +20,6 @@ impl ParamName {
             ParamName::Dir => "dir",
             ParamName::SearchString => "search_string",
             ParamName::PathPattern => "path_pattern",
-            ParamName::Mode => "mode",
-            ParamName::Content => "content",
         }
     }
 }
@@ -48,8 +44,6 @@ impl ToolParams {
     pub fn get_string_optional(&self, param: &str, default: &str) -> String {
         self.args.get(param).cloned().unwrap_or_else(|| default.to_string())
     }
-
-
 }
 
 #[async_trait]

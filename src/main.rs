@@ -2,7 +2,7 @@ use cursive::event::EventResult;
 use cursive::theme::ColorStyle;
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
-use cursive::views::{Dialog, LinearLayout, OnEventView, ScrollView, TextArea, TextView};
+use cursive::views::{Dialog, LinearLayout, OnEventView, ResizedView, ScrollView, TextArea, TextView};
 use dotenvy::from_path;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -104,12 +104,15 @@ fn custom_theme() -> Theme {
 }
 
 /// Holds app state and the OpenAI runtime
+use std::sync::atomic::AtomicBool;
+
 struct Minerve {
     messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     rt: Runtime,
     client: Client,
     api_key: String,
     base_url: String,
+    request_in_flight: Arc<AtomicBool>,
 }
 
 pub async fn handle_function_call(function_call: &ChatCompletionFunctionCall) -> ChatCompletionMessage {
@@ -185,10 +188,15 @@ impl Minerve {
             client: Client::new(),
             api_key,
             base_url,
+            request_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
     fn chat(&self, user_input: String, cb_sink: cursive::CbSink) {
+        use std::sync::atomic::Ordering;
+
+        self.request_in_flight.store(true, Ordering::SeqCst);
+
         let mut msgs = self.messages.lock().unwrap();
         let user_message = ChatCompletionMessage {
             role: ChatCompletionMessageRole::User,
@@ -205,12 +213,20 @@ impl Minerve {
                 ChatCompletionMessageRole::System => "system".to_string(),
                 ChatCompletionMessageRole::User => "user".to_string(),
                 ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                ChatCompletionMessageRole::Function => "function".to_string(),
+                ChatCompletionMessageRole::Function => msg.tool_call_id.clone().unwrap_or(String::from("unknown function call")),
             };
             (role, msg.content.clone().unwrap_or_default())
         }).collect();
 
-        update_chat_ui(cb_sink.clone(), ui_messages);
+        let request_status = false;
+        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+
+        // Show working indicator
+        cb_sink.send(Box::new(|s| {
+            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                view.get_inner_mut().set_content("working...");
+            }
+        })).unwrap();
 
         let messages = msgs.clone();
         drop(msgs); // unlock before async
@@ -219,6 +235,7 @@ impl Minerve {
         let api_key = self.api_key.clone();
         let base_url = self.base_url.clone();
         let messages_clone = self.messages.clone();
+        let request_in_flight = self.request_in_flight.clone();
 
         self.rt.spawn(async move {
             let mut history: Vec<ChatCompletionMessage> = messages;
@@ -301,12 +318,13 @@ impl Minerve {
                                         ChatCompletionMessageRole::System => "system".to_string(),
                                         ChatCompletionMessageRole::User => "user".to_string(),
                                         ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                                        ChatCompletionMessageRole::Function => "function".to_string(),
+                                        ChatCompletionMessageRole::Function => msg.tool_call_id.clone().unwrap_or(String::from("unknown function call")),
                                     };
                                     (role, msg.content.clone().unwrap_or_default())
                                 }).collect();
 
-                                update_chat_ui(cb_sink.clone(), ui_messages);
+                                let request_status = false;
+        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
                             }
                             Err(json_err) => {
                                 let error_msg = format!("JSON Error: {}", json_err);
@@ -325,12 +343,13 @@ impl Minerve {
                                         ChatCompletionMessageRole::System => "system".to_string(),
                                         ChatCompletionMessageRole::User => "user".to_string(),
                                         ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                                        ChatCompletionMessageRole::Function => "function".to_string(),
+                                        ChatCompletionMessageRole::Function => msg.tool_call_id.clone().unwrap_or(String::from("unknown function call")),
                                     };
                                     (role, msg.content.clone().unwrap_or_default())
                                 }).collect();
 
-                                update_chat_ui(cb_sink.clone(), ui_messages);
+                                let request_status = false;
+        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
                                 break;
                             }
                         }
@@ -352,21 +371,30 @@ impl Minerve {
                                 ChatCompletionMessageRole::System => "system".to_string(),
                                 ChatCompletionMessageRole::User => "user".to_string(),
                                 ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                                ChatCompletionMessageRole::Function => "function".to_string(),
+                                ChatCompletionMessageRole::Function => msg.tool_call_id.clone().unwrap_or(String::from("unknown function call")),
                             };
                             (role, msg.content.clone().unwrap_or_default())
                         }).collect();
 
-                        update_chat_ui(cb_sink.clone(), ui_messages);
+                        let request_status = false;
+        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
                         break;
                     }
                 }
             }
+
+            // Hide working indicator on finish
+            request_in_flight.store(false, Ordering::SeqCst);
+            cb_sink.send(Box::new(|s| {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                    view.get_inner_mut().set_content("");
+                }
+            })).unwrap();
         });
     }
 }
 
-fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
+fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>, request_in_flight: bool) {
     cb_sink.send(Box::new(move |s| {
         let mut view = s
             .find_name::<TextView>("chat")
@@ -374,13 +402,10 @@ fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
 
         let mut styled = StyledString::new();
 
-        // can be useful to know the sys prompt.
-        //for (role, content) in messages.iter().filter(|(r, _)| r != "system") {
-        for (role, content) in messages.iter() {
+        for (role, content) in messages.iter().filter(|(r, _)| r != "system") {
             let (label_style, prefix) = match role.as_str() {
                 "user" => (ColorStyle::new(Color::Dark(BaseColor::Green), Color::TerminalDefault), "You"),
                 "minerve" => (ColorStyle::new(Color::Dark(BaseColor::Cyan), Color::TerminalDefault), "Minerve"),
-                "function" => (ColorStyle::new(Color::Dark(BaseColor::Yellow), Color::TerminalDefault), "Function"),
                 _ => (ColorStyle::primary(), role.as_str()),
             };
 
@@ -393,8 +418,18 @@ fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>) {
         if let Some(mut scroll_view) = s.find_name::<ScrollView<TextView>>("chat_scroll") {
             scroll_view.scroll_to_bottom();
         }
+
+        // Update working indicator visibility
+        if let Some(mut view) = s.find_name::<TextView>("working_panel") {
+            if request_in_flight {
+                view.set_content("working...");
+            } else {
+                view.set_content("");
+            }
+        }
     })).unwrap();
 }
+
 
 pub fn get_system_prompt() -> String {
     return String::from(r#"
@@ -402,16 +437,17 @@ const SYSTEM_PROMPT = `
 You are **Minerve**, a shell assistant that behaves like a professional software developer.
 
 Guidance:
-1. Be proactive at using tools instead of asking.
-2. Assume you are somewhere in a repository with files.
-3. Confirm your changes worked
-- Example: read the file after editing it.
-4. Think and act swiftly, like a developper. You have limited tools, but use them effectively.
-5. Be curious and explore the environment before asking questions.
-6. First thing you should do is likely to use a tool to get context.
-7. Remain critical of your tools and evaluate if they work as they are still in development.
-8. You may be working on yourself, but the current session still uses old code.
-
+-  Be proactive at using tools instead of asking.
+-  Assume you are somewhere in a repository with files.
+-  Confirm your changes worked
+ - Example: read the file after editing it.
+ - Run cargo check or other compile check tool.
+-  Think and act swiftly, like a developper. You have limited tools, but use them effectively.
+-  Be curious and explore the environment before asking questions.
+-  First thing you should do is likely to use a tool to get context.
+-  Remain critical of your tools and evaluate if they work as they are still in development.
+-  You may be working on yourself, but the current session still uses old code.
+-  Privilege small changes (10 lines) with compile check in-between.
 
 Dont's:
 
@@ -429,21 +465,7 @@ Don't ask questions that can be figured out from prompt, context or by using the
  - Instead, figure out yourself.
 
 Don't say "I read file XYZ". just read it directly with the tools.
-`;
-
-Immediately use the tools available after stating your intention.
-
-Example good chats:
-
-Q: What is this repo about?
-
-A: <tool name="get_general_context"></tool>
-
-Tool: ...
-
-A: This appears to be a repo about XYZ.
-
-"#);
+`;"#);
 }
 
 struct HistoryTracker {
@@ -659,6 +681,14 @@ fn launch_tui() {
     });
 
     let chat_view = TextView::new("").with_name("chat").full_height();
+    use cursive::theme::{BaseColor, Color, ColorStyle};
+
+let working_panel = TextView::new("")
+    .center()
+    .style(ColorStyle::new(Color::Dark(BaseColor::Magenta), Color::TerminalDefault))
+    .fixed_height(3)
+    .with_name("working_panel");
+    let status_view = TextView::new("").with_name("status");
     let input_view = TextArea::new().with_name("input");
     let history_tracker_for_up = history_tracker.clone();
     let history_tracker_for_down = history_tracker.clone();
@@ -716,9 +746,11 @@ fn launch_tui() {
     siv.add_fullscreen_layer(
         Dialog::around(
             LinearLayout::vertical()
-                .child(scroll_chat_view)
-                .child(input_view.full_width())
-                .child(submit_button)
+                            .child(scroll_chat_view)
+            .child(working_panel)
+            .child(status_view)
+            .child(input_view.full_width())
+            .child(submit_button)
 
         ).title("minerve"),
     );
