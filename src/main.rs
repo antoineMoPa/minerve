@@ -121,6 +121,7 @@ struct Minerve {
 
 pub async fn handle_function_call(
     function_call: &ChatCompletionFunctionCall,
+    cb_sink: cursive::CbSink,
 ) -> ChatCompletionMessage {
     let registry = get_tool_registry();
     let function_name = &function_call.name;
@@ -144,7 +145,32 @@ pub async fn handle_function_call(
                     .collect(),
                 _ => HashMap::new(),
             };
+
+        let function_name_for_indicator = function_name.clone();
+
+        // Show working indicator
+        let _ = cb_sink.send(Box::new(move |s| {
+            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                let message = format!("Running tool: {}", function_name_for_indicator);
+                view.get_inner_mut().set_content(message);
+            } else {
+                panic!("working_panel view not found");
+            }
+        }));
+
         let result = tool.run(args).await;
+
+        let function_name_for_indicator = function_name.clone();
+
+        // Hide working indicator
+        let _ = cb_sink.send(Box::new(move |s| {
+            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                let message = format!("Reading tool result: {}", function_name_for_indicator);
+                view.get_inner_mut().set_content(message);
+            } else {
+                panic!("working_panel view not found");
+            }
+        }));
 
         ChatCompletionMessage {
             role: ChatCompletionMessageRole::Function,
@@ -334,16 +360,16 @@ impl Minerve {
 
                                 // Handle function call if present
                                 if let Some(function_call) = &assistant_message.function_call {
-                                    let function_message =
-                                        handle_function_call(function_call).await;
+                                                                    let function_message =
+                                    handle_function_call(function_call, cb_sink.clone()).await;
 
-                                    if function_message.content.is_some() {
-                                        let mut msgs = messages_clone.lock().unwrap();
-                                        msgs.push(function_message.clone());
-                                    }
+                                if function_message.content.is_some() {
+                                    let mut msgs = messages_clone.lock().unwrap();
+                                    msgs.push(function_message.clone());
+                                }
 
-                                    history.push(function_message);
-                                    should_continue = true;
+                                history.push(function_message);
+                                should_continue = true;
                                 }
 
                                 let ui_messages = messages_clone
@@ -646,6 +672,12 @@ impl HistoryTracker {
     }
 }
 
+fn dummy_cb_sink() -> cursive::CbSink {
+    let mut siv = cursive::default();
+    siv.cb_sink().clone()
+}
+
+
 fn run_headless(prompt: String) {
     let minerve = Minerve::new();
     let rt = Runtime::new().unwrap();
@@ -745,7 +777,7 @@ fn run_headless(prompt: String) {
 
                             // Handle function call if present
                             if let Some(function_call) = &assistant_message.function_call {
-                                let function_message = handle_function_call(function_call).await;
+                                let function_message = handle_function_call(function_call, dummy_cb_sink()).await;
                                 history.push(function_message);
                                 should_continue = true;
                             }
@@ -764,6 +796,7 @@ fn run_headless(prompt: String) {
         }
     });
 }
+
 
 fn launch_tui() {
     let mut siv = cursive::default();
