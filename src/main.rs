@@ -464,6 +464,8 @@ fn update_chat_ui(
     messages: Vec<(String, String)>,
     request_in_flight: bool,
 ) {
+    const MAX_OUTPUT_LEN: usize = 500;
+
     cb_sink
         .send(Box::new(move |s| {
             let mut view = s
@@ -490,7 +492,15 @@ fn update_chat_ui(
                 };
 
                 styled.append_styled(format!("{}:\n", prefix), label_style);
-                styled.append(format!("{}\n\n", content));
+
+                // Truncate content if too long
+                let truncated_content = if content.len() > MAX_OUTPUT_LEN {
+                    format!("{}\n...[truncated]", &content[..MAX_OUTPUT_LEN])
+                } else {
+                    content.to_string()
+                };
+
+                styled.append(format!("{}\n\n", truncated_content));
             }
 
             view.set_content(styled);
@@ -514,6 +524,7 @@ fn update_chat_ui(
         }))
         .unwrap();
 }
+
 
 pub fn get_system_prompt() -> String {
     return String::from(
