@@ -420,11 +420,11 @@ fn update_chat_ui(cb_sink: cursive::CbSink, messages: Vec<(String, String)>, req
         }
 
         // Update working indicator visibility
-        if let Some(mut view) = s.find_name::<TextView>("working_panel") {
+        if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
             if request_in_flight {
-                view.set_content("working...");
+                view.get_inner_mut().set_content("working...");
             } else {
-                view.set_content("");
+                view.get_inner_mut().set_content("");
             }
         }
     })).unwrap();
