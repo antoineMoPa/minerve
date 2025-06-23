@@ -497,47 +497,6 @@ impl Tool for RunCargoCheckTool {
     }
 }
 
-pub struct RunShellCommandTool;
-
-#[async_trait]
-impl Tool for RunShellCommandTool {
-    fn name(&self) -> &'static str {
-        "run_shell_command"
-    }
-
-    fn description(&self) -> &'static str {
-        "Runs an arbitrary shell command. Use with extreme caution and only with explicit permission from the user."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        let mut params = HashMap::new();
-        params.insert("command", "string");
-        params
-    }
-
-    async fn run(&self, args: HashMap<String, String>) -> String {
-        let params = ToolParams::new(args);
-        let command = match params.get_string("command") {
-            Ok(cmd) => cmd,
-            Err(e) => return e,
-        };
-
-        // Note: This runs through 'sh -c' to support complex commands
-        match Command::new("sh").arg("-c").arg(&command).output() {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                if output.status.success() {
-                    stdout
-                } else {
-                    format!("[Error] {}", stderr)
-                }
-            }
-            Err(e) => format!("[Error] {}", e),
-        }
-    }
-}
-
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
@@ -553,7 +512,6 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("show_file", Arc::new(ShowFileTool));
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
-    map.insert("run_shell_command", Arc::new(RunShellCommandTool));
 
     map
 }
