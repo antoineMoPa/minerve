@@ -501,7 +501,7 @@ fn update_chat_ui(
                     if role == "function" {
                         format!("{}\n...[truncated]", &content[..MAX_OUTPUT_LEN])
                     } else {
-                        content.to_string()
+                        content.trim().to_string()
                     }
                 } else {
                     content.to_string()
@@ -650,10 +650,9 @@ impl HistoryTracker {
 }
 
 fn dummy_cb_sink() -> cursive::CbSink {
-    let mut siv = cursive::default();
+    let siv = cursive::default();
     siv.cb_sink().clone()
 }
-
 
 fn run_headless(prompt: String) {
     let minerve = Minerve::new();
