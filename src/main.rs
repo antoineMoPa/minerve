@@ -7,7 +7,7 @@ use cursive::theme::{
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
 use cursive::views::{
-    Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView
+    Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView,
 };
 use dotenvy::from_path;
 use reqwest::Client;
@@ -121,7 +121,7 @@ struct Minerve {
 
 pub async fn handle_function_call(
     function_call: &ChatCompletionFunctionCall,
-    cb_sink: cursive::CbSink,
+    cb_sink: Option<cursive::CbSink>,
 ) -> ChatCompletionMessage {
     let registry = get_tool_registry();
     let function_name = &function_call.name;
@@ -149,28 +149,32 @@ pub async fn handle_function_call(
         let function_name_for_indicator = function_name.clone();
 
         // Show working indicator
-        let _ = cb_sink.send(Box::new(move |s| {
-            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
-                let message = format!("Running tool: {}", function_name_for_indicator);
-                view.get_inner_mut().set_content(message);
-            } else {
-                panic!("working_panel view not found");
-            }
-        }));
+        if let Some(cb_sink) = &cb_sink {
+            let _ = cb_sink.send(Box::new(move |s| {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                    let message = format!("Running tool: {}", function_name_for_indicator);
+                    view.get_inner_mut().set_content(message);
+                } else {
+                    panic!("working_panel view not found");
+                }
+            }));
+        }
 
         let result = tool.run(args).await;
 
         let function_name_for_indicator = function_name.clone();
 
         // Hide working indicator
-        let _ = cb_sink.send(Box::new(move |s| {
-            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
-                let message = format!("Reading tool result: {}", function_name_for_indicator);
-                view.get_inner_mut().set_content(message);
-            } else {
-                panic!("working_panel view not found");
-            }
-        }));
+        if let Some(cb_sink) = &cb_sink {
+            let _ = cb_sink.send(Box::new(move |s| {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                    let message = format!("Reading tool result: {}", function_name_for_indicator);
+                    view.get_inner_mut().set_content(message);
+                } else {
+                    panic!("working_panel view not found");
+                }
+            }));
+        }
 
         ChatCompletionMessage {
             role: ChatCompletionMessageRole::Function,
@@ -395,16 +399,17 @@ impl Minerve {
 
                                 // Handle function call if present
                                 if let Some(function_call) = &assistant_message.function_call {
-                                                                    let function_message =
-                                    handle_function_call(function_call, cb_sink.clone()).await;
+                                    let function_message =
+                                        handle_function_call(function_call, Some(cb_sink.clone()))
+                                            .await;
 
-                                if function_message.content.is_some() {
-                                    let mut msgs = messages_clone.lock().unwrap();
-                                    msgs.push(function_message.clone());
-                                }
+                                    if function_message.content.is_some() {
+                                        let mut msgs = messages_clone.lock().unwrap();
+                                        msgs.push(function_message.clone());
+                                    }
 
-                                history.push(function_message);
-                                should_continue = true;
+                                    history.push(function_message);
+                                    should_continue = true;
                                 }
 
                                 let ui_messages = messages_clone
@@ -434,14 +439,22 @@ impl Minerve {
                             }
                             Err(json_err) => {
                                 let error_msg = format!("JSON Error: {}", json_err);
-                                Self::add_assistant_message_with_update_ui(&messages_clone, error_msg, &cb_sink);
+                                Self::add_assistant_message_with_update_ui(
+                                    &messages_clone,
+                                    error_msg,
+                                    &cb_sink,
+                                );
                                 break;
                             }
                         }
                     }
                     Err(req_err) => {
                         let error_msg = format!("Request Error: {}", req_err);
-                        Self::add_assistant_message_with_update_ui(&messages_clone, error_msg, &cb_sink);
+                        Self::add_assistant_message_with_update_ui(
+                            &messages_clone,
+                            error_msg,
+                            &cb_sink,
+                        );
                         break;
                     }
                 }
@@ -512,7 +525,9 @@ fn update_chat_ui(
 
             view.set_content(styled);
 
-            if let Some(mut scroll_view) = s.find_name::<ScrollView<ResizedView<NamedView<TextView>>>>("chat_scroll") {
+            if let Some(mut scroll_view) =
+                s.find_name::<ScrollView<ResizedView<NamedView<TextView>>>>("chat_scroll")
+            {
                 scroll_view.scroll_to_bottom();
             } else {
                 panic!("ScrollView 'chat_scroll' not found");
@@ -531,7 +546,6 @@ fn update_chat_ui(
         }))
         .unwrap();
 }
-
 
 pub fn get_system_prompt() -> String {
     return String::from(
@@ -655,10 +669,7 @@ impl HistoryTracker {
     }
 }
 
-fn dummy_cb_sink() -> cursive::CbSink {
-    let siv = cursive::default();
-    siv.cb_sink().clone()
-}
+// Removed dummy_cb_sink as it's no longer needed.
 
 fn run_headless(prompt: String) {
     let minerve = Minerve::new();
@@ -759,7 +770,8 @@ fn run_headless(prompt: String) {
 
                             // Handle function call if present
                             if let Some(function_call) = &assistant_message.function_call {
-                                let function_message = handle_function_call(function_call, dummy_cb_sink()).await;
+                                let function_message =
+                                    handle_function_call(function_call, None).await;
                                 history.push(function_message);
                                 should_continue = true;
                             }
@@ -778,7 +790,6 @@ fn run_headless(prompt: String) {
         }
     });
 }
-
 
 fn launch_tui() {
     let mut siv = cursive::default();
