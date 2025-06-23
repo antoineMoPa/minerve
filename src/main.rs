@@ -498,7 +498,7 @@ fn update_chat_ui(
 
                 // Truncate content if too long
                 let truncated_content = if content.len() > MAX_OUTPUT_LEN {
-                    if role == "function" {
+                    if role != "minerve" {
                         format!("{}\n...[truncated]", &content[..MAX_OUTPUT_LEN])
                     } else {
                         content.trim().to_string()
@@ -606,6 +606,12 @@ impl HistoryTracker {
     fn add_prompt(&mut self, prompt: String) {
         {
             let mut prompts = self.previous_prompts.lock().unwrap();
+            if let Some(last) = prompts.last() {
+                if last == &prompt {
+                    // skip duplicate subsequent prompt
+                    return;
+                }
+            }
             prompts.push(prompt);
         }
         self.index = None;
