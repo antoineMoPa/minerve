@@ -288,14 +288,13 @@ impl Tool for ShowFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Shows the content of a file without line numbers for easier content-based editing. Supports pagination with optional 'start_line' and 'num_lines' parameters."
+        "Shows the content of a file without line numbers for easier content-based editing."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
         params.insert(ParamName::FilePath.as_str(), "string");
         params.insert("start_line", "optional u64");
-        params.insert("num_lines", "optional u64");
         params
     }
 
@@ -306,34 +305,9 @@ impl Tool for ShowFileTool {
             Err(e) => return e,
         };
 
-        let start_line: usize = params
-            .get_string("start_line")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let num_lines: usize = params
-            .get_string("num_lines")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(100); // default 100
-
         match fs::read_to_string(&path) {
             Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                if start_line >= lines.len() {
-                    return format!("[Error] start_line {} is beyond end of file", start_line);
-                }
-
-                let end_line = usize::min(start_line + num_lines, lines.len());
-                let page_lines = &lines[start_line..end_line];
-
-                let page_content = page_lines.join("\n");
-
-                format!("[Showing lines {} to {} of file '{}']\n{}",
-                    start_line + 1,
-                    end_line,
-                    path,
-                    page_content)
+                content
             }
             Err(e) => format!("[Error] Failed to read file: {}", e),
         }
