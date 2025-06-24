@@ -315,7 +315,7 @@ impl Tool for ShowFileTool {
             .get_string("num_lines")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(50); // default 50 lines per page
+            .unwrap_or(100); // default 100
 
         match fs::read_to_string(&path) {
             Ok(content) => {
@@ -356,7 +356,7 @@ impl Tool for ReplaceContentTool {
         let mut params = HashMap::new();
         params.insert(ParamName::FilePath.as_str(), "string");
         params.insert("old_content", "string");
-        params.insert("new_content", "string");
+        params.insert("new_content", "optional string");
         params
     }
 

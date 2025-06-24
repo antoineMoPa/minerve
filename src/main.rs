@@ -119,15 +119,15 @@ struct Minerve {
     request_in_flight: Arc<AtomicBool>,
 }
 
-pub async fn handle_function_call(
-    function_call: &ChatCompletionFunctionCall,
+pub async fn handle_tool_call(
+    tool_call: &ChatCompletionFunctionCall,
     cb_sink: Option<cursive::CbSink>,
 ) -> ChatCompletionMessage {
     let registry = get_tool_registry();
-    let function_name = &function_call.name;
-    let args_str = &function_call.arguments;
+    let tool_name = &tool_call.name;
+    let args_str = &tool_call.arguments;
 
-    if let Some(tool) = registry.get(function_name.as_str()) {
+    if let Some(tool) = registry.get(tool_name.as_str()) {
         // Parse as generic JSON value first, then convert all values to strings
         let args: HashMap<String, String> =
             match serde_json::from_str::<serde_json::Value>(args_str) {
@@ -146,32 +146,32 @@ pub async fn handle_function_call(
                 _ => HashMap::new(),
             };
 
-        let function_name_for_indicator = function_name.clone();
+        let function_name_for_indicator = tool_name.clone();
 
         // Show working indicator
         if let Some(cb_sink) = &cb_sink {
             let _ = cb_sink.send(Box::new(move |s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                     let message = format!("Running tool: {}", function_name_for_indicator);
                     view.get_inner_mut().set_content(message);
                 } else {
-                    panic!("working_panel view not found");
+                    panic!("working_textview view not found");
                 }
             }));
         }
 
         let result = tool.run(args).await;
 
-        let function_name_for_indicator = function_name.clone();
+        let function_name_for_indicator = tool_name.clone();
 
         // Hide working indicator
         if let Some(cb_sink) = &cb_sink {
             let _ = cb_sink.send(Box::new(move |s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                     let message = format!("Reading tool result: {}", function_name_for_indicator);
                     view.get_inner_mut().set_content(message);
                 } else {
-                    panic!("working_panel view not found");
+                    panic!("working_textview view not found");
                 }
             }));
         }
@@ -179,16 +179,16 @@ pub async fn handle_function_call(
         ChatCompletionMessage {
             role: ChatCompletionMessageRole::Function,
             content: Some(result),
-            name: Some(function_name.clone()),
+            name: Some(tool_name.clone()),
             function_call: None,
-            tool_call_id: Some(function_call.name.clone()),
+            tool_call_id: Some(tool_call.name.clone()),
             tool_calls: None,
         }
     } else {
         ChatCompletionMessage {
             role: ChatCompletionMessageRole::Function,
-            content: Some(format!("Error: Function '{}' not found", function_name)),
-            name: Some(function_name.clone()),
+            content: Some(format!("Error: Function '{}' not found", tool_name)),
+            name: Some(tool_name.clone()),
             function_call: None,
             tool_call_id: None,
             tool_calls: None,
@@ -302,10 +302,10 @@ impl Minerve {
         // Show working indicator
         cb_sink
             .send(Box::new(|s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                     view.get_inner_mut().set_content("working...");
                 } else {
-                    panic!("working_panel view not found");
+                    panic!("working_textview view not found");
                 }
             }))
             .unwrap();
@@ -400,7 +400,7 @@ impl Minerve {
                                 // Handle function call if present
                                 if let Some(function_call) = &assistant_message.function_call {
                                     let function_message =
-                                        handle_function_call(function_call, Some(cb_sink.clone()))
+                                        handle_tool_call(function_call, Some(cb_sink.clone()))
                                             .await;
 
                                     if function_message.content.is_some() {
@@ -464,10 +464,10 @@ impl Minerve {
             request_in_flight.store(false, Ordering::SeqCst);
             cb_sink
                 .send(Box::new(|s| {
-                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                         view.get_inner_mut().set_content("");
                     } else {
-                        panic!("working_panel view not found");
+                        panic!("working_textview view not found");
                     }
                 }))
                 .unwrap();
@@ -534,14 +534,14 @@ fn update_chat_ui(
             }
 
             // Update working indicator visibility
-            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_panel") {
+            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                 if request_in_flight {
                     view.get_inner_mut().set_content("working...");
                 } else {
                     view.get_inner_mut().set_content("");
                 }
             } else {
-                panic!("working_panel view not found");
+                panic!("working_textview view not found");
             }
         }))
         .unwrap();
@@ -778,7 +778,7 @@ fn run_headless(prompt: String) {
                             if let Some(function_call) = &assistant_message.function_call {
                                 println!("Handling function call: {}", function_call.name);
                                 let function_message =
-                                    handle_function_call(function_call, None).await;
+                                    handle_tool_call(function_call, None).await;
                                 history.push(function_message);
                                 should_continue = true;
                             }
@@ -838,14 +838,14 @@ fn launch_tui() {
     let chat_view = TextView::new("").with_name("chat").full_height();
     use cursive::theme::{BaseColor, Color, ColorStyle};
 
-    let working_panel = TextView::new("")
+    let working_textview = TextView::new("")
         .center()
         .style(ColorStyle::new(
             Color::Dark(BaseColor::Magenta),
             Color::TerminalDefault,
         ))
         .fixed_height(3)
-        .with_name("working_panel");
+        .with_name("working_textview");
     let status_view = TextView::new("").with_name("status");
     let input_view = TextArea::new().with_name("input");
     let history_tracker_for_up = history_tracker.clone();
@@ -910,7 +910,7 @@ fn launch_tui() {
         Dialog::around(
             LinearLayout::vertical()
                 .child(scroll_chat_view)
-                .child(working_panel)
+                .child(working_textview)
                 .child(status_view)
                 .child(input_view.full_width())
                 .child(submit_button),
