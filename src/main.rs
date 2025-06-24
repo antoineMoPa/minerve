@@ -336,6 +336,17 @@ impl Minerve {
             while should_continue {
                 should_continue = false;
 
+                // Show working indicator at start of each loop iteration
+                cb_sink
+                    .send(Box::new(|s| {
+                        if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
+                            view.get_inner_mut().set_content("working...");
+                        } else {
+                            panic!("working_textview view not found");
+                        }
+                    }))
+                    .unwrap();
+
                 // Prepare history with cleaned older function outputs
                 let history_len = history.len();
                 let mut cleaned_history = history.clone();
