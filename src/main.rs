@@ -122,7 +122,11 @@ struct Minerve {
 pub async fn handle_tool_call(
     tool_call: &ChatCompletionFunctionCall,
     cb_sink: Option<cursive::CbSink>,
+    is_headless: bool,
 ) -> ChatCompletionMessage {
+    let settings = tools::ExecuteCommandSettings {
+        is_headless,
+    };
     let registry = get_tool_registry();
     let tool_name = &tool_call.name;
     let args_str = &tool_call.arguments;
@@ -149,57 +153,56 @@ pub async fn handle_tool_call(
         if tool_name.as_str() == "run_shell_command" {
             if let Some(cb_sink) = &cb_sink {
                 use std::sync::mpsc::sync_channel;
-                use cursive::views::{Dialog};
+                use cursive::views::Dialog;
 
                 let (tx, rx) = sync_channel::<bool>(0);
-let command = args.get("command").unwrap_or(&String::new()).clone();
+                let command = args.get("command").unwrap_or(&String::new()).clone();
 
-let tx_yes = tx.clone();
-let tx_no = tx.clone();
-let command_for_dialog = command.clone();
+                let tx_yes = tx.clone();
+                let tx_no = tx.clone();
+                let command_for_dialog = command.clone();
 
-// Send confirmation dialog to main UI
-let cb_sink_clone = cb_sink.clone();
-cb_sink_clone
-    .send(Box::new(move |s| {
-        s.add_layer(
-            Dialog::text(format!("Accept running the following shell command?\n{}", command_for_dialog))
-                .button("Yes", move |s| {
-                    s.pop_layer();
-                    let _ = tx_yes.send(true);
-                })
-                .button("No", move |s| {
-                    s.pop_layer();
-                    let _ = tx_no.send(false);
-                }),
-        );
-    }))
-    .unwrap();
+                // Send confirmation dialog to main UI
+                let cb_sink_clone = cb_sink.clone();
+                cb_sink_clone
+                    .send(Box::new(move |s| {
+                        s.add_layer(
+                            Dialog::text(format!("Accept running the following shell command?\n{}", command_for_dialog))
+                                .button("Yes", move |s| {
+                                    s.pop_layer();
+                                    let _ = tx_yes.send(true);
+                                })
+                                .button("No", move |s| {
+                                    s.pop_layer();
+                                    let _ = tx_no.send(false);
+                                }),
+                        );
+                    }))
+                    .unwrap();
 
-// Wait for user confirmation
-let confirmed = rx.recv().unwrap_or(false);
-if !confirmed {
-    return ChatCompletionMessage {
-        role: ChatCompletionMessageRole::Function,
-        content: Some(String::from("Command execution cancelled by user.")),
-        name: Some(tool_name.clone()),
-        function_call: None,
-        tool_call_id: Some(tool_call.name.clone()),
-        tool_calls: None,
-    };
-}
+                // Wait for user confirmation
+                let confirmed = rx.recv().unwrap_or(false);
+                if !confirmed {
+                    return ChatCompletionMessage {
+                        role: ChatCompletionMessageRole::Function,
+                        content: Some(String::from("Command execution cancelled by user.")),
+                        name: Some(tool_name.clone()),
+                        function_call: None,
+                        tool_call_id: Some(tool_call.name.clone()),
+                        tool_calls: None,
+                    };
+                }
 
-// Execute the shell command without additional confirmation UI
-let output = crate::tools::registry::RunShellCommandTool::execute_command(&command);
+                let output = crate::tools::registry::RunShellCommandTool::execute_command(&command, Some(settings));
 
-return ChatCompletionMessage {
-    role: ChatCompletionMessageRole::Function,
-    content: Some(output),
-    name: Some(tool_name.clone()),
-    function_call: None,
-    tool_call_id: Some(tool_call.name.clone()),
-    tool_calls: None,
-};
+                return ChatCompletionMessage {
+                    role: ChatCompletionMessageRole::Function,
+                    content: Some(output),
+                    name: Some(tool_name.clone()),
+                    function_call: None,
+                    tool_call_id: Some(tool_call.name.clone()),
+                    tool_calls: None,
+                };
             }
         }
 
@@ -217,7 +220,8 @@ return ChatCompletionMessage {
             }));
         }
 
-        let result = tool.run(args).await;
+
+        let result = tool.run(args, settings).await;
 
         let function_name_for_indicator = tool_name.clone();
 
@@ -320,7 +324,7 @@ impl Minerve {
         }
     }
 
-    fn chat(&self, user_input: String, cb_sink: cursive::CbSink) {
+    fn chat(&self, user_input: String, cb_sink: cursive::CbSink, is_headless: bool) {
         use std::sync::atomic::Ordering;
 
         self.request_in_flight.store(true, Ordering::SeqCst);
@@ -468,8 +472,8 @@ impl Minerve {
                                 // Handle function call if present
                                 if let Some(function_call) = &assistant_message.function_call {
                                     let function_message =
-                                        handle_tool_call(function_call, Some(cb_sink.clone()))
-                                            .await;
+                                        handle_tool_call(function_call, Some(cb_sink.clone()), is_headless)
+                                        .await;
 
                                     if function_message.content.is_some() {
                                         let mut msgs = messages_clone.lock().unwrap();
@@ -742,6 +746,7 @@ use std::io::Write;
 
 fn run_headless(prompt: String) {
     println!("run_headless started with prompt: {}", prompt);
+    let is_headless = true;
     let minerve = Minerve::new();
     let rt = Runtime::new().unwrap();
 
@@ -842,7 +847,7 @@ fn run_headless(prompt: String) {
                             if let Some(function_call) = &assistant_message.function_call {
                                 println!("Handling function call: {}", function_call.name);
                                 let function_message =
-                                    handle_tool_call(function_call, None).await;
+                                    handle_tool_call(function_call, None, is_headless).await;
                                 history.push(function_message);
                                 should_continue = true;
                             }
@@ -865,6 +870,7 @@ fn run_headless(prompt: String) {
 
 
 fn launch_tui() {
+    let is_headless = false;
     let mut siv = cursive::default();
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
@@ -887,7 +893,7 @@ fn launch_tui() {
             .lock()
             .unwrap()
             .add_prompt(content.clone());
-        minerve.chat(content, s.cb_sink().clone());
+        minerve.chat(content, s.cb_sink().clone(), is_headless);
 
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
@@ -979,7 +985,7 @@ fn launch_tui() {
                 .child(input_view.full_width())
                 .child(submit_button),
         )
-        .title("minerve"),
+            .title("minerve"),
     );
 
     siv.run();

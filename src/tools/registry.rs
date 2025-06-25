@@ -4,9 +4,11 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{self, Write};
 use std::process::Command;
 use std::sync::Arc;
+
+use super::ExecuteCommandSettings;
 
 pub struct GetGeneralContext;
 
@@ -57,7 +59,7 @@ impl Tool for GetGeneralContext {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>) -> String {
+    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let exec = |cmd: &str| {
             Command::new("sh")
                 .arg("-c")
@@ -105,7 +107,7 @@ impl Tool for SearchForStringTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>) -> String {
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let params = ToolParams::new(args);
         let search_string = match params.get_string(ParamName::SearchString.as_str()) {
             Ok(s) => s,
@@ -160,7 +162,7 @@ impl Tool for SearchForPathPatternTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>) -> String {
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let params = ToolParams::new(args);
         let pattern = match params.get_string(ParamName::PathPattern.as_str()) {
             Ok(s) => s,
@@ -212,7 +214,7 @@ impl Tool for ListFilesTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>) -> String {
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let params = ToolParams::new(args);
         let dir = params.get_string_optional(ParamName::Dir.as_str(), ".");
         match fs::read_dir(&dir) {
@@ -241,7 +243,7 @@ impl Tool for GitStatusTool {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>) -> String {
+    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let output = Command::new("git")
             .arg("status")
             .output()
@@ -268,7 +270,7 @@ impl Tool for GitDiffTool {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>) -> String {
+    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let output = Command::new("git")
             .arg("diff")
             .output()
@@ -298,7 +300,7 @@ impl Tool for ShowFileTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>) -> String {
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let params = ToolParams::new(args);
         let path = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
@@ -334,7 +336,7 @@ impl Tool for ReplaceContentTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>) -> String {
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let params = ToolParams::new(args);
         let filepath = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
@@ -484,7 +486,7 @@ impl Tool for RunCargoCheckTool {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>) -> String {
+    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
         let output = Command::new("cargo")
             .arg("check")
             .output()
@@ -503,8 +505,32 @@ impl Tool for RunCargoCheckTool {
 
 pub struct RunShellCommandTool;
 
+impl Default for ExecuteCommandSettings {
+    fn default() -> Self {
+        Self { is_headless: false }
+    }
+}
+
 impl RunShellCommandTool {
-    pub fn execute_command(command: &str) -> String {
+    pub fn execute_command(command: &str, settings: Option<ExecuteCommandSettings>) -> String {
+        let settings = settings.unwrap_or_default();
+
+        if settings.is_headless {
+            // Prompt user for confirmation in headless mode
+            print!("Do you want to run the command '{}'? (y/n): ", command);
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            if let Err(_) = io::stdin().read_line(&mut input) {
+                return String::from("[Error] Failed to read user input");
+            }
+
+            let input = input.trim().to_lowercase();
+            if input != "y" && input != "yes" {
+                return String::from("Command execution cancelled by user.");
+            }
+        }
+
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(command)
@@ -534,16 +560,27 @@ impl Tool for RunShellCommandTool {
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
         params.insert("command", "string");
+        params.insert("is_headless", "string"); // optional param
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>) -> String {
+    async fn run(&self, args: HashMap<String, String>, settings: ExecuteCommandSettings) -> String {
+        self.run_with_settings(args, settings).await
+    }
+}
+
+impl RunShellCommandTool {
+    pub async fn run_with_settings(
+        &self,
+        args: HashMap<String, String>,
+        settings: ExecuteCommandSettings,
+    ) -> String {
         let params = ToolParams::new(args);
         let command = match params.get_string("command") {
             Ok(cmd) => cmd,
             Err(e) => return e,
         };
-        Self::execute_command(&command)
+        Self::execute_command(&command, Some(settings))
     }
 }
 

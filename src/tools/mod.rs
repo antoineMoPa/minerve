@@ -55,13 +55,17 @@ impl ToolParams {
     }
 }
 
+pub struct ExecuteCommandSettings {
+    pub is_headless: bool,
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> HashMap<&'static str, &'static str>;
 
-    async fn run(&self, args: HashMap<String, String>) -> String;
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String;
 
     fn function_definition(&self) -> Value {
         let mut properties = serde_json::Map::new();
