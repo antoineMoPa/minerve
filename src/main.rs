@@ -146,6 +146,63 @@ pub async fn handle_tool_call(
                 _ => HashMap::new(),
             };
 
+        if tool_name.as_str() == "run_shell_command" {
+            if let Some(cb_sink) = &cb_sink {
+                use std::sync::mpsc::sync_channel;
+                use cursive::views::{Dialog};
+
+                let (tx, rx) = sync_channel::<bool>(0);
+let command = args.get("command").unwrap_or(&String::new()).clone();
+
+let tx_yes = tx.clone();
+let tx_no = tx.clone();
+let command_for_dialog = command.clone();
+
+// Send confirmation dialog to main UI
+let cb_sink_clone = cb_sink.clone();
+cb_sink_clone
+    .send(Box::new(move |s| {
+        s.add_layer(
+            Dialog::text(format!("Accept running the following shell command?\n{}", command_for_dialog))
+                .button("Yes", move |s| {
+                    s.pop_layer();
+                    let _ = tx_yes.send(true);
+                })
+                .button("No", move |s| {
+                    s.pop_layer();
+                    let _ = tx_no.send(false);
+                }),
+        );
+    }))
+    .unwrap();
+
+// Wait for user confirmation
+let confirmed = rx.recv().unwrap_or(false);
+if !confirmed {
+    return ChatCompletionMessage {
+        role: ChatCompletionMessageRole::Function,
+        content: Some(String::from("Command execution cancelled by user.")),
+        name: Some(tool_name.clone()),
+        function_call: None,
+        tool_call_id: Some(tool_call.name.clone()),
+        tool_calls: None,
+    };
+}
+
+// Execute the shell command without additional confirmation UI
+let output = crate::tools::registry::RunShellCommandTool::execute_command(&command);
+
+return ChatCompletionMessage {
+    role: ChatCompletionMessageRole::Function,
+    content: Some(output),
+    name: Some(tool_name.clone()),
+    function_call: None,
+    tool_call_id: Some(tool_call.name.clone()),
+    tool_calls: None,
+};
+            }
+        }
+
         let function_name_for_indicator = tool_name.clone();
 
         // Show working indicator
@@ -751,7 +808,6 @@ fn run_headless(prompt: String) {
 
             let url = format!("{}/chat/completions", base_url);
 
-            println!("Sending POST request to {}", url);
             let chat_result = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", api_key))
@@ -759,14 +815,11 @@ fn run_headless(prompt: String) {
                 .json(&request)
                 .send()
                 .await;
-            println!("POST request sent, awaiting response...");
 
             match chat_result {
                 Ok(response) => {
-                    println!("Response received, attempting to parse JSON...");
                     match response.json::<ChatCompletionResponse>().await {
                         Ok(chat_response) => {
-                            println!("JSON parsing succeeded.");
                             let choice = chat_response.choices.first().unwrap();
                             let assistant_message = &choice.message;
 

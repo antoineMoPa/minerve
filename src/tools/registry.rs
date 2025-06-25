@@ -501,6 +501,52 @@ impl Tool for RunCargoCheckTool {
     }
 }
 
+pub struct RunShellCommandTool;
+
+impl RunShellCommandTool {
+    pub fn execute_command(command: &str) -> String {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .map(|out| {
+                if out.status.success() {
+                    String::from_utf8_lossy(&out.stdout).to_string()
+                } else {
+                    format!("[Error] {}", String::from_utf8_lossy(&out.stderr))
+                }
+            })
+            .unwrap_or_else(|e| format!("[Error] {}", e));
+        output
+    }
+}
+
+#[async_trait]
+impl Tool for RunShellCommandTool {
+    fn name(&self) -> &'static str {
+        "run_shell_command"
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs a shell command. Use external UI for confirmation."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("command", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>) -> String {
+        let params = ToolParams::new(args);
+        let command = match params.get_string("command") {
+            Ok(cmd) => cmd,
+            Err(e) => return e,
+        };
+        Self::execute_command(&command)
+    }
+}
+
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
@@ -516,6 +562,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("show_file", Arc::new(ShowFileTool));
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
+    map.insert("run_shell_command", Arc::new(RunShellCommandTool));
 
     map
 }
