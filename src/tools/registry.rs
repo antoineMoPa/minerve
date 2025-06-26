@@ -311,7 +311,14 @@ impl Tool for ShowFileTool {
             Ok(content) => {
                 content
             }
-            Err(e) => format!("[Error] Failed to read file: {}", e),
+            Err(e) => {
+                let error_message = e.to_string();
+                if e.kind() == std::io::ErrorKind::NotFound || error_message.contains("No such file or directory") {
+                    "[file does not exist]".to_string()
+                } else {
+                    format!("[Error] Failed to read file: {}", e)
+                }
+            }
         }
     }
 }
@@ -465,7 +472,27 @@ impl Tool for ReplaceContentTool {
                     }
                 }
             }
-            Err(e) => format!("[Error] Failed to read file: {}", e),
+            Err(e) => {
+                // If file does not exist and old_content is empty, create new file with new_content
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    if old_content.is_empty() {
+                        match fs::write(&filepath, &new_content) {
+                            Ok(_) => {
+                                log_search_replace(&filepath, &old_content, &new_content, true);
+                                return format!("✅ Successfully created new file {}", filepath);
+                            }
+                            Err(e) => {
+                                log_search_replace(&filepath, &old_content, &new_content, false);
+                                return format!("[Error] Failed to create file: {}", e);
+                            }
+                        }
+                    } else {
+                        return format!("[Error] File not found: {}", filepath);
+                    }
+                } else {
+                    format!("[Error] Failed to read file: {}", e)
+                }
+            }
         }
     }
 }
@@ -600,6 +627,45 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("run_shell_command", Arc::new(RunShellCommandTool));
+
+pub struct CreateFileTool;
+
+#[async_trait]
+impl Tool for CreateFileTool {
+    fn name(&self) -> &'static str {
+        "create_file"
+    }
+
+    fn description(&self) -> &'static str {
+        "Creates a new file with specified content."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("filepath", "string");
+        params.insert("content", "optional string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+        let filepath = match args.get("filepath") {
+            Some(f) => f,
+            None => return String::from("[Error] Missing 'filepath' parameter."),
+        };
+
+        let content = match args.get("content") {
+            Some(c) => c.clone(),
+            None => String::new(),
+        };
+
+        match fs::write(filepath, content) {
+            Ok(_) => format!("✅ Successfully created file {}", filepath),
+            Err(e) => format!("[Error] Failed to create file {}: {}", filepath, e),
+        }
+    }
+}
+
+map.insert("create_file", Arc::new(CreateFileTool));
 
     map
 }
