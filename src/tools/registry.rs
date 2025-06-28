@@ -353,7 +353,7 @@ impl Tool for ReplaceContentTool {
             Ok(s) => s,
             Err(e) => return e,
         };
-        let new_content = params.get_string_optional("new_content", "".to_string());
+        let new_content = params.get_string_optional("new_content", "");
 
         // Helper function to normalize whitespace for comparison
         let normalize_whitespace =
