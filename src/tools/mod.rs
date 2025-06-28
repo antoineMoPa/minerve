@@ -65,7 +65,8 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &'static str;
     fn parameters(&self) -> HashMap<&'static str, &'static str>;
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String;
+    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings)
+        -> String;
 
     fn function_definition(&self) -> Value {
         let mut properties = serde_json::Map::new();

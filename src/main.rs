@@ -130,9 +130,7 @@ pub async fn handle_tool_call(
     cb_sink: Option<cursive::CbSink>,
     is_headless: bool,
 ) -> ToolCallResult {
-    let settings = tools::ExecuteCommandSettings {
-        is_headless,
-    };
+    let settings = tools::ExecuteCommandSettings { is_headless };
     let registry = get_tool_registry();
     let tool_name = &tool_call.name;
     let args_str = &tool_call.arguments;
@@ -158,8 +156,8 @@ pub async fn handle_tool_call(
 
         if tool_name.as_str() == "run_shell_command" {
             if let Some(cb_sink) = &cb_sink {
-                use std::sync::mpsc::sync_channel;
                 use cursive::views::Dialog;
+                use std::sync::mpsc::sync_channel;
 
                 let (tx, rx) = sync_channel::<bool>(0);
                 let command = args.get("command").unwrap_or(&String::new()).clone();
@@ -173,15 +171,18 @@ pub async fn handle_tool_call(
                 cb_sink_clone
                     .send(Box::new(move |s| {
                         s.add_layer(
-                            Dialog::text(format!("Accept running the following shell command?\n{}", command_for_dialog))
-                                .button("Yes", move |s| {
-                                    s.pop_layer();
-                                    let _ = tx_yes.send(true);
-                                })
-                                .button("No", move |s| {
-                                    s.pop_layer();
-                                    let _ = tx_no.send(false);
-                                }),
+                            Dialog::text(format!(
+                                "Accept running the following shell command?\n{}",
+                                command_for_dialog
+                            ))
+                            .button("Yes", move |s| {
+                                s.pop_layer();
+                                let _ = tx_yes.send(true);
+                            })
+                            .button("No", move |s| {
+                                s.pop_layer();
+                                let _ = tx_no.send(false);
+                            }),
                         );
                     }))
                     .unwrap();
@@ -192,7 +193,10 @@ pub async fn handle_tool_call(
                     return ToolCallResult::Cancelled;
                 }
 
-                let output = crate::tools::registry::RunShellCommandTool::execute_command(&command, Some(settings));
+                let output = crate::tools::registry::RunShellCommandTool::execute_command(
+                    &command,
+                    Some(settings),
+                );
 
                 return ToolCallResult::Success(ChatCompletionMessage {
                     role: ChatCompletionMessageRole::Function,
@@ -391,7 +395,9 @@ impl Minerve {
                 // Show working indicator at start of each loop iteration
                 cb_sink
                     .send(Box::new(|s| {
-                        if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
+                        if let Some(mut view) =
+                            s.find_name::<ResizedView<TextView>>("working_textview")
+                        {
                             view.get_inner_mut().set_content("working...");
                         } else {
                             panic!("working_textview view not found");
@@ -462,9 +468,12 @@ impl Minerve {
 
                                 // Handle function call if present
                                 if let Some(function_call) = &assistant_message.function_call {
-                                    let tool_call_result =
-                                        handle_tool_call(function_call, Some(cb_sink.clone()), is_headless)
-                                        .await;
+                                    let tool_call_result = handle_tool_call(
+                                        function_call,
+                                        Some(cb_sink.clone()),
+                                        is_headless,
+                                    )
+                                    .await;
 
                                     match tool_call_result {
                                         ToolCallResult::Cancelled => break,
@@ -477,8 +486,13 @@ impl Minerve {
                                             should_continue = true;
                                         }
                                         ToolCallResult::Error(err) => {
-                                            let msg = format!("Error occurred in tool call: {}", err);
-                                            Minerve::add_assistant_message_with_update_ui(&messages_clone, msg, &cb_sink);
+                                            let msg =
+                                                format!("Error occurred in tool call: {}", err);
+                                            Minerve::add_assistant_message_with_update_ui(
+                                                &messages_clone,
+                                                msg,
+                                                &cb_sink,
+                                            );
                                             break;
                                         }
                                     }
@@ -536,7 +550,8 @@ impl Minerve {
             request_in_flight.store(false, Ordering::SeqCst);
             cb_sink
                 .send(Box::new(|s| {
-                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
+                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview")
+                    {
                         view.get_inner_mut().set_content("");
                     } else {
                         panic!("working_textview view not found");
@@ -626,17 +641,18 @@ const SYSTEM_PROMPT = `
 You are **Minerve**, a shell assistant that behaves like a professional software developer.
 
 Guidance:
--  Be proactive at using tools instead of asking.
--  Assume you are somewhere in a repository with files.
--  Confirm your changes worked
+- Be proactive at using tools instead of asking.
+- Assume you are somewhere in a repository with files.
+- Confirm your changes worked
  - Example: read the file after editing it.
  - Run cargo check or other compile check tool.
--  Think and act swiftly, like a developper. You have limited tools, but use them effectively.
--  Be curious and explore the environment before asking questions.
--  First thing you should do is likely to use a tool to get context.
--  Remain critical of your tools and evaluate if they work as they are still in development.
--  You may be working on yourself, but the current session still uses old code.
--  Privilege small changes (10 lines) with compile check in-between.
+- Think and act swiftly, like a developper. You have limited tools, but use them effectively.
+- Be curious and explore the environment before asking questions.
+- First thing you should do is likely to use a tool to get context.
+- Remain critical of your tools and evaluate if they work as they are still in development.
+- You may be working on yourself, but the current session still uses old code.
+- Privilege small changes (10 lines) with compile check in-between.
+- Read and write notes abundantly like a new employee learning a code base and its tools.
 
 Dont's:
 
@@ -846,7 +862,8 @@ fn run_headless(prompt: String) {
                             // Handle function call if present
                             if let Some(function_call) = &assistant_message.function_call {
                                 println!("Handling function call: {}", function_call.name);
-                                let function_call_result = handle_tool_call(function_call, None, is_headless).await;
+                                let function_call_result =
+                                    handle_tool_call(function_call, None, is_headless).await;
                                 match function_call_result {
                                     ToolCallResult::Success(msg) => {
                                         history.push(msg);
@@ -875,7 +892,6 @@ fn run_headless(prompt: String) {
     });
     println!("run_headless completed.");
 }
-
 
 fn launch_tui() {
     let is_headless = false;
@@ -993,7 +1009,7 @@ fn launch_tui() {
                 .child(input_view.full_width())
                 .child(submit_button),
         )
-            .title("minerve"),
+        .title("minerve"),
     );
 
     siv.run();

@@ -59,7 +59,11 @@ impl Tool for GetGeneralContext {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let exec = |cmd: &str| {
             Command::new("sh")
                 .arg("-c")
@@ -107,7 +111,11 @@ impl Tool for SearchForStringTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let params = ToolParams::new(args);
         let search_string = match params.get_string(ParamName::SearchString.as_str()) {
             Ok(s) => s,
@@ -162,7 +170,11 @@ impl Tool for SearchForPathPatternTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let params = ToolParams::new(args);
         let pattern = match params.get_string(ParamName::PathPattern.as_str()) {
             Ok(s) => s,
@@ -214,7 +226,11 @@ impl Tool for ListFilesTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let params = ToolParams::new(args);
         let dir = params.get_string_optional(ParamName::Dir.as_str(), ".");
         match fs::read_dir(&dir) {
@@ -243,7 +259,11 @@ impl Tool for GitStatusTool {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let output = Command::new("git")
             .arg("status")
             .output()
@@ -270,7 +290,11 @@ impl Tool for GitDiffTool {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let output = Command::new("git")
             .arg("diff")
             .output()
@@ -300,7 +324,11 @@ impl Tool for ShowFileTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let params = ToolParams::new(args);
         let path = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
@@ -308,12 +336,12 @@ impl Tool for ShowFileTool {
         };
 
         match fs::read_to_string(&path) {
-            Ok(content) => {
-                content
-            }
+            Ok(content) => content,
             Err(e) => {
                 let error_message = e.to_string();
-                if e.kind() == std::io::ErrorKind::NotFound || error_message.contains("No such file or directory") {
+                if e.kind() == std::io::ErrorKind::NotFound
+                    || error_message.contains("No such file or directory")
+                {
                     "[file does not exist]".to_string()
                 } else {
                     format!("[Error] Failed to read file: {}", e)
@@ -343,7 +371,11 @@ impl Tool for ReplaceContentTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let params = ToolParams::new(args);
         let filepath = match params.get_string(ParamName::FilePath.as_str()) {
             Ok(s) => s,
@@ -510,7 +542,11 @@ impl Tool for RunCargoCheckTool {
         HashMap::new()
     }
 
-    async fn run(&self, _args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let output = Command::new("cargo")
             .arg("check")
             .output()
@@ -608,23 +644,6 @@ impl RunShellCommandTool {
     }
 }
 
-pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
-    let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
-
-    map.insert("get_general_context", Arc::new(GetGeneralContext));
-    map.insert("search_for_string", Arc::new(SearchForStringTool));
-    map.insert(
-        "search_for_path_pattern",
-        Arc::new(SearchForPathPatternTool),
-    );
-    map.insert("list_files", Arc::new(ListFilesTool));
-    map.insert("git_status", Arc::new(GitStatusTool));
-    map.insert("git_diff", Arc::new(GitDiffTool));
-    map.insert("show_file", Arc::new(ShowFileTool));
-    map.insert("replace_content", Arc::new(ReplaceContentTool));
-    map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
-    map.insert("run_shell_command", Arc::new(RunShellCommandTool));
-
 pub struct CreateFileTool;
 
 #[async_trait]
@@ -644,7 +663,11 @@ impl Tool for CreateFileTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let filepath = match args.get("filepath") {
             Some(f) => f,
             None => return String::from("[Error] Missing 'filepath' parameter."),
@@ -662,7 +685,121 @@ impl Tool for CreateFileTool {
     }
 }
 
-map.insert("create_file", Arc::new(CreateFileTool));
+use chrono::Local;
+use dirs::home_dir;
+
+pub struct ReadNotesTool;
+
+#[async_trait]
+impl Tool for ReadNotesTool {
+    fn name(&self) -> &'static str {
+        "read_notes"
+    }
+
+    fn description(&self) -> &'static str {
+        "Reads minerve's notes from the notes registry file."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        HashMap::new()
+    }
+
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
+        let home = match home_dir() {
+            Some(path) => path,
+            None => return String::from("[Error] Could not determine home directory"),
+        };
+        let notes_path = home.join(".minerve/notes.md");
+
+        match fs::read_to_string(&notes_path) {
+            Ok(content) => content,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    String::from("[Error] Notes file does not exist.")
+                } else {
+                    format!("[Error] Failed to read notes: {}", e)
+                }
+            }
+        }
+    }
+}
+
+pub struct AppendNoteTool;
+
+#[async_trait]
+impl Tool for AppendNoteTool {
+    fn name(&self) -> &'static str {
+        "append_note"
+    }
+
+    fn description(&self) -> &'static str {
+        "Appends a note to minerve's notes in the registry file."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("note", "string");
+        params
+    }
+
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
+        let note = match args.get("note") {
+            Some(n) if !n.is_empty() => n,
+            _ => return String::from("[Error] Missing or empty 'note' parameter."),
+        };
+
+        let home = match home_dir() {
+            Some(path) => path,
+            None => return String::from("[Error] Could not determine home directory"),
+        };
+        let notes_path = home.join(".minerve/notes.md");
+
+        let timestamp = Local::now().format("[%Y-%m-%d %H:%M:%S]").to_string();
+        let formatted_note = format!("{} {}\n", timestamp, note);
+
+        let mut file = match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&notes_path)
+        {
+            Ok(f) => f,
+            Err(e) => return format!("[Error] Failed to open notes file: {}", e),
+        };
+
+        if let Err(e) = file.write_all(formatted_note.as_bytes()) {
+            return format!("[Error] Failed to write note: {}", e);
+        }
+
+        format!("✅ Successfully appended note to {}", notes_path.display())
+    }
+}
+
+pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
+    let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
+
+    map.insert("get_general_context", Arc::new(GetGeneralContext));
+    map.insert("search_for_string", Arc::new(SearchForStringTool));
+    map.insert(
+        "search_for_path_pattern",
+        Arc::new(SearchForPathPatternTool),
+    );
+    map.insert("list_files", Arc::new(ListFilesTool));
+    map.insert("git_status", Arc::new(GitStatusTool));
+    map.insert("git_diff", Arc::new(GitDiffTool));
+    map.insert("show_file", Arc::new(ShowFileTool));
+    map.insert("replace_content", Arc::new(ReplaceContentTool));
+    map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
+    map.insert("run_shell_command", Arc::new(RunShellCommandTool));
+    map.insert("read_notes", Arc::new(ReadNotesTool));
+    map.insert("append_note", Arc::new(AppendNoteTool));
 
     map
 }
