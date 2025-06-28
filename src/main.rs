@@ -119,11 +119,17 @@ struct Minerve {
     request_in_flight: Arc<AtomicBool>,
 }
 
+pub enum ToolCallResult {
+    Success(ChatCompletionMessage),
+    Cancelled,
+    Error(String),
+}
+
 pub async fn handle_tool_call(
     tool_call: &ChatCompletionFunctionCall,
     cb_sink: Option<cursive::CbSink>,
     is_headless: bool,
-) -> ChatCompletionMessage {
+) -> ToolCallResult {
     let settings = tools::ExecuteCommandSettings {
         is_headless,
     };
@@ -183,26 +189,19 @@ pub async fn handle_tool_call(
                 // Wait for user confirmation
                 let confirmed = rx.recv().unwrap_or(false);
                 if !confirmed {
-                    return ChatCompletionMessage {
-                        role: ChatCompletionMessageRole::Function,
-                        content: Some(String::from("Command execution cancelled by user.")),
-                        name: Some(tool_name.clone()),
-                        function_call: None,
-                        tool_call_id: Some(tool_call.name.clone()),
-                        tool_calls: None,
-                    };
+                    return ToolCallResult::Cancelled;
                 }
 
                 let output = crate::tools::registry::RunShellCommandTool::execute_command(&command, Some(settings));
 
-                return ChatCompletionMessage {
+                return ToolCallResult::Success(ChatCompletionMessage {
                     role: ChatCompletionMessageRole::Function,
                     content: Some(output),
                     name: Some(tool_name.clone()),
                     function_call: None,
                     tool_call_id: Some(tool_call.name.clone()),
                     tool_calls: None,
-                };
+                });
             }
         }
 
@@ -220,7 +219,6 @@ pub async fn handle_tool_call(
             }));
         }
 
-
         let result = tool.run(args, settings).await;
 
         let function_name_for_indicator = tool_name.clone();
@@ -237,23 +235,16 @@ pub async fn handle_tool_call(
             }));
         }
 
-        ChatCompletionMessage {
+        ToolCallResult::Success(ChatCompletionMessage {
             role: ChatCompletionMessageRole::Function,
             content: Some(result),
             name: Some(tool_name.clone()),
             function_call: None,
             tool_call_id: Some(tool_call.name.clone()),
             tool_calls: None,
-        }
+        })
     } else {
-        ChatCompletionMessage {
-            role: ChatCompletionMessageRole::Function,
-            content: Some(format!("Error: Function '{}' not found", tool_name)),
-            name: Some(tool_name.clone()),
-            function_call: None,
-            tool_call_id: None,
-            tool_calls: None,
-        }
+        ToolCallResult::Error(format!("Function '{}' not found", tool_name))
     }
 }
 
@@ -471,17 +462,26 @@ impl Minerve {
 
                                 // Handle function call if present
                                 if let Some(function_call) = &assistant_message.function_call {
-                                    let function_message =
+                                    let tool_call_result =
                                         handle_tool_call(function_call, Some(cb_sink.clone()), is_headless)
                                         .await;
 
-                                    if function_message.content.is_some() {
-                                        let mut msgs = messages_clone.lock().unwrap();
-                                        msgs.push(function_message.clone());
+                                    match tool_call_result {
+                                        ToolCallResult::Cancelled => break,
+                                        ToolCallResult::Success(msg) => {
+                                            if msg.content.is_some() {
+                                                let mut msgs = messages_clone.lock().unwrap();
+                                                msgs.push(msg.clone());
+                                            }
+                                            history.push(msg);
+                                            should_continue = true;
+                                        }
+                                        ToolCallResult::Error(err) => {
+                                            let msg = format!("Error occurred in tool call: {}", err);
+                                            Minerve::add_assistant_message_with_update_ui(&messages_clone, msg, &cb_sink);
+                                            break;
+                                        }
                                     }
-
-                                    history.push(function_message);
-                                    should_continue = true;
                                 }
 
                                 let ui_messages = messages_clone
@@ -846,10 +846,18 @@ fn run_headless(prompt: String) {
                             // Handle function call if present
                             if let Some(function_call) = &assistant_message.function_call {
                                 println!("Handling function call: {}", function_call.name);
-                                let function_message =
-                                    handle_tool_call(function_call, None, is_headless).await;
-                                history.push(function_message);
-                                should_continue = true;
+                                let function_call_result = handle_tool_call(function_call, None, is_headless).await;
+                                match function_call_result {
+                                    ToolCallResult::Success(msg) => {
+                                        history.push(msg);
+                                        should_continue = true;
+                                    }
+                                    ToolCallResult::Cancelled => break,
+                                    ToolCallResult::Error(err) => {
+                                        eprintln!("Error occurred in tool call: {}", err);
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Err(json_err) => {
