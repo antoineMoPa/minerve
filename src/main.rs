@@ -1001,6 +1001,21 @@ fn launch_tui() {
 
 fn main() {
     // Open panic.log file for appending
+    // Create ~/.minerve folder if it doesn't exist
+    if let Some(home_dir) = dirs::home_dir() {
+        let minerve_dir = home_dir.join(".minerve");
+        if !minerve_dir.exists() {
+            std::fs::create_dir_all(&minerve_dir).expect("Failed to create ~/.minerve directory");
+        }
+    }
+    // Create ~/.minerve/notes.md if it doesn't exist
+    if let Some(home_dir) = dirs::home_dir() {
+        let notes_path = home_dir.join(".minerve/notes.md");
+        if !notes_path.exists() {
+            std::fs::write(&notes_path, "# Notes\n").expect("Failed to create notes.md");
+        }
+    }
+
     let panic_log_file = OpenOptions::new()
         .create(true)
         .append(true)
