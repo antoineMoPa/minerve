@@ -763,7 +763,13 @@ impl Tool for AppendNoteTool {
         let notes_path = home.join(".minerve/notes.md");
 
         let timestamp = Local::now().format("[%Y-%m-%d %H:%M:%S]").to_string();
-        let formatted_note = format!("{} {}\n", timestamp, note);
+
+        let cwd = match std::env::current_dir() {
+            Ok(path) => path.to_string_lossy().to_string(),
+            Err(_) => String::from("[unknown cwd]"),
+        };
+
+        let formatted_note = format!("{} [{}] {}\n", timestamp, cwd, note);
 
         let mut file = match OpenOptions::new()
             .create(true)
