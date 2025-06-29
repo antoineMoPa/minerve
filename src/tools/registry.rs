@@ -413,7 +413,7 @@ impl Tool for ReplaceContentTool {
                 let normalized_content = normalize_whitespace(&content);
 
                 if !normalized_content.contains(&normalized_old) {
-                    return format!("[Error] Old content not found in file: {}", filepath);
+                    return format!("[Error] Old content not found in file: {} - make sure it's an exact match including whitespace.", filepath);
                 }
 
                 // Find the matching substring in the original content using sliding window
