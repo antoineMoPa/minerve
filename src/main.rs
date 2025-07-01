@@ -23,6 +23,8 @@ use clap::Parser;
 mod cli;
 use cli::*;
 
+mod utils;
+
 mod theme;
 mod minerve;
 

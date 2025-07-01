@@ -1,4 +1,5 @@
 use crate::tools::{ParamName, Tool, ToolParams};
+use crate::utils::find_project_root;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -418,10 +419,6 @@ impl Tool for ReplaceContentTool {
         };
         let new_content = params.get_string_optional("new_content", "");
 
-        // Helper function to normalize whitespace for comparison
-        let normalize_whitespace =
-            |s: &str| -> String { s.split_whitespace().collect::<Vec<_>>().join(" ") };
-
         match fs::read_to_string(&filepath) {
             Ok(content) => {
                 // First try exact match
@@ -437,99 +434,8 @@ impl Tool for ReplaceContentTool {
                             return format!("[Error] Failed to write file: {}", e);
                         }
                     }
-                }
-
-                // If exact match fails, try whitespace-normalized matching
-                let normalized_old = normalize_whitespace(&old_content);
-                let normalized_content = normalize_whitespace(&content);
-
-                if !normalized_content.contains(&normalized_old) {
+                } else {
                     return format!("[Error] Old content not found in file: {} - make sure it's an exact match including whitespace.", filepath);
-                }
-
-                // Find the matching substring in the original content using sliding window
-                let old_words: Vec<&str> = old_content.split_whitespace().collect();
-                let content_chars: Vec<char> = content.chars().collect();
-
-                let mut start_idx = None;
-                let mut end_idx = None;
-
-                // Scan through the content to find matching word sequence
-                let mut word_idx = 0;
-                let mut char_idx = 0;
-                let mut current_word = String::new();
-
-                while char_idx < content_chars.len() {
-                    let ch = content_chars[char_idx];
-
-                    if ch.is_whitespace() {
-                        if !current_word.is_empty() {
-                            if word_idx < old_words.len() && current_word == old_words[word_idx] {
-                                if word_idx == 0 {
-                                    // Mark start of first word
-                                    start_idx = Some(char_idx - current_word.len());
-                                }
-                                word_idx += 1;
-                                if word_idx == old_words.len() {
-                                    // Found complete match, mark end
-                                    end_idx = Some(char_idx);
-                                    break;
-                                }
-                            } else {
-                                // Reset if word doesn't match
-                                word_idx = 0;
-                                if current_word == old_words[0] {
-                                    start_idx = Some(char_idx - current_word.len());
-                                    word_idx = 1;
-                                }
-                            }
-                            current_word.clear();
-                        }
-                    } else {
-                        current_word.push(ch);
-                    }
-                    char_idx += 1;
-                }
-
-                // Handle case where match ends at end of file
-                if !current_word.is_empty()
-                    && word_idx < old_words.len()
-                    && current_word == old_words[word_idx]
-                {
-                    if word_idx == 0 {
-                        start_idx = Some(char_idx - current_word.len());
-                    }
-                    word_idx += 1;
-                    if word_idx == old_words.len() {
-                        end_idx = Some(char_idx);
-                    }
-                }
-
-                match (start_idx, end_idx) {
-                    (Some(start), Some(end)) => {
-                        let mut updated_content = String::new();
-                        updated_content.push_str(&content[..start]);
-                        updated_content.push_str(&new_content);
-                        updated_content.push_str(&content[end..]);
-
-                        match fs::write(&filepath, updated_content) {
-                            Ok(_) => {
-                                log_search_replace(&filepath, &old_content, &new_content, true);
-                                format!("✅ Successfully replaced content in {}", filepath)
-                            }
-                            Err(e) => {
-                                log_search_replace(&filepath, &old_content, &new_content, false);
-                                format!("[Error] Failed to write file: {}", e)
-                            }
-                        }
-                    }
-                    _ => {
-                        log_search_replace(&filepath, &old_content, &new_content, false);
-                        format!(
-                            "[Error] Could not locate exact position of old content in file: {}",
-                            filepath
-                        )
-                    }
                 }
             }
             Err(e) => {
@@ -717,8 +623,6 @@ impl Tool for CreateFileTool {
 }
 
 use chrono::Local;
-use dirs::home_dir;
-
 pub struct ReadNotesTool;
 
 #[async_trait]
@@ -740,12 +644,13 @@ impl Tool for ReadNotesTool {
         _args: HashMap<String, String>,
         _settings: ExecuteCommandSettings,
     ) -> String {
-        let home = match home_dir() {
-            Some(path) => path,
-            None => return String::from("[Error] Could not determine home directory"),
+        let project_root = find_project_root();
+        let notes_path = match project_root {
+            Some(root) => root.join(".minerve/notes.md"),
+            None => {
+                return String::from("not in a git project - no notes in this case.")
+            },
         };
-        let notes_path = home.join(".minerve/notes.md");
-
         match fs::read_to_string(&notes_path) {
             Ok(content) => content,
             Err(e) => {
@@ -787,12 +692,13 @@ impl Tool for AppendNoteTool {
             _ => return String::from("[Error] Missing or empty 'note' parameter."),
         };
 
-        let home = match home_dir() {
-            Some(path) => path,
-            None => return String::from("[Error] Could not determine home directory"),
+        let project_root = find_project_root();
+        let notes_path = match project_root {
+            Some(root) => root.join(".minerve/notes.md"),
+            None => {
+                return String::from("not in a git project - no notes in this case.")
+            },
         };
-        let notes_path = home.join(".minerve/notes.md");
-
         let timestamp = Local::now().format("[%Y-%m-%d %H:%M:%S]").to_string();
 
         let cwd = match std::env::current_dir() {
