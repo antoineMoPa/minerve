@@ -6,4 +6,3 @@ pub struct Cli {
     /// Prompt string to run headlessly
     pub prompt: Option<String>,
 }
-

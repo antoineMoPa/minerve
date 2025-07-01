@@ -1,8 +1,6 @@
 use std::sync::{Arc, Mutex};
-use serde_json;
-use std::fs;
 
-const HISTORY_PATH: &str = ".minerve_chat_history.json";
+use crate::HISTORY_PATH;
 
 pub struct HistoryTracker {
     previous_prompts: Arc<Mutex<Vec<String>>>,
@@ -19,19 +17,19 @@ impl HistoryTracker {
         tracker
     }
 
-    fn load_history(&mut self) {
+    pub fn load_history(&mut self) {
         let history_path = dirs::home_dir().unwrap().join(HISTORY_PATH);
         if history_path.exists() {
-            let content = fs::read_to_string(&history_path).unwrap_or_default();
+            let content = std::fs::read_to_string(&history_path).unwrap_or_default();
             let prompts: Vec<String> = serde_json::from_str(&content).unwrap_or_else(|_| vec![]);
             *self.previous_prompts.lock().unwrap() = prompts;
         }
     }
 
-    fn save_history(&self) {
+    pub fn save_history(&self) {
         let history_path = dirs::home_dir().unwrap().join(HISTORY_PATH);
         if let Ok(json) = serde_json::to_string(&*self.previous_prompts.lock().unwrap()) {
-            let _ = fs::write(history_path, json);
+            let _ = std::fs::write(history_path, json);
         }
     }
 

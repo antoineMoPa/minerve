@@ -44,7 +44,6 @@ pub struct ChatCompletionRequest {
     pub functions: Option<Vec<ChatCompletionFunctionDefinition>>,
 }
 
-
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionResponse {
     pub choices: Vec<ChatCompletionChoice>,
@@ -53,4 +52,10 @@ pub struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionChoice {
     pub message: ChatCompletionMessage,
+}
+
+pub enum ToolCallResult {
+    Success(ChatCompletionMessage),
+    Cancelled,
+    Error(String),
 }
