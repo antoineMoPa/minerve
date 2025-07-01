@@ -20,9 +20,15 @@ pub struct Minerve {
 }
 
 pub fn get_system_prompt() -> String {
+    let notes_content = if std::path::Path::new(".minerve/notes.md").exists() {
+        std::fs::read_to_string(".minerve/notes.md").unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     return String::from(
-        r#"
-const SYSTEM_PROMPT = `
+        format!(
+            r#"
 You are **Minerve**, a shell assistant that behaves like a professional software developer.
 
 Guidance:
@@ -55,7 +61,11 @@ Don't ask questions that can be figured out from prompt, context or by using the
  - Instead, figure out yourself.
 
 Don't say "I read file XYZ". just read it directly with the tools.
-`;"#,
+
+Current notes.md in the current project:
+{}"#,
+            notes_content
+        )
     );
 }
 
