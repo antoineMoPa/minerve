@@ -408,8 +408,8 @@ impl Minerve {
                 // Prepare history with cleaned older function outputs
                 let history_len = history.len();
                 let mut cleaned_history = history.clone();
-                if history_len > 10 {
-                    for i in 0..history_len - 10 {
+                if history_len > 30 {
+                    for i in 0..history_len - 30 {
                         if let ChatCompletionMessageRole::Function = cleaned_history[i].role {
                             cleaned_history[i].content = Some("[cleaned from history]".to_string());
                         }
