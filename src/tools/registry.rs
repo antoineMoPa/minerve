@@ -314,13 +314,12 @@ impl Tool for ShowFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Shows the content of a file without line numbers for easier content-based editing."
+        "Shows the content of a file."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
         params.insert(ParamName::FilePath.as_str(), "string");
-        params.insert("start_line", "optional u64");
         params
     }
 
