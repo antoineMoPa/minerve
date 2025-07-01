@@ -305,6 +305,38 @@ impl Tool for GitDiffTool {
     }
 }
 
+pub struct GitDiffCachedTool;
+
+#[async_trait]
+impl Tool for GitDiffCachedTool {
+    fn name(&self) -> &'static str {
+        "git_diff_cached"
+    }
+
+    fn description(&self) -> &'static str {
+        "Gets the current git diff of the repository."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        HashMap::new()
+    }
+
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
+        let output = Command::new("git")
+            .arg("diff")
+            .arg("--cached")
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .unwrap_or_else(|e| format!("[Error] {}", e));
+
+        output
+    }
+}
+
 pub struct ShowFileTool;
 
 #[async_trait]
@@ -799,6 +831,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("list_files", Arc::new(ListFilesTool));
     map.insert("git_status", Arc::new(GitStatusTool));
     map.insert("git_diff", Arc::new(GitDiffTool));
+    map.insert("git_diff_cached", Arc::new(GitDiffCachedTool));
     map.insert("show_file", Arc::new(ShowFileTool));
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));

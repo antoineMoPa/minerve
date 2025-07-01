@@ -1,122 +1,39 @@
 use cursive::event::EventResult;
-use cursive::theme::ColorStyle;
-use cursive::theme::{
-    BaseColor::{self, *},
-    Color, Palette, PaletteColor, Theme,
-};
+use cursive::theme::{ColorStyle, BaseColor, Color};
 use cursive::traits::*;
 use cursive::utils::markup::StyledString;
-use cursive::views::{
-    Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView,
-};
+use cursive::views::{Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView};
 use dotenvy::from_path;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use theme::custom_theme;
 use std::collections::HashMap;
 use std::env;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
 use tokio::runtime::Runtime;
+use reqwest::Client;
 use tools::registry::get_tool_registry;
 
 mod tools;
+mod chat;
 
-use clap::command;
+use chat::*;
 use clap::Parser;
 
-/// Minerve: A terminal-based assistant with headless support
-#[derive(Parser)]
-#[command(name = "Minerve")]
-#[command(about = "Terminal assistant", long_about = None)]
-struct Cli {
-    /// Run a one-off prompt without UI
-    #[arg(short, long)]
-    prompt: Option<String>,
-}
+mod cli;
+use cli::*;
 
-const HISTORY_PATH: &str = ".minerve_chat_history.json";
-const MODEL_NAME: &str = "gpt-4.1-mini";
+mod theme;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatCompletionMessageRole {
-    System,
-    User,
-    Assistant,
-    Function,
-}
+pub const MODEL_NAME: &str = "gpt-4o-mini";
+pub const HISTORY_PATH: &str = ".minerve/history.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionMessage {
-    pub role: ChatCompletionMessageRole,
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub function_call: Option<ChatCompletionFunctionCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionFunctionCall {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionFunctionDefinition {
-    pub name: String,
-    pub description: Option<String>,
-    pub parameters: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatCompletionRequest {
-    model: String,
-    messages: Vec<ChatCompletionMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    functions: Option<Vec<ChatCompletionFunctionDefinition>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatCompletionChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatCompletionChoice {
-    message: ChatCompletionMessage,
-}
-
-fn custom_theme() -> Theme {
-    let mut palette = Palette::default();
-
-    palette[PaletteColor::Background] = Color::Dark(Black);
-    palette[PaletteColor::View] = Color::Dark(Black);
-    palette[PaletteColor::Primary] = Color::Dark(White);
-    palette[PaletteColor::TitlePrimary] = Color::Dark(Cyan);
-    palette[PaletteColor::Highlight] = Color::Dark(Black);
-    palette[PaletteColor::HighlightText] = Color::Light(White);
-    palette[PaletteColor::Secondary] = Color::Light(White);
-
-    Theme {
-        palette,
-        ..Theme::default()
-    }
-}
-
-/// Holds app state and the OpenAI runtime
-use std::sync::atomic::AtomicBool;
-
-struct Minerve {
-    messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
-    rt: Runtime,
-    client: Client,
-    api_key: String,
-    base_url: String,
-    request_in_flight: Arc<AtomicBool>,
+pub struct Minerve {
+    pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
+    pub rt: Runtime,
+    pub client: Client,
+    pub api_key: String,
+    pub base_url: String,
+    pub request_in_flight: Arc<AtomicBool>,
 }
 
 pub enum ToolCallResult {
