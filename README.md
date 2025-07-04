@@ -1,6 +1,5 @@
 # Minerve
-
-Minerve is a terminal-based assistant designed to enhance productivity by providing a user-friendly interface to interact with various functionalities. It leverages OpenAI's API to enable advanced chat functionalities directly in your terminal.
+Minerve is an open source rust-based code assistant.
 
 ## Features
 
