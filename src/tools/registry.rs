@@ -617,9 +617,7 @@ impl Tool for ReadNotesTool {
         let project_root = find_project_root();
         let notes_path = match project_root {
             Some(root) => root.join(".minerve/notes.md"),
-            None => {
-                return String::from("not in a git project - no notes in this case.")
-            },
+            None => return String::from("not in a git project - no notes in this case."),
         };
         match fs::read_to_string(&notes_path) {
             Ok(content) => content,
@@ -648,57 +646,36 @@ impl Tool for SubMinerveTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("prompt", "optional string");
+        params.insert("prompt", "string");
         params
     }
 
     async fn run(
         &self,
         args: HashMap<String, String>,
-        settings: ExecuteCommandSettings,
+        _settings: ExecuteCommandSettings,
     ) -> String {
         let params = ToolParams::new(args);
-        let prompt = params.get_string_optional("prompt", "");
+        let prompt = params.get_string("prompt");
+        let prompt = match prompt {
+            Ok(p) if !p.is_empty() => p,
+            _ => return String::from("[Error] Missing or empty 'prompt' parameter."),
+        };
 
-        // Build the command to run minerve
-        let mut cmd = Command::new("cargo");
-        cmd.arg("run").arg("--");
-        
-        if !prompt.is_empty() {
-            cmd.arg("--prompt").arg(&prompt);
+        // Call run_headless_with_capture directly instead of subprocess
+        let output = crate::run_headless_with_capture(prompt.clone(), true).await;
+
+        if output.is_empty() {
+            format!(
+                "✅ Subminerve session completed successfully with prompt: '{}'",
+                prompt
+            )
+        } else {
+            format!(
+                "✅ Subminerve session completed successfully.\nOutput:\n{}",
+                output
+            )
         }
-
-        if settings.is_headless {
-            // In headless mode, prompt for confirmation
-            print!("Do you want to run a new minerve instance? (y/n): ");
-            io::stdout().flush().unwrap();
-
-            let mut input = String::new();
-            if let Err(_) = io::stdin().read_line(&mut input) {
-                return String::from("[Error] Failed to read user input");
-            }
-
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                return String::from("Subminerve execution cancelled by user.");
-            }
-        }
-
-        let output = cmd
-            .output()
-            .map(|out| {
-                if out.status.success() {
-                    format!("✅ Subminerve session completed successfully.\nOutput:\n{}", 
-                           String::from_utf8_lossy(&out.stdout))
-                } else {
-                    format!("[Error] Subminerve failed with exit code: {:?}\nStderr:\n{}", 
-                           out.status.code(),
-                           String::from_utf8_lossy(&out.stderr))
-                }
-            })
-            .unwrap_or_else(|e| format!("[Error] Failed to execute subminerve: {}", e));
-
-        output
     }
 }
 
@@ -733,9 +710,7 @@ impl Tool for AppendNoteTool {
         let project_root = find_project_root();
         let notes_path = match project_root {
             Some(root) => root.join(".minerve/notes.md"),
-            None => {
-                return String::from("not in a git project - no notes in this case.")
-            },
+            None => return String::from("not in a git project - no notes in this case."),
         };
         let timestamp = Local::now().format("[%Y-%m-%d %H:%M:%S]").to_string();
 

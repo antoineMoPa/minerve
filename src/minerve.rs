@@ -1,18 +1,20 @@
-use std::collections::HashMap;
-use std::env;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicBool;
 use cursive::views::{ResizedView, TextView};
 use dotenvy::from_path;
-use tokio::runtime::Runtime;
 use reqwest::Client;
+use std::collections::HashMap;
+use std::env;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use crate::tools::registry::get_tool_registry;
-use crate::{update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse, ToolCallResult, MODEL_NAME};
+use crate::{
+    update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition,
+    ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest,
+    ChatCompletionResponse, ToolCallResult, MODEL_NAME,
+};
 
 pub struct Minerve {
-    pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>> ,
-    pub rt: Runtime,
+    pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     pub client: Client,
     pub api_key: String,
     pub base_url: String,
@@ -26,9 +28,8 @@ pub fn get_system_prompt() -> String {
         String::new()
     };
 
-    return String::from(
-        format!(
-            r#"
+    return String::from(format!(
+        r#"
 You are **Minerve**, a shell assistant that behaves like a professional software developer.
 
 Guidance:
@@ -65,9 +66,8 @@ Don't say "I read file XYZ". just read it directly with the tools.
 
 Current notes.md in the current project:
 {}"#,
-            notes_content
-        )
-    );
+        notes_content
+    ));
 }
 
 pub async fn handle_tool_call(
@@ -198,6 +198,142 @@ pub async fn handle_tool_call(
 }
 
 impl Minerve {
+    pub async fn chat_headless(&self, capture_output: bool) -> String {
+        let mut output_buffer = Vec::new();
+        let is_headless = true;
+
+        let mut history: Vec<ChatCompletionMessage> = {
+            let msgs = self.messages.lock().unwrap();
+            msgs.clone()
+        };
+
+        let registry = get_tool_registry();
+        let functions: Vec<ChatCompletionFunctionDefinition> = registry
+            .values()
+            .map(|tool| ChatCompletionFunctionDefinition {
+                name: tool.name().to_string(),
+                description: Some(tool.description().to_string()),
+                parameters: Some(tool.function_definition()),
+            })
+            .collect();
+
+        let mut should_continue = true;
+
+        while should_continue {
+            should_continue = false;
+
+            // Clean old function outputs from history
+            if history.len() > 10 {
+                for i in 0..history.len().saturating_sub(10) {
+                    if let ChatCompletionMessageRole::Function = history[i].role {
+                        history[i].content = Some(String::from("[cleaned from history]"));
+                    }
+                }
+            }
+
+            let request = ChatCompletionRequest {
+                model: String::from(MODEL_NAME),
+                messages: history.clone(),
+                functions: if functions.is_empty() {
+                    None
+                } else {
+                    Some(functions.clone())
+                },
+            };
+
+            let url = format!("{}/chat/completions", self.base_url);
+
+            let chat_result = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await;
+
+            match chat_result {
+                Ok(response) => {
+                    match response.json::<ChatCompletionResponse>().await {
+                        Ok(chat_response) => {
+                            let choice = chat_response.choices.first().unwrap();
+                            let assistant_message = &choice.message;
+
+                            // Add assistant message to history
+                            history.push(ChatCompletionMessage {
+                                role: ChatCompletionMessageRole::Assistant,
+                                content: assistant_message.content.clone(),
+                                name: None,
+                                function_call: assistant_message.function_call.clone(),
+                                tool_call_id: None,
+                                tool_calls: None,
+                            });
+
+                            // Print or capture assistant response
+                            if let Some(content) = &assistant_message.content {
+                                if capture_output {
+                                    output_buffer.push(content.clone());
+                                } else {
+                                    println!("{}", content);
+                                }
+                            }
+
+                            // Handle function call if present
+                            if let Some(function_call) = &assistant_message.function_call {
+                                if !capture_output {
+                                    println!("Handling function call: {}", function_call.name);
+                                }
+                                let function_call_result =
+                                    handle_tool_call(function_call, None, is_headless).await;
+                                match function_call_result {
+                                    ToolCallResult::Success(msg) => {
+                                        history.push(msg);
+                                        should_continue = true;
+                                    }
+                                    ToolCallResult::Cancelled => break,
+                                    ToolCallResult::Error(err) => {
+                                        let error_msg =
+                                            format!("Error occurred in tool call: {}", err);
+                                        if capture_output {
+                                            output_buffer.push(error_msg);
+                                        } else {
+                                            eprintln!("Error occurred in tool call: {}", err);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(json_err) => {
+                            let error_msg = format!("JSON Error: {json_err}");
+                            if capture_output {
+                                output_buffer.push(error_msg);
+                            } else {
+                                eprintln!("JSON Error: {json_err}");
+                            }
+                            break;
+                        }
+                    }
+                }
+                Err(req_err) => {
+                    let error_msg = format!("Request Error: {req_err}");
+                    if capture_output {
+                        output_buffer.push(error_msg);
+                    } else {
+                        eprintln!("Request Error: {req_err}");
+                    }
+                    break;
+                }
+            }
+        }
+
+        if capture_output {
+            output_buffer.join("\n")
+        } else {
+            String::new()
+        }
+    }
+
     fn add_assistant_message_with_update_ui(
         messages: &Arc<Mutex<Vec<ChatCompletionMessage>>>,
         message_content: String,
@@ -256,7 +392,6 @@ impl Minerve {
 
         Self {
             messages: Arc::new(Mutex::new(vec![system_message])),
-            rt: Runtime::new().unwrap(),
             client: Client::new(),
             api_key,
             base_url,
@@ -320,7 +455,7 @@ impl Minerve {
         let messages_clone = self.messages.clone();
         let request_in_flight = self.request_in_flight.clone();
 
-        self.rt.spawn(async move {
+        crate::get_global_runtime().spawn(async move {
             let mut history: Vec<ChatCompletionMessage> = messages;
             let registry = get_tool_registry();
             let functions: Vec<ChatCompletionFunctionDefinition> = registry

@@ -19,7 +19,6 @@ pub fn find_project_root() -> Option<PathBuf> {
         std::fs::create_dir_all(&notes_path).ok();
     }
 
-
     let mut current_dir = std::env::current_dir().ok()?;
     loop {
         if current_dir.join(".git").exists() {
