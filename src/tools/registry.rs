@@ -1,7 +1,6 @@
 use crate::tools::{ParamName, Tool, ToolParams};
 use crate::utils::find_project_root;
 use async_trait::async_trait;
-use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
@@ -19,31 +18,6 @@ fn truncate(s: String, limit: usize) -> String {
     } else {
         s
     }
-}
-
-fn log_search_replace(filepath: &str, old_content: &str, new_content: &str, success: bool) {
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-    let log_entry = format!(
-        "\n=== SEARCH/REPLACE LOG ===\n\
-        Timestamp: {}\n\
-        File: {}\n\
-        Success: {}\n\
-        \n--- OLD CONTENT ---\n\
-        {}\n\
-        \n--- NEW CONTENT ---\n\
-        {}\n\
-        \n=== END LOG ENTRY ===\n\n",
-        timestamp, filepath, success, old_content, new_content
-    );
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("search_replace.log")
-        .unwrap_or_else(|e| panic!("Failed to open log file: {}", e));
-
-    file.write_all(log_entry.as_bytes())
-        .unwrap_or_else(|e| panic!("Failed to write to log file: {}", e));
 }
 
 #[async_trait]
@@ -426,11 +400,9 @@ impl Tool for ReplaceContentTool {
                     let updated_content = content.replace(&old_content, &new_content);
                     match fs::write(&filepath, updated_content) {
                         Ok(_) => {
-                            log_search_replace(&filepath, &old_content, &new_content, true);
                             return format!("✅ Successfully replaced content in {}", filepath);
                         }
                         Err(e) => {
-                            log_search_replace(&filepath, &old_content, &new_content, false);
                             return format!("[Error] Failed to write file: {}", e);
                         }
                     }
@@ -444,11 +416,9 @@ impl Tool for ReplaceContentTool {
                     if old_content.is_empty() {
                         match fs::write(&filepath, &new_content) {
                             Ok(_) => {
-                                log_search_replace(&filepath, &old_content, &new_content, true);
                                 return format!("✅ Successfully created new file {}", filepath);
                             }
                             Err(e) => {
-                                log_search_replace(&filepath, &old_content, &new_content, false);
                                 return format!("[Error] Failed to create file: {}", e);
                             }
                         }
