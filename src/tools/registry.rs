@@ -664,6 +664,74 @@ impl Tool for ReadNotesTool {
     }
 }
 
+pub struct SubMinerveTool;
+
+#[async_trait]
+impl Tool for SubMinerveTool {
+    fn name(&self) -> &'static str {
+        "subminerve"
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs a new instance of the minerve chat in a subprocess. Useful for creating nested minerve sessions."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("prompt", "optional string");
+        params
+    }
+
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        settings: ExecuteCommandSettings,
+    ) -> String {
+        let params = ToolParams::new(args);
+        let prompt = params.get_string_optional("prompt", "");
+
+        // Build the command to run minerve
+        let mut cmd = Command::new("cargo");
+        cmd.arg("run").arg("--");
+        
+        if !prompt.is_empty() {
+            cmd.arg("--prompt").arg(&prompt);
+        }
+
+        if settings.is_headless {
+            // In headless mode, prompt for confirmation
+            print!("Do you want to run a new minerve instance? (y/n): ");
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            if let Err(_) = io::stdin().read_line(&mut input) {
+                return String::from("[Error] Failed to read user input");
+            }
+
+            let input = input.trim().to_lowercase();
+            if input != "y" && input != "yes" {
+                return String::from("Subminerve execution cancelled by user.");
+            }
+        }
+
+        let output = cmd
+            .output()
+            .map(|out| {
+                if out.status.success() {
+                    format!("✅ Subminerve session completed successfully.\nOutput:\n{}", 
+                           String::from_utf8_lossy(&out.stdout))
+                } else {
+                    format!("[Error] Subminerve failed with exit code: {:?}\nStderr:\n{}", 
+                           out.status.code(),
+                           String::from_utf8_lossy(&out.stderr))
+                }
+            })
+            .unwrap_or_else(|e| format!("[Error] Failed to execute subminerve: {}", e));
+
+        output
+    }
+}
+
 pub struct AppendNoteTool;
 
 #[async_trait]
@@ -742,6 +810,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("run_shell_command", Arc::new(RunShellCommandTool));
+    map.insert("subminerve", Arc::new(SubMinerveTool));
     map.insert("read_notes", Arc::new(ReadNotesTool));
     map.insert("append_note", Arc::new(AppendNoteTool));
 
