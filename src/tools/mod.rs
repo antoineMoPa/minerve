@@ -1,8 +1,12 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 pub mod registry;
+pub mod run_user_command;
+pub mod set_user_command;
 
 // Parameter name constants to prevent typos
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,6 +61,7 @@ impl ToolParams {
 
 pub struct ExecuteCommandSettings {
     pub is_headless: bool,
+    pub in_subminerve_context: Arc<AtomicBool>,
 }
 
 #[async_trait]

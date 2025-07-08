@@ -1,15 +1,32 @@
 use crate::tools::{ParamName, Tool, ToolParams};
 use crate::utils::find_project_root;
 use async_trait::async_trait;
-use chrono::Utc;
+use cursive::views::{ResizedView, TextView};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
+use tokio::sync::mpsc;
 
 use super::ExecuteCommandSettings;
+
+// Global storage for the main TUI stream sender
+use std::sync::OnceLock;
+static GLOBAL_STREAM_SENDER: OnceLock<std::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
+    OnceLock::new();
+
+pub fn set_global_stream_sender(sender: mpsc::UnboundedSender<String>) {
+    let mutex = GLOBAL_STREAM_SENDER.get_or_init(|| std::sync::Mutex::new(None));
+    *mutex.lock().unwrap() = Some(sender);
+}
+
+pub fn get_global_stream_sender() -> Option<mpsc::UnboundedSender<String>> {
+    GLOBAL_STREAM_SENDER.get()?.lock().unwrap().clone()
+}
 
 pub struct GetGeneralContext;
 
@@ -19,31 +36,6 @@ fn truncate(s: String, limit: usize) -> String {
     } else {
         s
     }
-}
-
-fn log_search_replace(filepath: &str, old_content: &str, new_content: &str, success: bool) {
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-    let log_entry = format!(
-        "\n=== SEARCH/REPLACE LOG ===\n\
-        Timestamp: {}\n\
-        File: {}\n\
-        Success: {}\n\
-        \n--- OLD CONTENT ---\n\
-        {}\n\
-        \n--- NEW CONTENT ---\n\
-        {}\n\
-        \n=== END LOG ENTRY ===\n\n",
-        timestamp, filepath, success, old_content, new_content
-    );
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("search_replace.log")
-        .unwrap_or_else(|e| panic!("Failed to open log file: {}", e));
-
-    file.write_all(log_entry.as_bytes())
-        .unwrap_or_else(|e| panic!("Failed to write to log file: {}", e));
 }
 
 #[async_trait]
@@ -392,7 +384,7 @@ impl Tool for ReplaceContentTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replaces existing content in a file with new content by searching for the old content. Use this for precise content-based editing."
+        "Replaces existing content in a file with new content by searching for the old content. Use this for precise content-based editing. To avoid mistakes, replace an entire function at the time or an entire code block with matching opening and closing braces."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
@@ -426,11 +418,9 @@ impl Tool for ReplaceContentTool {
                     let updated_content = content.replace(&old_content, &new_content);
                     match fs::write(&filepath, updated_content) {
                         Ok(_) => {
-                            log_search_replace(&filepath, &old_content, &new_content, true);
                             return format!("✅ Successfully replaced content in {}", filepath);
                         }
                         Err(e) => {
-                            log_search_replace(&filepath, &old_content, &new_content, false);
                             return format!("[Error] Failed to write file: {}", e);
                         }
                     }
@@ -444,11 +434,9 @@ impl Tool for ReplaceContentTool {
                     if old_content.is_empty() {
                         match fs::write(&filepath, &new_content) {
                             Ok(_) => {
-                                log_search_replace(&filepath, &old_content, &new_content, true);
                                 return format!("✅ Successfully created new file {}", filepath);
                             }
                             Err(e) => {
-                                log_search_replace(&filepath, &old_content, &new_content, false);
                                 return format!("[Error] Failed to create file: {}", e);
                             }
                         }
@@ -484,19 +472,16 @@ impl Tool for RunCargoCheckTool {
         _args: HashMap<String, String>,
         _settings: ExecuteCommandSettings,
     ) -> String {
+        use tokio::process::Command;
         let output = Command::new("cargo")
             .arg("check")
             .output()
-            .map(|out| {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    format!("[Error] {}", String::from_utf8_lossy(&out.stderr))
-                }
-            })
-            .unwrap_or_else(|e| format!("[Error] {}", e));
+            .await
+            .expect("Failed to execute cargo check");
 
-        output
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        format!("{}{}", stdout, stderr)
     }
 }
 
@@ -504,42 +489,58 @@ pub struct RunShellCommandTool;
 
 impl Default for ExecuteCommandSettings {
     fn default() -> Self {
-        Self { is_headless: false }
+        Self {
+            is_headless: false,
+            in_subminerve_context: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
 impl RunShellCommandTool {
-    pub fn execute_command(command: &str, settings: Option<ExecuteCommandSettings>) -> String {
+    pub async fn execute_command(
+        command: &str,
+        settings: Option<ExecuteCommandSettings>,
+        cb_sink: Option<cursive::CbSink>,
+    ) -> String {
+        use tokio::process::Command;
         let settings = settings.unwrap_or_default();
 
+        // Skip confirmation for subminerve processes (they should auto-execute)
         if settings.is_headless {
-            // Prompt user for confirmation in headless mode
-            print!("Do you want to run the command '{}'? (y/n): ", command);
-            io::stdout().flush().unwrap();
-
-            let mut input = String::new();
-            if let Err(_) = io::stdin().read_line(&mut input) {
-                return String::from("[Error] Failed to read user input");
-            }
-
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                return String::from("Command execution cancelled by user.");
-            }
+            // Auto-execute commands in headless mode (subminerve context)
+            // No user confirmation needed
         }
 
-        let output = std::process::Command::new("sh")
+        let mut process = Command::new("sh")
             .arg("-c")
             .arg(command)
-            .output()
-            .map(|out| {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    format!("[Error] {}", String::from_utf8_lossy(&out.stderr))
-                }
-            })
-            .unwrap_or_else(|e| format!("[Error] {}", e));
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("Failed to start process");
+
+        let stdout = process.stdout.take().expect("Failed to open stdout");
+
+        let reader = tokio::io::BufReader::new(stdout);
+        let mut lines = reader.lines();
+
+        let mut output = String::new();
+
+        while let Some(line) = lines.next_line().await.unwrap_or(None) {
+            if let Some(cb_sink) = &cb_sink {
+                let line_clone = line.clone();
+                let _ = cb_sink.send(Box::new(move |s| {
+                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview")
+                    {
+                        let existing_content = view.get_inner().get_content().source().to_string();
+                        view.get_inner_mut()
+                            .set_content(existing_content + &line_clone + "\n");
+                    }
+                }));
+            }
+            output.push_str(&line);
+            output.push('\n');
+        }
+
         output
     }
 }
@@ -562,7 +563,8 @@ impl Tool for RunShellCommandTool {
     }
 
     async fn run(&self, args: HashMap<String, String>, settings: ExecuteCommandSettings) -> String {
-        self.run_with_settings(args, settings).await
+        let cb_sink: Option<cursive::CbSink> = None; // or provide a valid CbSink if available
+        self.run_with_settings(args, settings, cb_sink).await
     }
 }
 
@@ -571,13 +573,14 @@ impl RunShellCommandTool {
         &self,
         args: HashMap<String, String>,
         settings: ExecuteCommandSettings,
+        cb_sink: Option<cursive::CbSink>,
     ) -> String {
         let params = ToolParams::new(args);
         let command = match params.get_string("command") {
             Ok(cmd) => cmd,
             Err(e) => return e,
         };
-        Self::execute_command(&command, Some(settings))
+        Self::execute_command(&command, Some(settings), cb_sink).await
     }
 }
 
@@ -647,9 +650,7 @@ impl Tool for ReadNotesTool {
         let project_root = find_project_root();
         let notes_path = match project_root {
             Some(root) => root.join(".minerve/notes.md"),
-            None => {
-                return String::from("not in a git project - no notes in this case.")
-            },
+            None => return String::from("not in a git project - no notes in this case."),
         };
         match fs::read_to_string(&notes_path) {
             Ok(content) => content,
@@ -660,6 +661,164 @@ impl Tool for ReadNotesTool {
                     format!("[Error] Failed to read notes: {}", e)
                 }
             }
+        }
+    }
+}
+
+pub struct SubMinerveExecutorTool;
+
+#[async_trait]
+impl Tool for SubMinerveExecutorTool {
+    fn name(&self) -> &'static str {
+        "subminerve_executor"
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs a sub minerve executor, tailored at doing specific planned code changes."
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("prompt", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>, settings: ExecuteCommandSettings) -> String {
+        // Check if we're already in a subminerve context to prevent nesting
+        if settings.in_subminerve_context.load(Ordering::Relaxed) {
+            return "[Error] Subminerve executor cannot be nested within other subminerve tools"
+                .to_string();
+        }
+
+        let params = ToolParams::new(args);
+        let system_prompt = String::from(include_str!("../../prompts/EXECUTOR_PROMPT.txt"));
+        let prompt = match params.get_string("prompt") {
+            Ok(p) => p,
+            Err(_) => return "[Error] 'prompt' parameter is required.".to_string(),
+        };
+
+        // Get the global stream sender if available
+        let stream_sender = if !settings.is_headless {
+            get_global_stream_sender()
+        } else {
+            None
+        };
+
+        // Set atomic flag to indicate we're in a subminerve context
+        settings
+            .in_subminerve_context
+            .store(true, Ordering::Relaxed);
+
+        // Direct execution logic with streaming
+        let output =
+            crate::run_headless_with_capture(system_prompt + &prompt, true, stream_sender).await;
+
+        // Clean up atomic flag
+        settings
+            .in_subminerve_context
+            .store(false, Ordering::Relaxed);
+
+        format!(
+            "✅ Subminerve executor completed successfully with prompt: '{}'.\nOutput:\n{}",
+            prompt, output
+        )
+    }
+}
+
+pub struct SubMinerveQATool;
+
+#[async_trait]
+impl Tool for SubMinerveQATool {
+    fn name(&self) -> &'static str {
+        "subminerve_qa"
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs a sub minerve QA, tailored at testing code changes"
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        let mut params = HashMap::new();
+        params.insert("prompt", "string");
+        params
+    }
+
+    async fn run(&self, args: HashMap<String, String>, settings: ExecuteCommandSettings) -> String {
+        // Check if we're already in a subminerve context to prevent nesting
+        if settings.in_subminerve_context.load(Ordering::Relaxed) {
+            return "[Error] Subminerve QA cannot be nested within other subminerve tools"
+                .to_string();
+        }
+
+        let params = ToolParams::new(args);
+        let prompt = match params.get_string("prompt") {
+            Ok(p) => p,
+            Err(_) => return "[Error] 'prompt' parameter is required.".to_string(),
+        };
+
+        let system_prompt = String::from(include_str!("../../prompts/QA_PROMPT.txt"));
+
+        // Get the global stream sender if available
+        let stream_sender = if !settings.is_headless {
+            get_global_stream_sender()
+        } else {
+            None
+        };
+
+        // Set atomic flag to indicate we're in a subminerve context
+        settings
+            .in_subminerve_context
+            .store(true, Ordering::Relaxed);
+
+        // Direct execution logic with streaming
+        let output =
+            crate::run_headless_with_capture(system_prompt + &prompt, true, stream_sender).await;
+
+        // Clean up atomic flag
+        settings
+            .in_subminerve_context
+            .store(false, Ordering::Relaxed);
+
+        format!(
+            "✅ Subminerve QA completed successfully with prompt: '{}'.\nOutput:\n{}",
+            prompt, output
+        )
+    }
+}
+
+pub struct TestStreamTool;
+
+#[async_trait]
+impl Tool for TestStreamTool {
+    fn name(&self) -> &'static str {
+        "test_stream"
+    }
+
+    fn description(&self) -> &'static str {
+        "Test tool to verify streaming output works"
+    }
+
+    fn parameters(&self) -> HashMap<&'static str, &'static str> {
+        HashMap::new()
+    }
+
+    async fn run(
+        &self,
+        _args: HashMap<String, String>,
+        settings: ExecuteCommandSettings,
+    ) -> String {
+        if !settings.is_headless {
+            if let Some(sender) = get_global_stream_sender() {
+                for i in 1..=5 {
+                    let _ = sender.send(format!("Test message {}", i));
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+                "✅ Test streaming completed - check the working area for messages".to_string()
+            } else {
+                "[Error] No stream sender available".to_string()
+            }
+        } else {
+            "Test streaming not available in headless mode".to_string()
         }
     }
 }
@@ -695,9 +854,7 @@ impl Tool for AppendNoteTool {
         let project_root = find_project_root();
         let notes_path = match project_root {
             Some(root) => root.join(".minerve/notes.md"),
-            None => {
-                return String::from("not in a git project - no notes in this case.")
-            },
+            None => return String::from("not in a git project - no notes in this case."),
         };
         let timestamp = Local::now().format("[%Y-%m-%d %H:%M:%S]").to_string();
 
@@ -725,7 +882,11 @@ impl Tool for AppendNoteTool {
     }
 }
 
-pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
+use crate::tools::set_user_command::SetUserCommand;
+
+pub fn get_tool_registry(
+    settings: &ExecuteCommandSettings,
+) -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
     map.insert("get_general_context", Arc::new(GetGeneralContext));
@@ -741,9 +902,18 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("show_file", Arc::new(ShowFileTool));
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
-    map.insert("run_shell_command", Arc::new(RunShellCommandTool));
     map.insert("read_notes", Arc::new(ReadNotesTool));
     map.insert("append_note", Arc::new(AppendNoteTool));
+
+    if !settings.in_subminerve_context.load(Ordering::Relaxed) {
+        map.insert("subminerve_executor", Arc::new(SubMinerveExecutorTool));
+        map.insert("subminerve_qa", Arc::new(SubMinerveQATool));
+        map.insert("run_shell_command", Arc::new(RunShellCommandTool));
+    }
+
+    map.insert("create_file", Arc::new(CreateFileTool));
+    map.insert("test_stream", Arc::new(TestStreamTool));
+    map.insert("set_user_command", Arc::new(SetUserCommand));
 
     map
 }

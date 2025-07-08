@@ -7,15 +7,22 @@ use cursive::views::{
     Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView,
 };
 use history::HistoryTracker;
-use minerve::{get_system_prompt, handle_tool_call, Minerve};
+use minerve::Minerve;
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use theme::custom_theme;
 use tokio::runtime::Runtime;
-use tools::registry::get_tool_registry;
+use tokio::sync::mpsc;
+
+static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+pub fn get_global_runtime() -> &'static Runtime {
+    GLOBAL_RUNTIME.get_or_init(|| Runtime::new().unwrap())
+}
 
 mod chat;
-mod tools;
 mod history;
+mod tools;
 
 use chat::*;
 use clap::Parser;
@@ -25,11 +32,13 @@ use cli::*;
 
 mod utils;
 
-mod theme;
 mod minerve;
+mod theme;
 
-pub const MODEL_NAME: &str = "gpt-4o-mini";
+pub const MODEL_NAME: &str = "gpt-4o";
 pub const HISTORY_PATH: &str = ".minerve/history.json";
+
+pub const HISTORY_CUTOFF: usize = 30;
 
 fn update_chat_ui(
     cb_sink: cursive::CbSink,
@@ -46,9 +55,12 @@ fn update_chat_ui(
 
             let mut styled = StyledString::new();
 
-            // only keep last 10 messages
-            let messages: Vec<(String, String)> =
-                messages.into_iter().rev().take(10).rev().collect();
+            let messages: Vec<(String, String)> = messages
+                .into_iter()
+                .rev()
+                .take(HISTORY_CUTOFF)
+                .rev()
+                .collect();
 
             for (role, content) in messages.iter().filter(|(r, _)| r != "system") {
                 let (label_style, prefix) = match role.as_str() {
@@ -106,137 +118,54 @@ fn update_chat_ui(
 use std::fs::OpenOptions;
 use std::io::Write;
 
-fn run_headless(prompt: String) {
-    println!("run_headless started with prompt: {}", prompt);
-    let is_headless = true;
-    let minerve = Minerve::new();
-    let rt = Runtime::new().unwrap();
+pub fn run_headless(prompt: String) -> String {
+    get_global_runtime().block_on(run_headless_with_capture(prompt, false, None))
+}
 
-    let system_message = ChatCompletionMessage {
-        role: ChatCompletionMessageRole::System,
-        content: Some(get_system_prompt()),
-        name: None,
-        function_call: None,
-        tool_call_id: None,
-        tool_calls: None,
+use crate::minerve::get_system_prompt;
+
+pub async fn run_headless_with_capture(
+    prompt: String,
+    capture_output: bool,
+    output_sender: Option<mpsc::UnboundedSender<String>>,
+) -> String {
+    let system_prompt = if prompt.is_empty() {
+        get_system_prompt()
+    } else {
+        prompt
     };
+
+    if !capture_output {
+        println!("run_headless started with prompt: {}", system_prompt);
+    }
+
+    // Create a Minerve instance to reuse existing initialization logic
+    let minerve = Minerve::new();
 
     let user_message = ChatCompletionMessage {
         role: ChatCompletionMessageRole::User,
-        content: Some(prompt.clone()),
+        content: Some(system_prompt.clone()),
         name: None,
         function_call: None,
         tool_call_id: None,
         tool_calls: None,
     };
 
-    let messages: Arc<Mutex<Vec<ChatCompletionMessage>>> =
-        Arc::new(Mutex::new(vec![system_message, user_message]));
+    // Add user message to minerve's messages
+    {
+        let mut msgs = minerve.messages.lock().unwrap();
+        msgs.push(user_message);
+    }
 
-    rt.block_on(async {
-        let messages = messages.lock().unwrap();
-        let mut history: Vec<ChatCompletionMessage> = messages.clone();
+    // Use minerve's chat_headless method
+    let result = minerve.chat_headless(capture_output, output_sender).await;
 
-        let registry = get_tool_registry();
-        let functions: Vec<ChatCompletionFunctionDefinition> = registry
-            .values()
-            .map(|tool| ChatCompletionFunctionDefinition {
-                name: tool.name().to_string(),
-                description: Some(tool.description().to_string()),
-                parameters: Some(tool.function_definition()),
-            })
-            .collect();
-
-        let mut should_continue = true;
-        let client = minerve.client.clone();
-        let api_key = minerve.api_key.clone();
-        let base_url = minerve.base_url.clone();
-
-        while should_continue {
-            should_continue = false;
-
-            if history.len() > 10 {
-                for i in 0..history.len().saturating_sub(10) {
-                    if let ChatCompletionMessageRole::Function = history[i].role {
-                        history[i].content = Some(String::from("[cleaned from history]"));
-                    }
-                }
-            }
-
-            let request = ChatCompletionRequest {
-                model: String::from(MODEL_NAME),
-                messages: history.clone(),
-                functions: if functions.is_empty() {
-                    None
-                } else {
-                    Some(functions.clone())
-                },
-            };
-
-            let url = format!("{}/chat/completions", base_url);
-
-            let chat_result = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json")
-                .json(&request)
-                .send()
-                .await;
-
-            match chat_result {
-                Ok(response) => {
-                    match response.json::<ChatCompletionResponse>().await {
-                        Ok(chat_response) => {
-                            let choice = chat_response.choices.first().unwrap();
-                            let assistant_message = &choice.message;
-
-                            // Add assistant message to history
-                            history.push(ChatCompletionMessage {
-                                role: ChatCompletionMessageRole::Assistant,
-                                content: assistant_message.content.clone(),
-                                name: None,
-                                function_call: assistant_message.function_call.clone(),
-                                tool_call_id: None,
-                                tool_calls: None,
-                            });
-
-                            // Print assistant response
-                            if let Some(content) = &assistant_message.content {
-                                println!("{}", content);
-                            }
-
-                            // Handle function call if present
-                            if let Some(function_call) = &assistant_message.function_call {
-                                println!("Handling function call: {}", function_call.name);
-                                let function_call_result =
-                                    handle_tool_call(function_call, None, is_headless).await;
-                                match function_call_result {
-                                    ToolCallResult::Success(msg) => {
-                                        history.push(msg);
-                                        should_continue = true;
-                                    }
-                                    ToolCallResult::Cancelled => break,
-                                    ToolCallResult::Error(err) => {
-                                        eprintln!("Error occurred in tool call: {}", err);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(json_err) => {
-                            eprintln!("JSON Error: {json_err}");
-                            break;
-                        }
-                    }
-                }
-                Err(req_err) => {
-                    eprintln!("Request Error: {req_err}");
-                    break;
-                }
-            }
-        }
-    });
-    println!("run_headless completed.");
+    if capture_output {
+        result
+    } else {
+        println!("run_headless completed.");
+        String::new()
+    }
 }
 
 fn launch_tui() {
@@ -247,6 +176,54 @@ fn launch_tui() {
     let history_tracker = Arc::new(Mutex::new(HistoryTracker::new()));
 
     let history_tracker_for_submit = history_tracker.clone();
+
+    // Create a channel for receiving streaming output from subminerve processes
+    let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<String>();
+    let cb_sink_for_stream = siv.cb_sink().clone();
+
+    // Spawn a task to handle streaming output
+    let minerve_for_stream = minerve.clone();
+    get_global_runtime().spawn(async move {
+        while let Some(output) = stream_rx.recv().await {
+            // Add the streaming output as an assistant message to the main chat
+            {
+                let mut msgs = minerve_for_stream.messages.lock().unwrap();
+                msgs.push(ChatCompletionMessage {
+                    role: ChatCompletionMessageRole::Assistant,
+                    content: Some(format!("[Subminerve] {}", output)),
+                    name: None,
+                    function_call: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                });
+
+                let ui_messages = msgs
+                    .iter()
+                    .map(|msg| {
+                        let role = match msg.role {
+                            ChatCompletionMessageRole::System => "system".to_string(),
+                            ChatCompletionMessageRole::User => "user".to_string(),
+                            ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                            ChatCompletionMessageRole::Function => msg
+                                .tool_call_id
+                                .clone()
+                                .unwrap_or(String::from("unknown function call")),
+                        };
+                        (role, msg.content.clone().unwrap_or_default())
+                    })
+                    .collect();
+
+                // Update UI immediately when streaming message is received
+                update_chat_ui(cb_sink_for_stream.clone(), ui_messages, false);
+            }
+        }
+    });
+
+    // Store the stream sender in minerve for use by tools
+    minerve.set_stream_sender(stream_tx.clone());
+
+    // Also store it globally for tools to access
+    crate::tools::registry::set_global_stream_sender(stream_tx);
 
     let submit_button = cursive::views::Button::new("Send (Tab-Enter)", move |s| {
         let content = s
@@ -410,7 +387,7 @@ fn main() {
     let cli = Cli::parse();
 
     if let Some(prompt) = cli.prompt {
-        run_headless(prompt);
+        let _ = run_headless(prompt);
         return;
     }
 

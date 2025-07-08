@@ -1,72 +1,26 @@
-use std::collections::HashMap;
-use std::env;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicBool;
 use cursive::views::{ResizedView, TextView};
 use dotenvy::from_path;
-use tokio::runtime::Runtime;
 use reqwest::Client;
+use std::collections::HashMap;
+use std::env;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::tools::registry::get_tool_registry;
-use crate::{update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse, ToolCallResult, MODEL_NAME};
+use crate::{
+    update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition,
+    ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest,
+    ChatCompletionResponse, ToolCallResult, HISTORY_CUTOFF, MODEL_NAME,
+};
 
 pub struct Minerve {
-    pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>> ,
-    pub rt: Runtime,
+    pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     pub client: Client,
     pub api_key: String,
     pub base_url: String,
     pub request_in_flight: Arc<AtomicBool>,
-}
-
-pub fn get_system_prompt() -> String {
-    let notes_content = if std::path::Path::new(".minerve/notes.md").exists() {
-        std::fs::read_to_string(".minerve/notes.md").unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    return String::from(
-        format!(
-            r#"
-You are **Minerve**, a shell assistant that behaves like a professional software developer.
-
-Guidance:
-- Be proactive at using tools instead of asking.
-- Assume you are somewhere in a repository with files.
-- Confirm your changes worked
- - Example: read the file after editing it.
- - Run cargo check or other compile check tool.
-- Think and act swiftly, like a developper. You have limited tools, but use them effectively.
-- Be curious and explore the environment before asking questions.
-- First thing you should do is likely to use a tool to get context.
-- Remain critical of your tools and evaluate if they work as they are still in development.
-- You may be working on yourself, but the current session still uses old code.
-- Privilege small changes (10 lines) with compile check in-between.
-- Read and write notes abundantly like a new employee learning a code base and its tools.
-
-Dont's:
-
-Don't answer stuff like "I'm sorry for the confusion, but as an AI, I don't have the ability to directly modify files or write code to your project. I can provide guidance and code snippets, but you'll need to implement the changes in your project."
-
-  - Instead, directly use the tools available to you to help the user with their coding tasks.
-
-Don't answer stuff like "Sure, I can help with that. However, I need to know the file you want to get the code listing from. Could you please provide the file path?".
-
- - Instead use the tools available to you to explore the environment and find the file.
-
-Don't answer stuff like "Now you can implement the bingBong function to get a file code listing with line numbers.   - Instead, go and implement that new function.
-
-Don't ask questions that can be figured out from prompt, context or by using the tools available to you, like "Now, could you please specify which file you want to add the tool to?"
- - Instead, figure out yourself.
-
-Don't say "I read file XYZ". just read it directly with the tools.
-
-Current notes.md in the current project:
-{}"#,
-            notes_content
-        )
-    );
+    pub stream_sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
 }
 
 pub async fn handle_tool_call(
@@ -74,8 +28,27 @@ pub async fn handle_tool_call(
     cb_sink: Option<cursive::CbSink>,
     is_headless: bool,
 ) -> ToolCallResult {
-    let settings = crate::tools::ExecuteCommandSettings { is_headless };
-    let registry = get_tool_registry();
+    let settings = crate::tools::ExecuteCommandSettings {
+        is_headless,
+        in_subminerve_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+
+    // Prevent nesting of subminerve tools by checking atomic flag
+    if tool_call.name.starts_with("subminerve") {
+        if settings
+            .in_subminerve_context
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return ToolCallResult::Error(
+                "Subminerve tools cannot be nested within other subminerve tools".to_string(),
+            );
+        }
+    }
+    let settings = crate::tools::ExecuteCommandSettings {
+        is_headless: false,
+        in_subminerve_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let registry = get_tool_registry(&settings);
     let tool_name = &tool_call.name;
     let args_str = &tool_call.arguments;
 
@@ -140,7 +113,9 @@ pub async fn handle_tool_call(
                 let output = crate::tools::registry::RunShellCommandTool::execute_command(
                     &command,
                     Some(settings),
-                );
+                    Some(cb_sink.clone()),
+                )
+                .await;
 
                 return ToolCallResult::Success(ChatCompletionMessage {
                     role: ChatCompletionMessageRole::Function,
@@ -196,7 +171,205 @@ pub async fn handle_tool_call(
     }
 }
 
+pub fn get_system_prompt() -> String {
+    // Compile-time include for the main system prompt
+    let template = include_str!("../prompts/MAIN_SYSTEM_PROMPT.txt");
+
+    // Gather dynamic note content
+    let notes_content = if std::path::Path::new(".minerve/notes.md").exists() {
+        std::fs::read_to_string(".minerve/notes.md").unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Replace placeholders
+    template.replace("{notes}", &notes_content)
+}
+
 impl Minerve {
+    pub fn set_stream_sender(&self, sender: mpsc::UnboundedSender<String>) {
+        *self.stream_sender.lock().unwrap() = Some(sender);
+    }
+
+    pub async fn chat_headless(
+        &self,
+        capture_output: bool,
+        output_sender: Option<mpsc::UnboundedSender<String>>,
+    ) -> String {
+        let mut output_buffer = Vec::new();
+        let is_headless = true;
+
+        let mut history: Vec<ChatCompletionMessage> = {
+            let msgs = self.messages.lock().unwrap();
+            msgs.clone()
+        };
+
+        let settings = crate::tools::ExecuteCommandSettings {
+            is_headless: false,
+            in_subminerve_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let registry = get_tool_registry(&settings);
+        let functions: Vec<ChatCompletionFunctionDefinition> = registry
+            .values()
+            .map(|tool| ChatCompletionFunctionDefinition {
+                name: tool.name().to_string(),
+                description: Some(tool.description().to_string()),
+                parameters: Some(tool.function_definition()),
+            })
+            .collect();
+
+        let mut should_continue = true;
+
+        while should_continue {
+            should_continue = false;
+
+            // Clean old function outputs from history
+            if history.len() > HISTORY_CUTOFF {
+                for i in 0..history.len().saturating_sub(HISTORY_CUTOFF) {
+                    if let ChatCompletionMessageRole::Function = history[i].role {
+                        history[i].content = Some(String::from("[cleaned from history]"));
+                    }
+                }
+            }
+
+            let request = ChatCompletionRequest {
+                model: String::from(MODEL_NAME),
+                messages: history.clone(),
+                functions: if functions.is_empty() {
+                    None
+                } else {
+                    Some(functions.clone())
+                },
+            };
+
+            let url = format!("{}/chat/completions", self.base_url);
+
+            let chat_result = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await;
+
+            match chat_result {
+                Ok(response) => {
+                    match response.json::<ChatCompletionResponse>().await {
+                        Ok(chat_response) => {
+                            let choice = chat_response.choices.first().unwrap();
+                            let assistant_message = &choice.message;
+
+                            // Add assistant message to history
+                            history.push(ChatCompletionMessage {
+                                role: ChatCompletionMessageRole::Assistant,
+                                content: assistant_message.content.clone(),
+                                name: None,
+                                function_call: assistant_message.function_call.clone(),
+                                tool_call_id: None,
+                                tool_calls: None,
+                            });
+
+                            // Print or capture assistant response
+                            if let Some(content) = &assistant_message.content {
+                                if capture_output {
+                                    output_buffer.push(content.clone());
+                                } else {
+                                    println!("{}", content);
+                                }
+
+                                // Send to stream if sender is available
+                                if let Some(sender) = &output_sender {
+                                    let _ = sender.send(content.clone());
+                                }
+                            }
+
+                            // Handle function call if present
+                            if let Some(function_call) = &assistant_message.function_call {
+                                if !capture_output {
+                                    println!("Handling function call: {}", function_call.name);
+                                }
+                                // Send function call info to stream
+                                if let Some(sender) = &output_sender {
+                                    let _ = sender
+                                        .send(format!("Running tool: {}", function_call.name));
+                                }
+
+                                let function_call_result =
+                                    handle_tool_call(function_call, None, is_headless).await;
+
+                                // Send function result to stream
+                                if let Some(sender) = &output_sender {
+                                    match &function_call_result {
+                                        ToolCallResult::Success(msg) => {
+                                            if let Some(content) = &msg.content {
+                                                let _ = sender
+                                                    .send(format!("Tool result: {}", content));
+                                            }
+                                        }
+                                        ToolCallResult::Error(err) => {
+                                            let _ = sender.send(format!("Tool error: {}", err));
+                                        }
+                                        ToolCallResult::Cancelled => {
+                                            let _ = sender.send("Tool cancelled".to_string());
+                                        }
+                                    }
+                                }
+
+                                // Check if this was a subminerve tool - if so, stop looping after completion
+                                let is_subminerve_tool =
+                                    function_call.name.starts_with("subminerve");
+
+                                match function_call_result {
+                                    ToolCallResult::Success(msg) => {
+                                        history.push(msg);
+                                        // Only continue looping if it's not a subminerve tool
+                                        should_continue = !is_subminerve_tool;
+                                    }
+                                    ToolCallResult::Cancelled => break,
+                                    ToolCallResult::Error(err) => {
+                                        let error_msg =
+                                            format!("Error occurred in tool call: {}", err);
+                                        if capture_output {
+                                            output_buffer.push(error_msg);
+                                        } else {
+                                            eprintln!("Error occurred in tool call: {}", err);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(json_err) => {
+                            let error_msg = format!("JSON Error: {json_err}");
+                            if capture_output {
+                                output_buffer.push(error_msg);
+                            } else {
+                                eprintln!("JSON Error: {json_err}");
+                            }
+                            break;
+                        }
+                    }
+                }
+                Err(req_err) => {
+                    let error_msg = format!("Request Error: {req_err}");
+                    if capture_output {
+                        output_buffer.push(error_msg);
+                    } else {
+                        eprintln!("Request Error: {req_err}");
+                    }
+                    break;
+                }
+            }
+        }
+
+        if capture_output {
+            output_buffer.join("\n")
+        } else {
+            String::new()
+        }
+    }
+
     fn add_assistant_message_with_update_ui(
         messages: &Arc<Mutex<Vec<ChatCompletionMessage>>>,
         message_content: String,
@@ -255,11 +428,11 @@ impl Minerve {
 
         Self {
             messages: Arc::new(Mutex::new(vec![system_message])),
-            rt: Runtime::new().unwrap(),
             client: Client::new(),
             api_key,
             base_url,
             request_in_flight: Arc::new(AtomicBool::new(false)),
+            stream_sender: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -319,9 +492,15 @@ impl Minerve {
         let messages_clone = self.messages.clone();
         let request_in_flight = self.request_in_flight.clone();
 
-        self.rt.spawn(async move {
+        crate::get_global_runtime().spawn(async move {
             let mut history: Vec<ChatCompletionMessage> = messages;
-            let registry = get_tool_registry();
+            let settings = crate::tools::ExecuteCommandSettings {
+                is_headless: false,
+                in_subminerve_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                    false,
+                )),
+            };
+            let registry = get_tool_registry(&settings);
             let functions: Vec<ChatCompletionFunctionDefinition> = registry
                 .values()
                 .map(|tool| ChatCompletionFunctionDefinition {
@@ -419,6 +598,10 @@ impl Minerve {
                                     )
                                     .await;
 
+                                    // Check if this was a subminerve tool
+                                    let is_subminerve_tool =
+                                        function_call.name.starts_with("subminerve");
+
                                     match tool_call_result {
                                         ToolCallResult::Cancelled => break,
                                         ToolCallResult::Success(msg) => {
@@ -427,7 +610,8 @@ impl Minerve {
                                                 msgs.push(msg.clone());
                                             }
                                             history.push(msg);
-                                            should_continue = true;
+                                            // Only continue looping if it's not a subminerve tool
+                                            should_continue = !is_subminerve_tool;
                                         }
                                         ToolCallResult::Error(err) => {
                                             let msg =
