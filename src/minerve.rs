@@ -44,6 +44,7 @@ Guidance:
 - You may be working on yourself, but the current session still uses old code.
 - Privilege small changes (10 lines) with compile check in-between.
 - Read and write notes abundantly like a new employee learning a code base and its tools.
+- To avoid mistakes, replace an entire function at the time or an entire code block with matching opening and closing braces.
 
 Dont's:
 
