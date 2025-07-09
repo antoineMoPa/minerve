@@ -897,13 +897,17 @@ pub fn get_tool_registry(
     );
     map.insert("list_files", Arc::new(ListFilesTool));
     map.insert("git_status", Arc::new(GitStatusTool));
-    map.insert("git_diff", Arc::new(GitDiffTool));
-    map.insert("git_diff_cached", Arc::new(GitDiffCachedTool));
-    map.insert("show_file", Arc::new(ShowFileTool));
-    map.insert("replace_content", Arc::new(ReplaceContentTool));
-    map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("read_notes", Arc::new(ReadNotesTool));
     map.insert("append_note", Arc::new(AppendNoteTool));
+
+    if settings.in_subminerve_context.load(Ordering::Relaxed) {
+        // high-token-consuming tools best kept in sub-minerve history
+        map.insert("git_diff", Arc::new(GitDiffTool));
+        map.insert("git_diff_cached", Arc::new(GitDiffCachedTool));
+        map.insert("show_file", Arc::new(ShowFileTool));
+        map.insert("replace_content", Arc::new(ReplaceContentTool));
+        map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
+    }
 
     if !settings.in_subminerve_context.load(Ordering::Relaxed) {
         map.insert("subminerve_executor", Arc::new(SubMinerveExecutorTool));
