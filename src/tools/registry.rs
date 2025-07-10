@@ -357,6 +357,35 @@ impl Tool for ShowFileTool {
 
 pub struct ReplaceContentTool;
 
+fn check_string_balance(
+    content: &str,
+    open: char,
+    close: char,
+) -> Result<(), String> {
+    let mut balance = 0;
+    for c in content.chars() {
+        if c == open {
+            balance += 1;
+        } else if c == close {
+            balance -= 1;
+        }
+        if balance < 0 {
+            return Err(format!(
+                "[Error] Unbalanced {} in content",
+                if open == '(' { "parentheses" } else { "brackets" }
+            ));
+        }
+    }
+    if balance != 0 {
+        Err(format!(
+            "[Error] Unbalanced {} in content",
+            if open == '(' { "parentheses" } else { "brackets" }
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Tool for ReplaceContentTool {
     fn name(&self) -> &'static str {
@@ -390,6 +419,14 @@ impl Tool for ReplaceContentTool {
             Err(e) => return e,
         };
         let new_content = params.get_string_optional("new_content", "");
+
+        let check_result = check_string_balance(&old_content, '(', ')')
+            .and(check_string_balance(&old_content, '[', ']'))
+            .and(check_string_balance(&new_content, '{', '}'));
+
+        if let Err(e) = check_result {
+            return format!("{} - Please make sure to replace entire logical blocks of code.", e);
+        }
 
         match fs::read_to_string(&filepath) {
             Ok(content) => {
