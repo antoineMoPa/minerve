@@ -1,9 +1,7 @@
 use crate::tools::{ParamName, Tool, ToolParams};
-use crate::utils::find_project_root;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::process::Command;
 use std::sync::Arc;
@@ -407,7 +405,7 @@ impl Tool for ReplaceContentTool {
                         }
                     }
                 } else {
-                    return format!("[Error] Old content not found in file: {} - make sure it's an exact match including whitespace.", filepath);
+                    return format!("[Error] Old content not found in file: {} - make sure it's an exact match including whitespace. Show file again to know what to replace.", filepath);
                 }
             }
             Err(e) => {
@@ -592,46 +590,6 @@ impl Tool for CreateFileTool {
     }
 }
 
-use chrono::Local;
-pub struct ReadNotesTool;
-
-#[async_trait]
-impl Tool for ReadNotesTool {
-    fn name(&self) -> &'static str {
-        "read_notes"
-    }
-
-    fn description(&self) -> &'static str {
-        "Reads minerve's notes from the notes registry file."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        HashMap::new()
-    }
-
-    async fn run(
-        &self,
-        _args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let project_root = find_project_root();
-        let notes_path = match project_root {
-            Some(root) => root.join(".minerve/notes.md"),
-            None => return String::from("not in a git project - no notes in this case."),
-        };
-        match fs::read_to_string(&notes_path) {
-            Ok(content) => content,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    String::from("[Error] Notes file does not exist.")
-                } else {
-                    format!("[Error] Failed to read notes: {}", e)
-                }
-            }
-        }
-    }
-}
-
 pub struct SubMinerveTool;
 
 #[async_trait]
@@ -679,65 +637,6 @@ impl Tool for SubMinerveTool {
     }
 }
 
-pub struct AppendNoteTool;
-
-#[async_trait]
-impl Tool for AppendNoteTool {
-    fn name(&self) -> &'static str {
-        "append_note"
-    }
-
-    fn description(&self) -> &'static str {
-        "Appends a note to minerve's notes in the registry file."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        let mut params = HashMap::new();
-        params.insert("note", "string");
-        params
-    }
-
-    async fn run(
-        &self,
-        args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let note = match args.get("note") {
-            Some(n) if !n.is_empty() => n,
-            _ => return String::from("[Error] Missing or empty 'note' parameter."),
-        };
-
-        let project_root = find_project_root();
-        let notes_path = match project_root {
-            Some(root) => root.join(".minerve/notes.md"),
-            None => return String::from("not in a git project - no notes in this case."),
-        };
-        let timestamp = Local::now().format("[%Y-%m-%d %H:%M:%S]").to_string();
-
-        let cwd = match std::env::current_dir() {
-            Ok(path) => path.to_string_lossy().to_string(),
-            Err(_) => String::from("[unknown cwd]"),
-        };
-
-        let formatted_note = format!("{} [{}] {}\n", timestamp, cwd, note);
-
-        let mut file = match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&notes_path)
-        {
-            Ok(f) => f,
-            Err(e) => return format!("[Error] Failed to open notes file: {}", e),
-        };
-
-        if let Err(e) = file.write_all(formatted_note.as_bytes()) {
-            return format!("[Error] Failed to write note: {}", e);
-        }
-
-        format!("✅ Successfully appended note to {}", notes_path.display())
-    }
-}
-
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
@@ -756,8 +655,6 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("run_shell_command", Arc::new(RunShellCommandTool));
     map.insert("subminerve", Arc::new(SubMinerveTool));
-    map.insert("read_notes", Arc::new(ReadNotesTool));
-    map.insert("append_note", Arc::new(AppendNoteTool));
 
     map
 }
