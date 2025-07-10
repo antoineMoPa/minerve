@@ -1,5 +1,6 @@
 use crate::tools::{ParamName, Tool, ToolParams};
 use async_trait::async_trait;
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -357,11 +358,7 @@ impl Tool for ShowFileTool {
 
 pub struct ReplaceContentTool;
 
-fn check_string_balance(
-    content: &str,
-    open: char,
-    close: char,
-) -> Result<(), String> {
+fn check_string_balance(content: &str, open: char, close: char) -> Result<(), String> {
     let mut balance = 0;
     for c in content.chars() {
         if c == open {
@@ -372,14 +369,22 @@ fn check_string_balance(
         if balance < 0 {
             return Err(format!(
                 "[Error] Unbalanced {} in content",
-                if open == '(' { "parentheses" } else { "brackets" }
+                if open == '(' {
+                    "parentheses"
+                } else {
+                    "brackets"
+                }
             ));
         }
     }
     if balance != 0 {
         Err(format!(
             "[Error] Unbalanced {} in content",
-            if open == '(' { "parentheses" } else { "brackets" }
+            if open == '(' {
+                "parentheses"
+            } else {
+                "brackets"
+            }
         ))
     } else {
         Ok(())
@@ -436,19 +441,29 @@ impl Tool for ReplaceContentTool {
 
         match fs::read_to_string(&filepath) {
             Ok(content) => {
-                // First try exact match
-                if content.contains(&old_content) {
-                    let updated_content = content.replace(&old_content, &new_content);
-                    match fs::write(&filepath, updated_content) {
-                        Ok(_) => {
-                            return format!("✅ Successfully replaced content in {}", filepath);
-                        }
-                        Err(e) => {
-                            return format!("[Error] Failed to write file: {}", e);
+                // Try regex replacement with multi-line support
+                match Regex::new(&format!("(?s){}", regex::escape(&old_content))) {
+                    Ok(re) => {
+                        if re.is_match(&content) {
+                            let updated_content = re.replace_all(&content, &new_content);
+                            match fs::write(&filepath, updated_content.as_ref()) {
+                                Ok(_) => {
+                                    return format!(
+                                        "✅ Successfully replaced content in {}",
+                                        filepath
+                                    );
+                                }
+                                Err(e) => {
+                                    return format!("[Error] Failed to write file: {}", e);
+                                }
+                            }
+                        } else {
+                            return format!("[Error] Old content not found in file: {} - make sure it's an exact match including whitespace. Show file again to know what to replace.", filepath);
                         }
                     }
-                } else {
-                    return format!("[Error] Old content not found in file: {} - make sure it's an exact match including whitespace. Show file again to know what to replace.", filepath);
+                    Err(e) => {
+                        return format!("[Error] Failed to create regex pattern: {}", e);
+                    }
                 }
             }
             Err(e) => {
