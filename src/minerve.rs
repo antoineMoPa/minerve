@@ -6,6 +6,8 @@ use std::env;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+const HIST_CUTOFF: usize = 30;
+
 use crate::tools::registry::get_tool_registry;
 use crate::{
     update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition,
@@ -178,8 +180,8 @@ impl Minerve {
             should_continue = false;
 
             // Clean old function outputs from history
-            if history.len() > 10 {
-                for i in 0..history.len().saturating_sub(10) {
+            if history.len() > HIST_CUTOFF {
+                for i in 0..history.len().saturating_sub(HIST_CUTOFF) {
                     if let ChatCompletionMessageRole::Function = history[i].role {
                         history[i].content = Some(String::from("[cleaned from history]"));
                     }
