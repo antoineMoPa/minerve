@@ -364,7 +364,7 @@ impl Tool for ReplaceContentTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replaces existing content in a file with new content by searching for the old content. Use this for precise content-based editing."
+        "Replaces existing content in a file with new content by searching for the old content. Use this for precise content-based editing. Please replace entire functions or code blocks at onces to avoid silly mistakes with closing parenthesis & brackets."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
