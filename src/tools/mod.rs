@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub mod registry;
+pub mod token_counter;
 
 // Parameter name constants to prevent typos
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

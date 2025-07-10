@@ -7,6 +7,7 @@ use cursive::views::{
     Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView,
 };
 use history::HistoryTracker;
+use tools::token_counter::TokenCounter;
 use minerve::Minerve;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -34,7 +35,7 @@ mod utils;
 mod minerve;
 mod theme;
 
-pub const MODEL_NAME: &str = "gpt-4o-mini";
+pub const MODEL_NAME: &str = "gpt-4o";
 pub const HISTORY_PATH: &str = ".minerve/history.json";
 
 fn update_chat_ui(
@@ -156,8 +157,10 @@ fn launch_tui() {
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
     let history_tracker = Arc::new(Mutex::new(HistoryTracker::new()));
+    let token_counter = Arc::new(TokenCounter::new());
 
     let history_tracker_for_submit = history_tracker.clone();
+    let token_counter_for_submit = token_counter.clone();
 
     let submit_button = cursive::views::Button::new("Send (Tab-Enter)", move |s| {
         let content = s
@@ -170,6 +173,8 @@ fn launch_tui() {
             return;
         }
 
+        // Increment sent tokens count
+        token_counter_for_submit.increment_sent(content.len());
         history_tracker_for_submit
             .lock()
             .unwrap()
@@ -179,6 +184,13 @@ fn launch_tui() {
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
 
+        // Update tokens count UI
+        s.call_on_name("token_count", |view: &mut TextView| {
+            let sent = token_counter_for_submit.current_sent();
+            let received = token_counter_for_submit.current_received();
+            view.set_content(format!("Sent: {} | Received: {}", sent, received));
+        });
+
         // Select the input for better UX after querying OpenAPI
         s.call_on_name("input", |view: &mut TextArea| {
             view.set_cursor(0);
@@ -187,7 +199,10 @@ fn launch_tui() {
     });
 
     let chat_view = TextView::new("").with_name("chat").full_height();
-    use cursive::theme::{BaseColor, Color, ColorStyle};
+
+    let token_count_view = TextView::new("Sent: 0 | Received: 0")
+        .with_name("token_count")
+        .fixed_height(1);
 
     let working_textview = TextView::new("")
         .center()
@@ -261,6 +276,7 @@ fn launch_tui() {
         Dialog::around(
             LinearLayout::vertical()
                 .child(scroll_chat_view)
+                .child(token_count_view)
                 .child(working_textview)
                 .child(status_view)
                 .child(input_view.full_width())
