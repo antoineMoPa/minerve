@@ -420,12 +420,18 @@ impl Tool for ReplaceContentTool {
         };
         let new_content = params.get_string_optional("new_content", "");
 
-        let check_result = check_string_balance(&old_content, '(', ')')
+        let check_old = check_string_balance(&old_content, '(', ')')
             .and(check_string_balance(&old_content, '[', ']'))
-            .and(check_string_balance(&new_content, '{', '}'));
+            .and(check_string_balance(&old_content, '{', '}'));
+        if let Err(e) = check_old {
+            return format!("{} {} [in old content]- Please make sure to replace entire logical blocks of code.", e, old_content);
+        }
 
-        if let Err(e) = check_result {
-            return format!("{} - Please make sure to replace entire logical blocks of code.", e);
+        let check_new = check_string_balance(&new_content, '(', ')')
+            .and(check_string_balance(&new_content, '[', ']'))
+            .and(check_string_balance(&new_content, '{', '}'));
+        if let Err(e) = check_new {
+            return format!("{} {} [in new content] - Please make sure to replace entire logical blocks of code.", e, new_content);
         }
 
         match fs::read_to_string(&filepath) {
