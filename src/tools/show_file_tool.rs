@@ -12,7 +12,7 @@ impl Tool for ShowFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Shows the content of a file."
+        "Shows the content of a file. Prefer extract_structure when you just need an overview."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {

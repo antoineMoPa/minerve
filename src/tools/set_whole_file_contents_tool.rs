@@ -12,7 +12,7 @@ impl Tool for SetWholeFileContentsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Sets the entire contents of a file to the provided content. Use this for precise file content replacement."
+        "Sets the entire contents of a file to the provided content. Only use this for files you fully understand."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {

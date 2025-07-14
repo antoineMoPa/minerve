@@ -15,6 +15,7 @@ pub mod git_diff_cached_tool;
 pub mod run_cargo_check_tool;
 pub mod show_file_tool;
 pub mod run_shell_command_tool;
+pub mod extract_structure_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,10 +54,7 @@ impl ToolParams {
             .cloned()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                format!(
-                    "[Error] Parameter '{}' is required and must be a non-empty string.",
-                    param
-                )
+                format!("[Error] Parameter '{}' is required and must be a non-empty string.", param)
             })
     }
 
