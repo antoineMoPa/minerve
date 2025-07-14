@@ -17,6 +17,10 @@ impl TokenCounter {
         self.sent_tokens.fetch_add(count, Ordering::SeqCst);
     }
 
+    pub fn increment_received(&self, count: usize) {
+        self.received_tokens.fetch_add(count, Ordering::SeqCst);
+    }
+
     pub fn current_sent(&self) -> usize {
         self.sent_tokens.load(Ordering::SeqCst)
     }

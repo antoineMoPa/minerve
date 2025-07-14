@@ -3,8 +3,9 @@ use dotenvy::from_path;
 use reqwest::Client;
 use std::collections::HashMap;
 use crate::token_counter::TokenCounter;
+use std::sync::Arc; 
 
-async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest) -> Result<ChatCompletionResponse, reqwest::Error> {
+pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest, cb_sink: Option<&cursive::CbSink>, token_counter: Arc<TokenCounter>) -> Result<ChatCompletionResponse, reqwest::Error> {
     let response = client.post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
@@ -15,17 +16,21 @@ async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str
     let chat_response: ChatCompletionResponse = response.json().await?;
 
     if let Some(ref usage) = chat_response.usage {
-        // Increment token count
-        let token_counter = TokenCounter::new();
+        // Correctly use the increment with the provided token_counter
         token_counter.increment_sent(usage.total_tokens as usize);
-        // Ensure UI update without `println`
+        if let Some(cb_sink) = cb_sink {
+            let request_status = false;
+            let ui_messages = vec![]; // populate ui_messages appropriately
+            update_chat_ui(cb_sink.clone(), ui_messages, request_status, token_counter.clone());
+        }
     }
 
     Ok(chat_response)
 }
+
 use std::env;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 
 const HIST_CUTOFF: usize = 30;
 
@@ -223,7 +228,7 @@ impl Minerve {
 
             let url = format!("{}/chat/completions", self.base_url);
 
-            let chat_result = post_request_with_token_count(&self.client, &url, &self.api_key, request).await;
+            let chat_result = post_request_with_token_count(&self.client, &url, &self.api_key, request, None, self.token_counter.clone()).await;
 
             if let Ok(chat_response) = chat_result {
                 let choice = chat_response.choices.first().unwrap();
@@ -471,7 +476,7 @@ pub fn chat_with_arc(self: Arc<Self>, user_input: String, cb_sink: cursive::CbSi
 
                 let url = format!("{}/chat/completions", base_url);
 
-                let chat_result = post_request_with_token_count(&client, &url, &api_key, request).await;
+                let chat_result = post_request_with_token_count(&client, &url, &api_key, request, Some(&cb_sink_clone), token_counter.clone()).await;
 
                 match chat_result {
                     Ok(response) => {
@@ -580,5 +585,7 @@ pub fn chat_with_arc(self: Arc<Self>, user_input: String, cb_sink: cursive::CbSi
         }
     });
 }
+ }
 
-}
+
+

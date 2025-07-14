@@ -196,6 +196,7 @@ fn launch_tui() {
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
 
         // Update tokens count UI
+        println!("Current Tokens - Sent: {} | Received: {}", token_counter_for_submit.current_sent(), token_counter_for_submit.current_received());
         s.call_on_name("token_count", |view: &mut TextView| {
             let sent = token_counter_for_submit.current_sent();
             let received = token_counter_for_submit.current_received();
