@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub mod get_general_context;
 pub mod registry;
+pub mod get_general_context_tool;
 pub mod replace_content_tool;
+pub mod search_for_string_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
