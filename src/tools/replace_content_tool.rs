@@ -1,5 +1,6 @@
 use crate::tools::{ParamName, Tool, ToolParams};
 use async_trait::async_trait;
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 
