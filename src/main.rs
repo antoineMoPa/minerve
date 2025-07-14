@@ -43,6 +43,7 @@ fn update_chat_ui(
     cb_sink: cursive::CbSink,
     messages: Vec<(String, String)>,
     request_in_flight: bool,
+    token_counter: Arc<TokenCounter>,
 ) {
     const MAX_OUTPUT_LEN: usize = 500;
 
@@ -106,6 +107,15 @@ fn update_chat_ui(
                 }
             } else {
                 panic!("working_textview view not found");
+            }
+
+            // Update token count display
+            if let Some(mut view) = s.find_name::<TextView>("token_count") {
+                let sent = token_counter.current_sent();
+                let received = token_counter.current_received();
+                view.set_content(format!("Sent: {} | Received: {}", sent, received));
+            } else {
+                panic!("TextView 'token_count' not found");
             }
         }))
         .unwrap();
@@ -180,7 +190,7 @@ fn launch_tui() {
             .lock()
             .unwrap()
             .add_prompt(content.clone());
-        minerve.chat(content, s.cb_sink().clone(), is_headless);
+        minerve.clone().chat_with_arc(content, s.cb_sink().clone(), is_headless);
 
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));

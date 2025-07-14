@@ -43,6 +43,7 @@ pub struct Minerve {
     pub api_key: String,
     pub base_url: String,
     pub request_in_flight: Arc<AtomicBool>,
+    pub token_counter: Arc<TokenCounter>,
 }
 
 pub fn get_system_prompt() -> String {
@@ -290,6 +291,7 @@ impl Minerve {
     }
 
     fn add_assistant_message_with_update_ui(
+        &self,
         messages: &Arc<Mutex<Vec<ChatCompletionMessage>>>,
         message_content: String,
         cb_sink: &cursive::CbSink,
@@ -321,7 +323,7 @@ impl Minerve {
             .collect();
 
         let request_status = false;
-        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+        update_chat_ui(cb_sink.clone(), ui_messages, request_status, self.token_counter.clone());
     }
 
     pub fn new() -> Self {
@@ -351,66 +353,75 @@ impl Minerve {
             api_key,
             base_url,
             request_in_flight: Arc::new(AtomicBool::new(false)),
+            token_counter: Arc::new(TokenCounter::new()),
         }
     }
 
-    pub fn chat(&self, user_input: String, cb_sink: cursive::CbSink, is_headless: bool) {
-        use std::sync::atomic::Ordering;
 
-        self.request_in_flight.store(true, Ordering::SeqCst);
 
-        let mut msgs = self.messages.lock().unwrap();
+pub fn chat_with_arc(self: Arc<Self>, user_input: String, cb_sink: cursive::CbSink, is_headless: bool) {
+    use std::sync::atomic::Ordering;
 
-        let user_message = ChatCompletionMessage {
-            role: ChatCompletionMessageRole::User,
-            content: Some(user_input.clone()),
-            name: None,
-            function_call: None,
-            tool_call_id: None,
-            tool_calls: None,
-        };
-        msgs.push(user_message);
+    let cb_sink = cb_sink.clone();
 
-        let ui_messages = msgs
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    ChatCompletionMessageRole::System => "system".to_string(),
-                    ChatCompletionMessageRole::User => "user".to_string(),
-                    ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                    ChatCompletionMessageRole::Function => msg
-                        .tool_call_id
-                        .clone()
-                        .unwrap_or(String::from("unknown function call")),
-                };
-                (role, msg.content.clone().unwrap_or_default())
-            })
-            .collect();
+    self.request_in_flight.store(true, Ordering::SeqCst);
 
-        let request_status = false;
-        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+    let mut msgs = self.messages.lock().unwrap();
 
-        // Show working indicator
-        cb_sink
-            .send(Box::new(|s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                    view.get_inner_mut().set_content("working...");
-                } else {
-                    panic!("working_textview view not found");
-                }
-            }))
-            .unwrap();
+    let user_message = ChatCompletionMessage {
+        role: ChatCompletionMessageRole::User,
+        content: Some(user_input.clone()),
+        name: None,
+        function_call: None,
+        tool_call_id: None,
+        tool_calls: None,
+    };
+    msgs.push(user_message);
 
-        let messages = msgs.clone();
-        drop(msgs); // unlock before async
+    let ui_messages = msgs
+        .iter()
+        .map(|msg| {
+            let role = match msg.role {
+                ChatCompletionMessageRole::System => "system".to_string(),
+                ChatCompletionMessageRole::User => "user".to_string(),
+                ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                ChatCompletionMessageRole::Function => msg
+                    .tool_call_id
+                    .clone()
+                    .unwrap_or(String::from("unknown function call")),
+            };
+            (role, msg.content.clone().unwrap_or_default())
+        })
+        .collect();
 
-        let client = self.client.clone();
-        let api_key = self.api_key.clone();
-        let base_url = self.base_url.clone();
-        let messages_clone = self.messages.clone();
-        let request_in_flight = self.request_in_flight.clone();
+    let request_status = false;
+    update_chat_ui(cb_sink.clone(), ui_messages, request_status, self.token_counter.clone());
 
-        crate::get_global_runtime().spawn(async move {
+    // Show working indicator
+    cb_sink
+        .send(Box::new(|s| {
+            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
+                view.get_inner_mut().set_content("working...");
+            } else {
+                panic!("working_textview view not found");
+            }
+        }))
+        .unwrap();
+
+    let messages = msgs.clone();
+    drop(msgs);
+
+    let client = self.client.clone();
+    let api_key = self.api_key.clone();
+    let base_url = self.base_url.clone();
+    let messages_clone = self.messages.clone();
+    let request_in_flight = self.request_in_flight.clone();
+    let token_counter = self.token_counter.clone();
+    let cb_sink_clone = cb_sink.clone();
+
+    crate::get_global_runtime().spawn({
+        let self_clone = self.clone();
+        async move {
             let mut history: Vec<ChatCompletionMessage> = messages;
             let registry = get_tool_registry();
             let functions: Vec<ChatCompletionFunctionDefinition> = registry
@@ -428,11 +439,9 @@ impl Minerve {
                 should_continue = false;
 
                 // Show working indicator at start of each loop iteration
-                cb_sink
+                cb_sink_clone
                     .send(Box::new(|s| {
-                        if let Some(mut view) =
-                            s.find_name::<ResizedView<TextView>>("working_textview")
-                        {
+                        if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                             view.get_inner_mut().set_content("working...");
                         } else {
                             panic!("working_textview view not found");
@@ -440,7 +449,6 @@ impl Minerve {
                     }))
                     .unwrap();
 
-                // Prepare history with cleaned older function outputs
                 let history_len = history.len();
                 let mut cleaned_history = history.clone();
                 if history_len > 30 {
@@ -470,7 +478,6 @@ impl Minerve {
                         let choice = response.choices.first().unwrap();
                         let assistant_message = &choice.message;
 
-                        // Add assistant message to history
                         history.push(ChatCompletionMessage {
                             role: ChatCompletionMessageRole::Assistant,
                             content: assistant_message.content.clone(),
@@ -480,7 +487,6 @@ impl Minerve {
                             tool_calls: None,
                         });
 
-                        // Add assistant response to UI
                         if let Some(content) = &assistant_message.content {
                             let mut msgs = messages_clone.lock().unwrap();
                             msgs.push(ChatCompletionMessage {
@@ -493,11 +499,10 @@ impl Minerve {
                             });
                         }
 
-                        // Handle function call if present
                         if let Some(function_call) = &assistant_message.function_call {
                             let tool_call_result = handle_tool_call(
                                 function_call,
-                                Some(cb_sink.clone()),
+                                Some(cb_sink_clone.clone()),
                                 is_headless,
                             )
                                 .await;
@@ -515,10 +520,10 @@ impl Minerve {
                                 ToolCallResult::Error(err) => {
                                     let msg =
                                         format!("Error occurred in tool call: {}", err);
-                                    Minerve::add_assistant_message_with_update_ui(
+                                    self_clone.add_assistant_message_with_update_ui(
                                         &messages_clone,
                                         msg,
-                                        &cb_sink,
+                                        &cb_sink_clone,
                                     );
                                     break;
                                 }
@@ -548,32 +553,32 @@ impl Minerve {
                             .collect();
 
                         let request_status = false;
-                        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
+                        update_chat_ui(cb_sink_clone.clone(), ui_messages, request_status, token_counter.clone());
                     }
                     Err(req_err) => {
                         let error_msg = format!("Request Error: {}", req_err);
-                        Self::add_assistant_message_with_update_ui(
+                        self_clone.add_assistant_message_with_update_ui(
                             &messages_clone,
                             error_msg,
-                            &cb_sink,
+                            &cb_sink_clone,
                         );
                         break;
                     }
                 }
             }
 
-            // Hide working indicator on finish
             request_in_flight.store(false, Ordering::SeqCst);
-            cb_sink
+            cb_sink_clone
                 .send(Box::new(|s| {
-                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview")
-                    {
+                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
                         view.get_inner_mut().set_content("");
                     } else {
                         panic!("working_textview view not found");
                     }
                 }))
                 .unwrap();
-        });
-    }
+        }
+    });
+}
+
 }
