@@ -10,6 +10,7 @@ use super::get_general_context_tool::GetGeneralContext;
 use super::replace_content_tool::ReplaceContentTool;
 use super::search_for_path_pattern_tool::SearchForPathPatternTool;
 use super::search_for_string_tool::SearchForStringTool;
+use super::set_whole_file_contents_tool::SetWholeFileContentsTool;
 use super::ExecuteCommandSettings;
 
 pub struct ListFilesTool;
@@ -352,53 +353,6 @@ impl Tool for CreateFileTool {
     }
 }
 
-pub struct SubMinerveTool;
-
-#[async_trait]
-impl Tool for SubMinerveTool {
-    fn name(&self) -> &'static str {
-        "subminerve"
-    }
-
-    fn description(&self) -> &'static str {
-        "Runs a new instance of the minerve chat in a subprocess. Useful for creating nested minerve sessions."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        let mut params = HashMap::new();
-        params.insert("prompt", "string");
-        params
-    }
-
-    async fn run(
-        &self,
-        args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let params = ToolParams::new(args);
-        let prompt = params.get_string("prompt");
-        let prompt = match prompt {
-            Ok(p) if !p.is_empty() => p,
-            _ => return String::from("[Error] Missing or empty 'prompt' parameter."),
-        };
-
-        // Call run_headless_with_capture directly instead of subprocess
-        let output = crate::run_headless_with_capture(prompt.clone(), true).await;
-
-        if output.is_empty() {
-            format!(
-                "✅ Subminerve session completed successfully with prompt: '{}'",
-                prompt
-            )
-        } else {
-            format!(
-                "✅ Subminerve session completed successfully.\nOutput:\n{}",
-                output
-            )
-        }
-    }
-}
-
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
 
@@ -416,7 +370,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("replace_content", Arc::new(ReplaceContentTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("run_shell_command", Arc::new(RunShellCommandTool));
-    map.insert("subminerve", Arc::new(SubMinerveTool));
+    map.insert("set_whole_file_contents", Arc::new(SetWholeFileContentsTool));
 
     map
 }
