@@ -8,6 +8,7 @@ pub mod replace_content_tool;
 pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
 pub mod set_whole_file_contents_tool;
+pub mod list_files_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
