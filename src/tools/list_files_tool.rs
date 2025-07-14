@@ -2,7 +2,6 @@ use crate::tools::{ParamName, Tool, ToolParams};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;
-use std::sync::Arc;
 
 use super::ExecuteCommandSettings;
 

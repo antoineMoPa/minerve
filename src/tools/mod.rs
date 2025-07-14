@@ -9,6 +9,11 @@ pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
 pub mod set_whole_file_contents_tool;
 pub mod list_files_tool;
+pub mod git_status_tool;
+pub mod git_diff_tool;
+pub mod git_diff_cached_tool;
+pub mod run_cargo_check_tool;
+pub mod show_file_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

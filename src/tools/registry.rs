@@ -1,201 +1,22 @@
-use crate::tools::{ParamName, Tool, ToolParams};
+use crate::tools::{Tool, ToolParams};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::process::Command;
 use std::sync::Arc;
 
 use super::get_general_context_tool::GetGeneralContext;
+use super::git_diff_cached_tool::GitDiffCachedTool;
+use super::git_diff_tool::GitDiffTool;
+use super::git_status_tool::GitStatusTool;
 use super::replace_content_tool::ReplaceContentTool;
+use super::run_cargo_check_tool::RunCargoCheckTool;
 use super::search_for_path_pattern_tool::SearchForPathPatternTool;
 use super::search_for_string_tool::SearchForStringTool;
 use super::set_whole_file_contents_tool::SetWholeFileContentsTool;
 use super::list_files_tool::ListFilesTool;
+use super::show_file_tool::ShowFileTool;
 use super::ExecuteCommandSettings;
-
-pub struct GitStatusTool;
-
-#[async_trait]
-impl Tool for GitStatusTool {
-    fn name(&self) -> &'static str {
-        "git_status"
-    }
-
-    fn description(&self) -> &'static str {
-        "Gets the current git status of the repository."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        HashMap::new()
-    }
-
-    async fn run(
-        &self,
-        _args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let output = Command::new("git")
-            .arg("status")
-            .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
-            .unwrap_or_else(|e| format!("[Error] {}", e));
-
-        output
-    }
-}
-
-pub struct GitDiffTool;
-
-#[async_trait]
-impl Tool for GitDiffTool {
-    fn name(&self) -> &'static str {
-        "git_diff"
-    }
-
-    fn description(&self) -> &'static str {
-        "Gets the current git diff of the repository."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        HashMap::new()
-    }
-
-    async fn run(
-        &self,
-        _args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let output = Command::new("git")
-            .arg("diff")
-            .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
-            .unwrap_or_else(|e| format!("[Error] {}", e));
-
-        output
-    }
-}
-
-pub struct GitDiffCachedTool;
-
-#[async_trait]
-impl Tool for GitDiffCachedTool {
-    fn name(&self) -> &'static str {
-        "git_diff_cached"
-    }
-
-    fn description(&self) -> &'static str {
-        "Gets the current git diff of the repository."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        HashMap::new()
-    }
-
-    async fn run(
-        &self,
-        _args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let output = Command::new("git")
-            .arg("diff")
-            .arg("--cached")
-            .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
-            .unwrap_or_else(|e| format!("[Error] {}", e));
-
-        output
-    }
-}
-
-pub struct ShowFileTool;
-
-#[async_trait]
-impl Tool for ShowFileTool {
-    fn name(&self) -> &'static str {
-        "show_file"
-    }
-
-    fn description(&self) -> &'static str {
-        "Shows the content of a file."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        let mut params = HashMap::new();
-        params.insert(ParamName::FilePath.as_str(), "string");
-        params
-    }
-
-    async fn run(
-        &self,
-        args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let params = ToolParams::new(args);
-        let path = match params.get_string(ParamName::FilePath.as_str()) {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
-
-        match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) => {
-                let error_message = e.to_string();
-                if e.kind() == std::io::ErrorKind::NotFound
-                    || error_message.contains("No such file or directory")
-                {
-                    "[file does not exist]".to_string()
-                } else {
-                    format!("[Error] Failed to read file: {}", e)
-                }
-            }
-        }
-    }
-}
-
-pub struct RunCargoCheckTool;
-
-#[async_trait]
-impl Tool for RunCargoCheckTool {
-    fn name(&self) -> &'static str {
-        "run_cargo_check"
-    }
-
-    fn description(&self) -> &'static str {
-        "Runs `cargo check` in the current directory."
-    }
-
-    fn parameters(&self) -> HashMap<&'static str, &'static str> {
-        HashMap::new()
-    }
-
-    async fn run(
-        &self,
-        _args: HashMap<String, String>,
-        _settings: ExecuteCommandSettings,
-    ) -> String {
-        let output = Command::new("cargo")
-            .arg("check")
-            .output()
-            .map(|out| {
-                if out.status.success() {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    let out = if !stderr.is_empty() {
-                        format!("{}\n{}", stdout, stderr)
-                    } else {
-                        stdout.to_string()
-                    };
-                    out.to_string()
-                } else {
-                    format!("[Error] {}", String::from_utf8_lossy(&out.stderr))
-                }
-            })
-            .unwrap_or_else(|e| format!("[Error] {}", e));
-
-        output
-    }
-}
 
 pub struct RunShellCommandTool;
 
