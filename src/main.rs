@@ -7,11 +7,11 @@ use cursive::views::{
     Dialog, LinearLayout, NamedView, OnEventView, ResizedView, ScrollView, TextArea, TextView,
 };
 use history::HistoryTracker;
-use tools::token_counter::TokenCounter;
 use minerve::Minerve;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use theme::custom_theme;
+use token_counter::TokenCounter;
 use tokio::runtime::Runtime;
 
 static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -22,6 +22,7 @@ pub fn get_global_runtime() -> &'static Runtime {
 
 mod chat;
 mod history;
+mod token_counter;
 mod tools;
 
 use chat::*;

@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub mod get_general_context;
 pub mod registry;
-pub mod token_counter;
+pub mod utils;
 
-// Parameter name constants to prevent typos
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamName {
     FilePath,
@@ -25,7 +25,6 @@ impl ParamName {
     }
 }
 
-// Centralized parameter validation
 pub struct ToolParams {
     args: HashMap<String, String>,
 }

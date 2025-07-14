@@ -29,4 +29,3 @@ impl TokenCounter {
         self.received_tokens.load(Ordering::SeqCst)
     }
 }
-
