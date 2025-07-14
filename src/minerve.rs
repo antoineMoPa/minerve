@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 const HIST_CUTOFF: usize = 30;
 
 use crate::tools::registry::get_tool_registry;
+use crate::tools::run_shell_command_tool::RunShellCommandTool;
 use crate::{
     update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition,
     ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest,
@@ -95,7 +96,7 @@ pub async fn handle_tool_call(
                     return ToolCallResult::Cancelled;
                 }
 
-                let output = crate::tools::registry::RunShellCommandTool::execute_command(
+                let output = RunShellCommandTool::execute_command(
                     &command,
                     Some(settings),
                 );

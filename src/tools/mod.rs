@@ -14,6 +14,7 @@ pub mod git_diff_tool;
 pub mod git_diff_cached_tool;
 pub mod run_cargo_check_tool;
 pub mod show_file_tool;
+pub mod run_shell_command_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,6 +70,12 @@ impl ToolParams {
 
 pub struct ExecuteCommandSettings {
     pub is_headless: bool,
+}
+
+impl Default for ExecuteCommandSettings {
+    fn default() -> Self {
+        Self { is_headless: false }
+    }
 }
 
 #[async_trait]
