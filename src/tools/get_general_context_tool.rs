@@ -1,4 +1,4 @@
-use crate::tools::{Tool};
+use crate::tools::Tool;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;

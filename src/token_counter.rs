@@ -17,8 +17,6 @@ impl TokenCounter {
         self.sent_tokens.fetch_add(count, Ordering::SeqCst);
     }
 
-
-
     pub fn current_sent(&self) -> usize {
         self.sent_tokens.load(Ordering::SeqCst)
     }

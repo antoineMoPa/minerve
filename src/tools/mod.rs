@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub mod registry;
 pub mod get_general_context_tool;
+pub mod registry;
 pub mod replace_content_tool;
+pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
 pub mod utils;
 

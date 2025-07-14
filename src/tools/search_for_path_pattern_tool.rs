@@ -5,21 +5,21 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Command;
 
-pub struct SearchForStringTool;
+pub struct SearchForPathPatternTool;
 
 #[async_trait]
-impl Tool for SearchForStringTool {
+impl Tool for SearchForPathPatternTool {
     fn name(&self) -> &'static str {
-        "search_for_string"
+        "search_for_path_pattern"
     }
 
     fn description(&self) -> &'static str {
-        "Searches for a string in the current directory using ag or grep, excluding gitignored files."
+        "Searches for a path pattern in the current directory using ag or grep, excluding gitignored files."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert(ParamName::SearchString.as_str(), "string");
+        params.insert(ParamName::PathPattern.as_str(), "string");
         params
     }
 
@@ -29,7 +29,7 @@ impl Tool for SearchForStringTool {
         _settings: ExecuteCommandSettings,
     ) -> String {
         let params = ToolParams::new(args);
-        let search_string = match params.get_string(ParamName::SearchString.as_str()) {
+        let pattern = match params.get_string(ParamName::PathPattern.as_str()) {
             Ok(s) => s,
             Err(e) => return e,
         };
@@ -42,14 +42,11 @@ impl Tool for SearchForStringTool {
             .unwrap_or(false);
 
         let command = if ag_check {
-            format!(
-                "ag --ignore .git --ignore node_modules \"{}\"",
-                search_string
-            )
+            format!("ag --ignore .git --ignore node_modules \"{}\"", pattern)
         } else {
             format!(
                 "grep -r --exclude-dir={{.git,node_modules}} \"{}\" .",
-                search_string
+                pattern
             )
         };
 
