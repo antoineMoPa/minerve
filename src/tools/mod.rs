@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 pub mod get_general_context;
 pub mod registry;
+pub mod replace_content_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

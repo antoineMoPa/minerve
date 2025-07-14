@@ -1,11 +1,8 @@
-use crate::tools::{ParamName, Tool, ToolParams};
+use crate::tools::{Tool};
 use async_trait::async_trait;
-use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
 use std::process::Command;
-use std::sync::Arc;
 
 use super::{utils::truncate, ExecuteCommandSettings};
 
