@@ -45,8 +45,17 @@ pub struct ChatCompletionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ChatCompletionResponse {
     pub choices: Vec<ChatCompletionChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Deserialize)]

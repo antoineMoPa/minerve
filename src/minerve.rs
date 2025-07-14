@@ -2,6 +2,27 @@ use cursive::views::{ResizedView, TextView};
 use dotenvy::from_path;
 use reqwest::Client;
 use std::collections::HashMap;
+use crate::token_counter::TokenCounter;
+
+async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest) -> Result<ChatCompletionResponse, reqwest::Error> {
+    let response = client.post(url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await?;
+
+    let chat_response: ChatCompletionResponse = response.json().await?;
+
+    if let Some(ref usage) = chat_response.usage {
+        // Increment token count
+        let token_counter = TokenCounter::new();
+        token_counter.increment_sent(usage.total_tokens as usize);
+        // Ensure UI update without `println`
+    }
+
+    Ok(chat_response)
+}
 use std::env;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -201,86 +222,62 @@ impl Minerve {
 
             let url = format!("{}/chat/completions", self.base_url);
 
-            let chat_result = self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
-                .json(&request)
-                .send()
-                .await;
+            let chat_result = post_request_with_token_count(&self.client, &url, &self.api_key, request).await;
 
-            match chat_result {
-                Ok(response) => {
-                    match response.json::<ChatCompletionResponse>().await {
-                        Ok(chat_response) => {
-                            let choice = chat_response.choices.first().unwrap();
-                            let assistant_message = &choice.message;
+            if let Ok(chat_response) = chat_result {
+                let choice = chat_response.choices.first().unwrap();
+                let assistant_message = &choice.message;
 
-                            // Add assistant message to history
-                            history.push(ChatCompletionMessage {
-                                role: ChatCompletionMessageRole::Assistant,
-                                content: assistant_message.content.clone(),
-                                name: None,
-                                function_call: assistant_message.function_call.clone(),
-                                tool_call_id: None,
-                                tool_calls: None,
-                            });
+                // Add assistant message to history
+                history.push(ChatCompletionMessage {
+                    role: ChatCompletionMessageRole::Assistant,
+                    content: assistant_message.content.clone(),
+                    name: None,
+                    function_call: assistant_message.function_call.clone(),
+                    tool_call_id: None,
+                    tool_calls: None,
+                });
 
-                            // Print or capture assistant response
-                            if let Some(content) = &assistant_message.content {
-                                if capture_output {
-                                    output_buffer.push(content.clone());
-                                } else {
-                                    println!("{}", content);
-                                }
-                            }
+                // Print or capture assistant response
+                if let Some(content) = &assistant_message.content {
+                    if capture_output {
+                        output_buffer.push(content.clone());
+                    } else {
 
-                            // Handle function call if present
-                            if let Some(function_call) = &assistant_message.function_call {
-                                if !capture_output {
-                                    println!("Handling function call: {}", function_call.name);
-                                }
-                                let function_call_result =
-                                    handle_tool_call(function_call, None, is_headless).await;
-                                match function_call_result {
-                                    ToolCallResult::Success(msg) => {
-                                        history.push(msg);
-                                        should_continue = true;
-                                    }
-                                    ToolCallResult::Cancelled => break,
-                                    ToolCallResult::Error(err) => {
-                                        let error_msg =
-                                            format!("Error occurred in tool call: {}", err);
-                                        if capture_output {
-                                            output_buffer.push(error_msg);
-                                        } else {
-                                            eprintln!("Error occurred in tool call: {}", err);
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
+                    }
+                }
+
+                // Handle function call if present
+                if let Some(function_call) = &assistant_message.function_call {
+                    if !capture_output {
+                        println!("Handling function call: {}", function_call.name);
+                    }
+                    let function_call_result =
+                        handle_tool_call(function_call, None, is_headless).await;
+                    match function_call_result {
+                        ToolCallResult::Success(msg) => {
+                            history.push(msg);
+                            should_continue = true;
                         }
-                        Err(json_err) => {
-                            let error_msg = format!("JSON Error: {json_err}");
+                        ToolCallResult::Cancelled => break,
+                        ToolCallResult::Error(err) => {
+                            let error_msg =
+                                format!("Error occurred in tool call: {}", err);
                             if capture_output {
                                 output_buffer.push(error_msg);
                             } else {
-                                eprintln!("JSON Error: {json_err}");
+                                eprintln!("Error occurred in tool call: {}", err);
                             }
                             break;
                         }
                     }
                 }
-                Err(req_err) => {
-                    let error_msg = format!("Request Error: {req_err}");
-                    if capture_output {
-                        output_buffer.push(error_msg);
-                    } else {
-                        eprintln!("Request Error: {req_err}");
-                    }
-                    break;
+            } else if let Err(req_err) = chat_result {
+                let error_msg = format!("Request Error: {req_err}");
+                if capture_output {
+                    output_buffer.push(error_msg);
+                } else {
+                    eprintln!("Request Error: {req_err}");
                 }
             }
         }
@@ -466,111 +463,92 @@ impl Minerve {
 
                 let url = format!("{}/chat/completions", base_url);
 
-                let chat_result = client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&request)
-                    .send()
-                    .await;
+                let chat_result = post_request_with_token_count(&client, &url, &api_key, request).await;
 
                 match chat_result {
                     Ok(response) => {
-                        match response.json::<ChatCompletionResponse>().await {
-                            Ok(chat_response) => {
-                                let choice = chat_response.choices.first().unwrap();
-                                let assistant_message = &choice.message;
+                        let choice = response.choices.first().unwrap();
+                        let assistant_message = &choice.message;
 
-                                // Add assistant message to history
-                                history.push(ChatCompletionMessage {
-                                    role: ChatCompletionMessageRole::Assistant,
-                                    content: assistant_message.content.clone(),
-                                    name: None,
-                                    function_call: assistant_message.function_call.clone(),
-                                    tool_call_id: None,
-                                    tool_calls: None,
-                                });
+                        // Add assistant message to history
+                        history.push(ChatCompletionMessage {
+                            role: ChatCompletionMessageRole::Assistant,
+                            content: assistant_message.content.clone(),
+                            name: None,
+                            function_call: assistant_message.function_call.clone(),
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
 
-                                // Add assistant response to UI
-                                if let Some(content) = &assistant_message.content {
-                                    let mut msgs = messages_clone.lock().unwrap();
-                                    msgs.push(ChatCompletionMessage {
-                                        role: ChatCompletionMessageRole::Assistant,
-                                        content: Some(content.clone()),
-                                        name: None,
-                                        function_call: None,
-                                        tool_call_id: None,
-                                        tool_calls: None,
-                                    });
-                                }
+                        // Add assistant response to UI
+                        if let Some(content) = &assistant_message.content {
+                            let mut msgs = messages_clone.lock().unwrap();
+                            msgs.push(ChatCompletionMessage {
+                                role: ChatCompletionMessageRole::Assistant,
+                                content: Some(content.clone()),
+                                name: None,
+                                function_call: None,
+                                tool_call_id: None,
+                                tool_calls: None,
+                            });
+                        }
 
-                                // Handle function call if present
-                                if let Some(function_call) = &assistant_message.function_call {
-                                    let tool_call_result = handle_tool_call(
-                                        function_call,
-                                        Some(cb_sink.clone()),
-                                        is_headless,
-                                    )
-                                    .await;
+                        // Handle function call if present
+                        if let Some(function_call) = &assistant_message.function_call {
+                            let tool_call_result = handle_tool_call(
+                                function_call,
+                                Some(cb_sink.clone()),
+                                is_headless,
+                            )
+                                .await;
 
-                                    match tool_call_result {
-                                        ToolCallResult::Cancelled => break,
-                                        ToolCallResult::Success(msg) => {
-                                            if msg.content.is_some() {
-                                                let mut msgs = messages_clone.lock().unwrap();
-                                                msgs.push(msg.clone());
-                                            }
-                                            history.push(msg);
-                                            should_continue = true;
-                                        }
-                                        ToolCallResult::Error(err) => {
-                                            let msg =
-                                                format!("Error occurred in tool call: {}", err);
-                                            Minerve::add_assistant_message_with_update_ui(
-                                                &messages_clone,
-                                                msg,
-                                                &cb_sink,
-                                            );
-                                            break;
-                                        }
+                            match tool_call_result {
+                                ToolCallResult::Cancelled => break,
+                                ToolCallResult::Success(msg) => {
+                                    if msg.content.is_some() {
+                                        let mut msgs = messages_clone.lock().unwrap();
+                                        msgs.push(msg.clone());
                                     }
+                                    history.push(msg);
+                                    should_continue = true;
                                 }
-
-                                let ui_messages = messages_clone
-                                    .lock()
-                                    .unwrap()
-                                    .iter()
-                                    .map(|msg| {
-                                        let role = match msg.role {
-                                            ChatCompletionMessageRole::System => {
-                                                "system".to_string()
-                                            }
-                                            ChatCompletionMessageRole::User => "user".to_string(),
-                                            ChatCompletionMessageRole::Assistant => {
-                                                "minerve".to_string()
-                                            }
-                                            ChatCompletionMessageRole::Function => msg
-                                                .tool_call_id
-                                                .clone()
-                                                .unwrap_or(String::from("unknown function call")),
-                                        };
-                                        (role, msg.content.clone().unwrap_or_default())
-                                    })
-                                    .collect();
-
-                                let request_status = false;
-                                update_chat_ui(cb_sink.clone(), ui_messages, request_status);
-                            }
-                            Err(json_err) => {
-                                let error_msg = format!("JSON Error: {}", json_err);
-                                Self::add_assistant_message_with_update_ui(
-                                    &messages_clone,
-                                    error_msg,
-                                    &cb_sink,
-                                );
-                                break;
+                                ToolCallResult::Error(err) => {
+                                    let msg =
+                                        format!("Error occurred in tool call: {}", err);
+                                    Minerve::add_assistant_message_with_update_ui(
+                                        &messages_clone,
+                                        msg,
+                                        &cb_sink,
+                                    );
+                                    break;
+                                }
                             }
                         }
+
+                        let ui_messages = messages_clone
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .map(|msg| {
+                                let role = match msg.role {
+                                    ChatCompletionMessageRole::System => {
+                                        "system".to_string()
+                                    }
+                                    ChatCompletionMessageRole::User => "user".to_string(),
+                                    ChatCompletionMessageRole::Assistant => {
+                                        "minerve".to_string()
+                                    }
+                                    ChatCompletionMessageRole::Function => msg
+                                        .tool_call_id
+                                        .clone()
+                                        .unwrap_or(String::from("unknown function call")),
+                                };
+                                (role, msg.content.clone().unwrap_or_default())
+                            })
+                            .collect();
+
+                        let request_status = false;
+                        update_chat_ui(cb_sink.clone(), ui_messages, request_status);
                     }
                     Err(req_err) => {
                         let error_msg = format!("Request Error: {}", req_err);
