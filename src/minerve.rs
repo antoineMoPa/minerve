@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::token_counter::TokenCounter;
 use std::sync::Arc;
 
-pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest, cb_sink: Option<&cursive::CbSink>, token_counter: Arc<TokenCounter>) -> Result<ChatCompletionResponse, reqwest::Error> {
+pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest, _cb_sink: Option<&cursive::CbSink>, token_counter: Arc<TokenCounter>) -> Result<ChatCompletionResponse, reqwest::Error> {
     let response = client.post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
