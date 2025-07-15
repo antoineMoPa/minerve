@@ -26,6 +26,7 @@ pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: 
 
 use std::env;
 use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 
 const HIST_CUTOFF: usize = 30;
 
