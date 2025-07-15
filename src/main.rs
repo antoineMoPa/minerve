@@ -11,7 +11,7 @@ use minerve::Minerve;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use theme::custom_theme;
-use token_counter::TokenCounter;
+use token_counter::{TokenCounter, get_global_token_counter};
 use tokio::runtime::Runtime;
 
 static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -110,6 +110,11 @@ fn update_chat_ui(
             }
 
 
+            s.call_on_name("token_count", |view: &mut TextView| {
+                let sent = token_counter.current_prompt();
+                let received = token_counter.current_completion();
+                view.set_content(format!("Sent: {} | Received: {}", sent, received));
+            });
         }))
         .unwrap();
 }
@@ -161,10 +166,9 @@ fn launch_tui() {
     siv.set_theme(custom_theme());
     let minerve = Arc::new(Minerve::new());
     let history_tracker = Arc::new(Mutex::new(HistoryTracker::new()));
-    let token_counter = Arc::new(TokenCounter::new());
+    let token_counter_ref = get_global_token_counter();
 
     let history_tracker_for_submit = history_tracker.clone();
-    let token_counter_for_submit = token_counter.clone();
 
     let submit_button = cursive::views::Button::new("Send (Tab-Enter)", move |s| {
         let content = s
@@ -178,7 +182,6 @@ fn launch_tui() {
         }
 
         // Increment sent tokens count
-        token_counter_for_submit.increment_prompt(content.len());
         history_tracker_for_submit
             .lock()
             .unwrap()
@@ -188,13 +191,7 @@ fn launch_tui() {
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
 
-        s.call_on_name("token_count", |view: &mut TextView| {
-            let sent = token_counter_for_submit.current_prompt();
-            let received = token_counter_for_submit.current_completion();
-            view.set_content(format!("Sent: {} | Received: {}", sent, received));
-        });
-
-        // Select the input for better UX after querying OpenAPI
+        // Select the input for better UX after querying OpenAI
         s.call_on_name("input", |view: &mut TextArea| {
             view.set_cursor(0);
         });
@@ -202,8 +199,10 @@ fn launch_tui() {
     });
 
     let chat_view = TextView::new("").with_name("chat").full_height();
+    let sent = token_counter_ref.current_prompt();
+    let received = token_counter_ref.current_completion();
 
-    let token_count_view = TextView::new("Sent: 0 | Received: 0")
+    let token_count_view = TextView::new(format!("Sent: {} | Received: {}", sent, received))
         .with_name("token_count")
         .fixed_height(1);
 
