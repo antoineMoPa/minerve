@@ -109,14 +109,7 @@ fn update_chat_ui(
                 panic!("working_textview view not found");
             }
 
-            // Update token count display
-            if let Some(mut view) = s.find_name::<TextView>("token_count") {
-                let sent = token_counter.current_sent();
-                let received = token_counter.current_received();
-                view.set_content(format!("Sent: {} | Received: {}", sent, received));
-            } else {
-                panic!("TextView 'token_count' not found");
-            }
+
         }))
         .unwrap();
 }
@@ -185,7 +178,7 @@ fn launch_tui() {
         }
 
         // Increment sent tokens count
-        token_counter_for_submit.increment_sent(content.len());
+        token_counter_for_submit.increment_prompt(content.len());
         history_tracker_for_submit
             .lock()
             .unwrap()
@@ -195,11 +188,9 @@ fn launch_tui() {
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
 
-        // Update tokens count UI
-        println!("Current Tokens - Sent: {} | Received: {}", token_counter_for_submit.current_sent(), token_counter_for_submit.current_received());
         s.call_on_name("token_count", |view: &mut TextView| {
-            let sent = token_counter_for_submit.current_sent();
-            let received = token_counter_for_submit.current_received();
+            let sent = token_counter_for_submit.current_prompt();
+            let received = token_counter_for_submit.current_completion();
             view.set_content(format!("Sent: {} | Received: {}", sent, received));
         });
 

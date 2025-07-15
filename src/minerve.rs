@@ -3,7 +3,7 @@ use dotenvy::from_path;
 use reqwest::Client;
 use std::collections::HashMap;
 use crate::token_counter::TokenCounter;
-use std::sync::Arc; 
+use std::sync::Arc;
 
 pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest, cb_sink: Option<&cursive::CbSink>, token_counter: Arc<TokenCounter>) -> Result<ChatCompletionResponse, reqwest::Error> {
     let response = client.post(url)
@@ -17,12 +17,8 @@ pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: 
 
     if let Some(ref usage) = chat_response.usage {
         // Correctly use the increment with the provided token_counter
-        token_counter.increment_sent(usage.total_tokens as usize);
-        if let Some(cb_sink) = cb_sink {
-            let request_status = false;
-            let ui_messages = vec![]; // populate ui_messages appropriately
-            update_chat_ui(cb_sink.clone(), ui_messages, request_status, token_counter.clone());
-        }
+        token_counter.increment_prompt(usage.prompt_tokens as usize);
+        token_counter.increment_completion(usage.completion_tokens as usize);
     }
 
     Ok(chat_response)
@@ -586,6 +582,3 @@ pub fn chat_with_arc(self: Arc<Self>, user_input: String, cb_sink: cursive::CbSi
     });
 }
  }
-
-
-
