@@ -48,7 +48,6 @@ pub struct ChatCompletionRequest {
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
-    pub _total_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]
