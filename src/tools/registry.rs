@@ -15,6 +15,7 @@ use super::set_whole_file_contents_tool::SetWholeFileContentsTool;
 use super::list_files_tool::ListFilesTool;
 use super::show_file_tool::ShowFileTool;
 use super::extract_structure_tool::ExtractStructureTool;
+use super::get_url_tool::GetUrlTool;
 
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
@@ -36,5 +37,6 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("set_whole_file_contents", Arc::new(SetWholeFileContentsTool));
     map.insert("extract_structure", Arc::new(ExtractStructureTool));
 
+    map.insert("get_url", Arc::new(GetUrlTool));
     map
 }

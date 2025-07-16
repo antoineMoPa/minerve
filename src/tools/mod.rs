@@ -16,6 +16,7 @@ pub mod run_cargo_check_tool;
 pub mod show_file_tool;
 pub mod run_shell_command_tool;
 pub mod extract_structure_tool;
+pub mod get_url_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
