@@ -1,4 +1,7 @@
-use std::sync::{atomic::{AtomicUsize, Ordering}, Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, OnceLock,
+};
 
 pub struct TokenCounter {
     prompt_tokens: AtomicUsize,
@@ -33,5 +36,7 @@ impl TokenCounter {
 static GLOBAL_TOKEN_COUNTER: OnceLock<Arc<TokenCounter>> = OnceLock::new();
 
 pub fn get_global_token_counter() -> Arc<TokenCounter> {
-    GLOBAL_TOKEN_COUNTER.get_or_init(|| Arc::new(TokenCounter::new())).clone()
+    GLOBAL_TOKEN_COUNTER
+        .get_or_init(|| Arc::new(TokenCounter::new()))
+        .clone()
 }

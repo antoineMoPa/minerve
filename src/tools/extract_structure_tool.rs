@@ -1,9 +1,9 @@
+use crate::tools::{ExecuteCommandSettings, Tool};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
-use crate::tools::{ExecuteCommandSettings, Tool};
 
 pub struct ExtractStructureTool;
 
@@ -23,7 +23,11 @@ impl Tool for ExtractStructureTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let filepath = match args.get("filepath") {
             Some(f) => f,
             None => return String::from("[Error] Missing 'filepath' parameter."),

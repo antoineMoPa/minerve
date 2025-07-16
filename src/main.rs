@@ -11,7 +11,7 @@ use minerve::Minerve;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use theme::custom_theme;
-use token_counter::{TokenCounter, get_global_token_counter};
+use token_counter::{get_global_token_counter, TokenCounter};
 use tokio::runtime::Runtime;
 
 static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -109,7 +109,6 @@ fn update_chat_ui(
                 panic!("working_textview view not found");
             }
 
-
             s.call_on_name("token_count", |view: &mut TextView| {
                 let sent = token_counter.current_prompt();
                 let received = token_counter.current_completion();
@@ -186,7 +185,9 @@ fn launch_tui() {
             .lock()
             .unwrap()
             .add_prompt(content.clone());
-        minerve.clone().chat_with_arc(content, s.cb_sink().clone(), is_headless);
+        minerve
+            .clone()
+            .chat_with_arc(content, s.cb_sink().clone(), is_headless);
 
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));

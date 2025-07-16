@@ -2,21 +2,21 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub mod extract_structure_tool;
 pub mod get_general_context_tool;
+pub mod get_url_tool;
+pub mod git_diff_cached_tool;
+pub mod git_diff_tool;
+pub mod git_status_tool;
+pub mod list_files_tool;
 pub mod registry;
 pub mod replace_content_tool;
+pub mod run_cargo_check_tool;
+pub mod run_shell_command_tool;
 pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
 pub mod set_whole_file_contents_tool;
-pub mod list_files_tool;
-pub mod git_status_tool;
-pub mod git_diff_tool;
-pub mod git_diff_cached_tool;
-pub mod run_cargo_check_tool;
 pub mod show_file_tool;
-pub mod run_shell_command_tool;
-pub mod extract_structure_tool;
-pub mod get_url_tool;
 pub mod utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,7 +55,10 @@ impl ToolParams {
             .cloned()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                format!("[Error] Parameter '{}' is required and must be a non-empty string.", param)
+                format!(
+                    "[Error] Parameter '{}' is required and must be a non-empty string.",
+                    param
+                )
             })
     }
 

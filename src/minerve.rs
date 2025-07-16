@@ -1,12 +1,20 @@
+use crate::token_counter::TokenCounter;
 use cursive::views::{ResizedView, TextView};
 use dotenvy::from_path;
 use reqwest::Client;
 use std::collections::HashMap;
-use crate::token_counter::TokenCounter;
 use std::sync::Arc;
 
-pub async fn post_request_with_token_count(client: &Client, url: &str, api_key: &str, request: ChatCompletionRequest, _cb_sink: Option<&cursive::CbSink>, token_counter: Arc<TokenCounter>) -> Result<ChatCompletionResponse, reqwest::Error> {
-    let response = client.post(url)
+pub async fn post_request_with_token_count(
+    client: &Client,
+    url: &str,
+    api_key: &str,
+    request: ChatCompletionRequest,
+    _cb_sink: Option<&cursive::CbSink>,
+    token_counter: Arc<TokenCounter>,
+) -> Result<ChatCompletionResponse, reqwest::Error> {
+    let response = client
+        .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&request)
@@ -119,10 +127,7 @@ pub async fn handle_tool_call(
                     return ToolCallResult::Cancelled;
                 }
 
-                let output = RunShellCommandTool::execute_command(
-                    &command,
-                    Some(settings),
-                );
+                let output = RunShellCommandTool::execute_command(&command, Some(settings));
 
                 return ToolCallResult::Success(ChatCompletionMessage {
                     role: ChatCompletionMessageRole::Function,
@@ -224,7 +229,15 @@ impl Minerve {
 
             let url = format!("{}/chat/completions", self.base_url);
 
-            let chat_result = post_request_with_token_count(&self.client, &url, &self.api_key, request, None, self.token_counter.clone()).await;
+            let chat_result = post_request_with_token_count(
+                &self.client,
+                &url,
+                &self.api_key,
+                request,
+                None,
+                self.token_counter.clone(),
+            )
+            .await;
 
             if let Ok(chat_response) = chat_result {
                 let choice = chat_response.choices.first().unwrap();
@@ -245,7 +258,6 @@ impl Minerve {
                     if capture_output {
                         output_buffer.push(content.clone());
                     } else {
-
                     }
                 }
 
@@ -263,8 +275,7 @@ impl Minerve {
                         }
                         ToolCallResult::Cancelled => break,
                         ToolCallResult::Error(err) => {
-                            let error_msg =
-                                format!("Error occurred in tool call: {}", err);
+                            let error_msg = format!("Error occurred in tool call: {}", err);
                             if capture_output {
                                 output_buffer.push(error_msg);
                             } else {
@@ -324,7 +335,12 @@ impl Minerve {
             .collect();
 
         let request_status = false;
-        update_chat_ui(cb_sink.clone(), ui_messages, request_status, self.token_counter.clone());
+        update_chat_ui(
+            cb_sink.clone(),
+            ui_messages,
+            request_status,
+            self.token_counter.clone(),
+        );
     }
 
     pub fn new() -> Self {
@@ -358,227 +374,250 @@ impl Minerve {
         }
     }
 
+    pub fn chat_with_arc(
+        self: Arc<Self>,
+        user_input: String,
+        cb_sink: cursive::CbSink,
+        is_headless: bool,
+    ) {
+        use std::sync::atomic::Ordering;
 
+        let cb_sink = cb_sink.clone();
 
-pub fn chat_with_arc(self: Arc<Self>, user_input: String, cb_sink: cursive::CbSink, is_headless: bool) {
-    use std::sync::atomic::Ordering;
+        self.request_in_flight.store(true, Ordering::SeqCst);
 
-    let cb_sink = cb_sink.clone();
+        let mut msgs = self.messages.lock().unwrap();
 
-    self.request_in_flight.store(true, Ordering::SeqCst);
+        let user_message = ChatCompletionMessage {
+            role: ChatCompletionMessageRole::User,
+            content: Some(user_input.clone()),
+            name: None,
+            function_call: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        msgs.push(user_message);
 
-    let mut msgs = self.messages.lock().unwrap();
+        let ui_messages = msgs
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    ChatCompletionMessageRole::System => "system".to_string(),
+                    ChatCompletionMessageRole::User => "user".to_string(),
+                    ChatCompletionMessageRole::Assistant => "minerve".to_string(),
+                    ChatCompletionMessageRole::Function => msg
+                        .tool_call_id
+                        .clone()
+                        .unwrap_or(String::from("unknown function call")),
+                };
+                (role, msg.content.clone().unwrap_or_default())
+            })
+            .collect();
 
-    let user_message = ChatCompletionMessage {
-        role: ChatCompletionMessageRole::User,
-        content: Some(user_input.clone()),
-        name: None,
-        function_call: None,
-        tool_call_id: None,
-        tool_calls: None,
-    };
-    msgs.push(user_message);
+        let request_status = false;
+        update_chat_ui(
+            cb_sink.clone(),
+            ui_messages,
+            request_status,
+            self.token_counter.clone(),
+        );
 
-    let ui_messages = msgs
-        .iter()
-        .map(|msg| {
-            let role = match msg.role {
-                ChatCompletionMessageRole::System => "system".to_string(),
-                ChatCompletionMessageRole::User => "user".to_string(),
-                ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                ChatCompletionMessageRole::Function => msg
-                    .tool_call_id
-                    .clone()
-                    .unwrap_or(String::from("unknown function call")),
-            };
-            (role, msg.content.clone().unwrap_or_default())
-        })
-        .collect();
+        // Show working indicator
+        cb_sink
+            .send(Box::new(|s| {
+                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
+                    view.get_inner_mut().set_content("working...");
+                } else {
+                    panic!("working_textview view not found");
+                }
+            }))
+            .unwrap();
 
-    let request_status = false;
-    update_chat_ui(cb_sink.clone(), ui_messages, request_status, self.token_counter.clone());
+        let messages = msgs.clone();
+        drop(msgs);
 
-    // Show working indicator
-    cb_sink
-        .send(Box::new(|s| {
-            if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                view.get_inner_mut().set_content("working...");
-            } else {
-                panic!("working_textview view not found");
-            }
-        }))
-        .unwrap();
+        let client = self.client.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
+        let messages_clone = self.messages.clone();
+        let request_in_flight = self.request_in_flight.clone();
+        let token_counter = self.token_counter.clone();
+        let cb_sink_clone = cb_sink.clone();
 
-    let messages = msgs.clone();
-    drop(msgs);
+        crate::get_global_runtime().spawn({
+            let self_clone = self.clone();
+            async move {
+                let mut history: Vec<ChatCompletionMessage> = messages;
+                let registry = get_tool_registry();
+                let functions: Vec<ChatCompletionFunctionDefinition> = registry
+                    .values()
+                    .map(|tool| ChatCompletionFunctionDefinition {
+                        name: tool.name().to_string(),
+                        description: Some(tool.description().to_string()),
+                        parameters: Some(tool.function_definition()),
+                    })
+                    .collect();
 
-    let client = self.client.clone();
-    let api_key = self.api_key.clone();
-    let base_url = self.base_url.clone();
-    let messages_clone = self.messages.clone();
-    let request_in_flight = self.request_in_flight.clone();
-    let token_counter = self.token_counter.clone();
-    let cb_sink_clone = cb_sink.clone();
+                let mut should_continue = true;
 
-    crate::get_global_runtime().spawn({
-        let self_clone = self.clone();
-        async move {
-            let mut history: Vec<ChatCompletionMessage> = messages;
-            let registry = get_tool_registry();
-            let functions: Vec<ChatCompletionFunctionDefinition> = registry
-                .values()
-                .map(|tool| ChatCompletionFunctionDefinition {
-                    name: tool.name().to_string(),
-                    description: Some(tool.description().to_string()),
-                    parameters: Some(tool.function_definition()),
-                })
-                .collect();
+                while should_continue {
+                    should_continue = false;
 
-            let mut should_continue = true;
+                    // Show working indicator at start of each loop iteration
+                    cb_sink_clone
+                        .send(Box::new(|s| {
+                            if let Some(mut view) =
+                                s.find_name::<ResizedView<TextView>>("working_textview")
+                            {
+                                view.get_inner_mut().set_content("working...");
+                            } else {
+                                panic!("working_textview view not found");
+                            }
+                        }))
+                        .unwrap();
 
-            while should_continue {
-                should_continue = false;
+                    let history_len = history.len();
+                    let mut cleaned_history = history.clone();
+                    if history_len > 30 {
+                        for i in 0..history_len - 30 {
+                            if let ChatCompletionMessageRole::Function = cleaned_history[i].role {
+                                cleaned_history[i].content =
+                                    Some("[cleaned from history]".to_string());
+                            }
+                        }
+                    }
 
-                // Show working indicator at start of each loop iteration
+                    let request = ChatCompletionRequest {
+                        model: String::from(MODEL_NAME),
+                        messages: cleaned_history,
+                        functions: if functions.is_empty() {
+                            None
+                        } else {
+                            Some(functions.clone())
+                        },
+                    };
+
+                    let url = format!("{}/chat/completions", base_url);
+
+                    let chat_result = post_request_with_token_count(
+                        &client,
+                        &url,
+                        &api_key,
+                        request,
+                        Some(&cb_sink_clone),
+                        token_counter.clone(),
+                    )
+                    .await;
+
+                    match chat_result {
+                        Ok(response) => {
+                            let choice = response.choices.first().unwrap();
+                            let assistant_message = &choice.message;
+
+                            history.push(ChatCompletionMessage {
+                                role: ChatCompletionMessageRole::Assistant,
+                                content: assistant_message.content.clone(),
+                                name: None,
+                                function_call: assistant_message.function_call.clone(),
+                                tool_call_id: None,
+                                tool_calls: None,
+                            });
+
+                            if let Some(content) = &assistant_message.content {
+                                let mut msgs = messages_clone.lock().unwrap();
+                                msgs.push(ChatCompletionMessage {
+                                    role: ChatCompletionMessageRole::Assistant,
+                                    content: Some(content.clone()),
+                                    name: None,
+                                    function_call: None,
+                                    tool_call_id: None,
+                                    tool_calls: None,
+                                });
+                            }
+
+                            if let Some(function_call) = &assistant_message.function_call {
+                                let tool_call_result = handle_tool_call(
+                                    function_call,
+                                    Some(cb_sink_clone.clone()),
+                                    is_headless,
+                                )
+                                .await;
+
+                                match tool_call_result {
+                                    ToolCallResult::Cancelled => break,
+                                    ToolCallResult::Success(msg) => {
+                                        if msg.content.is_some() {
+                                            let mut msgs = messages_clone.lock().unwrap();
+                                            msgs.push(msg.clone());
+                                        }
+                                        history.push(msg);
+                                        should_continue = true;
+                                    }
+                                    ToolCallResult::Error(err) => {
+                                        let msg = format!("Error occurred in tool call: {}", err);
+                                        self_clone.add_assistant_message_with_update_ui(
+                                            &messages_clone,
+                                            msg,
+                                            &cb_sink_clone,
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+
+                            let ui_messages = messages_clone
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .map(|msg| {
+                                    let role = match msg.role {
+                                        ChatCompletionMessageRole::System => "system".to_string(),
+                                        ChatCompletionMessageRole::User => "user".to_string(),
+                                        ChatCompletionMessageRole::Assistant => {
+                                            "minerve".to_string()
+                                        }
+                                        ChatCompletionMessageRole::Function => msg
+                                            .tool_call_id
+                                            .clone()
+                                            .unwrap_or(String::from("unknown function call")),
+                                    };
+                                    (role, msg.content.clone().unwrap_or_default())
+                                })
+                                .collect();
+
+                            let request_status = false;
+                            update_chat_ui(
+                                cb_sink_clone.clone(),
+                                ui_messages,
+                                request_status,
+                                token_counter.clone(),
+                            );
+                        }
+                        Err(req_err) => {
+                            let error_msg = format!("Request Error: {}", req_err);
+                            self_clone.add_assistant_message_with_update_ui(
+                                &messages_clone,
+                                error_msg,
+                                &cb_sink_clone,
+                            );
+                            break;
+                        }
+                    }
+                }
+
+                request_in_flight.store(false, Ordering::SeqCst);
                 cb_sink_clone
                     .send(Box::new(|s| {
-                        if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                            view.get_inner_mut().set_content("working...");
+                        if let Some(mut view) =
+                            s.find_name::<ResizedView<TextView>>("working_textview")
+                        {
+                            view.get_inner_mut().set_content("");
                         } else {
                             panic!("working_textview view not found");
                         }
                     }))
                     .unwrap();
-
-                let history_len = history.len();
-                let mut cleaned_history = history.clone();
-                if history_len > 30 {
-                    for i in 0..history_len - 30 {
-                        if let ChatCompletionMessageRole::Function = cleaned_history[i].role {
-                            cleaned_history[i].content = Some("[cleaned from history]".to_string());
-                        }
-                    }
-                }
-
-                let request = ChatCompletionRequest {
-                    model: String::from(MODEL_NAME),
-                    messages: cleaned_history,
-                    functions: if functions.is_empty() {
-                        None
-                    } else {
-                        Some(functions.clone())
-                    },
-                };
-
-                let url = format!("{}/chat/completions", base_url);
-
-                let chat_result = post_request_with_token_count(&client, &url, &api_key, request, Some(&cb_sink_clone), token_counter.clone()).await;
-
-                match chat_result {
-                    Ok(response) => {
-                        let choice = response.choices.first().unwrap();
-                        let assistant_message = &choice.message;
-
-                        history.push(ChatCompletionMessage {
-                            role: ChatCompletionMessageRole::Assistant,
-                            content: assistant_message.content.clone(),
-                            name: None,
-                            function_call: assistant_message.function_call.clone(),
-                            tool_call_id: None,
-                            tool_calls: None,
-                        });
-
-                        if let Some(content) = &assistant_message.content {
-                            let mut msgs = messages_clone.lock().unwrap();
-                            msgs.push(ChatCompletionMessage {
-                                role: ChatCompletionMessageRole::Assistant,
-                                content: Some(content.clone()),
-                                name: None,
-                                function_call: None,
-                                tool_call_id: None,
-                                tool_calls: None,
-                            });
-                        }
-
-                        if let Some(function_call) = &assistant_message.function_call {
-                            let tool_call_result = handle_tool_call(
-                                function_call,
-                                Some(cb_sink_clone.clone()),
-                                is_headless,
-                            )
-                                .await;
-
-                            match tool_call_result {
-                                ToolCallResult::Cancelled => break,
-                                ToolCallResult::Success(msg) => {
-                                    if msg.content.is_some() {
-                                        let mut msgs = messages_clone.lock().unwrap();
-                                        msgs.push(msg.clone());
-                                    }
-                                    history.push(msg);
-                                    should_continue = true;
-                                }
-                                ToolCallResult::Error(err) => {
-                                    let msg =
-                                        format!("Error occurred in tool call: {}", err);
-                                    self_clone.add_assistant_message_with_update_ui(
-                                        &messages_clone,
-                                        msg,
-                                        &cb_sink_clone,
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-
-                        let ui_messages = messages_clone
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .map(|msg| {
-                                let role = match msg.role {
-                                    ChatCompletionMessageRole::System => {
-                                        "system".to_string()
-                                    }
-                                    ChatCompletionMessageRole::User => "user".to_string(),
-                                    ChatCompletionMessageRole::Assistant => {
-                                        "minerve".to_string()
-                                    }
-                                    ChatCompletionMessageRole::Function => msg
-                                        .tool_call_id
-                                        .clone()
-                                        .unwrap_or(String::from("unknown function call")),
-                                };
-                                (role, msg.content.clone().unwrap_or_default())
-                            })
-                            .collect();
-
-                        let request_status = false;
-                        update_chat_ui(cb_sink_clone.clone(), ui_messages, request_status, token_counter.clone());
-                    }
-                    Err(req_err) => {
-                        let error_msg = format!("Request Error: {}", req_err);
-                        self_clone.add_assistant_message_with_update_ui(
-                            &messages_clone,
-                            error_msg,
-                            &cb_sink_clone,
-                        );
-                        break;
-                    }
-                }
             }
-
-            request_in_flight.store(false, Ordering::SeqCst);
-            cb_sink_clone
-                .send(Box::new(|s| {
-                    if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                        view.get_inner_mut().set_content("");
-                    } else {
-                        panic!("working_textview view not found");
-                    }
-                }))
-                .unwrap();
-        }
-    });
+        });
+    }
 }
- }

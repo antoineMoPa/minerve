@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest;
 use std::collections::HashMap;
 
-use super::{Tool, ToolParams, ExecuteCommandSettings};
+use super::{ExecuteCommandSettings, Tool, ToolParams};
 
 pub struct GetUrlTool;
 
@@ -22,7 +22,11 @@ impl Tool for GetUrlTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         let url = match args.get("url") {
             Some(u) => u,
             None => return "[Error] URL parameter is missing.".to_string(),
