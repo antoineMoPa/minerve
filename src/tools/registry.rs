@@ -15,6 +15,7 @@ use super::run_shell_command_tool::RunShellCommandTool;
 use super::search_for_path_pattern_tool::SearchForPathPatternTool;
 use super::search_for_string_tool::SearchForStringTool;
 use super::set_whole_file_contents_tool::SetWholeFileContentsTool;
+use super::compile_typescript_project_tool::CompileTypescriptProjectTool;
 use super::show_file_tool::ShowFileTool;
 
 pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
@@ -39,7 +40,7 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
         Arc::new(SetWholeFileContentsTool),
     );
     map.insert("extract_structure", Arc::new(ExtractStructureTool));
-
+    map.insert("compile_typescript_project", Arc::new(CompileTypescriptProjectTool));
     map.insert("get_url", Arc::new(GetUrlTool));
     map
 }

@@ -9,6 +9,7 @@ pub mod git_diff_cached_tool;
 pub mod git_diff_tool;
 pub mod git_status_tool;
 pub mod list_files_tool;
+pub mod compile_typescript_project_tool;
 pub mod registry;
 pub mod replace_content_tool;
 pub mod run_cargo_check_tool;
