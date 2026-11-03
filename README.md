@@ -12,8 +12,8 @@ Minerve is an open source rust-based code assistant.
 To set up Minerve, clone the repository and build the project using `make`:
 
 ```bash
-git clone <repo-url>
-cd <repo-name>
+git clone git@github.com:antoineMoPa/minerve.git
+cd minerve
 make install
 ```
 
