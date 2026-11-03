@@ -71,11 +71,25 @@ pub struct ChatCompletionFunctionCall {
     pub arguments: String,
 }
 
+/// Marks a cache breakpoint: providers that need breakpoints (Anthropic) cache the prompt
+/// up to and including the tool or message part carrying it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub cache_type: &'static str,
+}
+
+pub const EPHEMERAL_CACHE_CONTROL: CacheControl = CacheControl {
+    cache_type: "ephemeral",
+};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionToolDefinition {
     #[serde(rename = "type")]
     pub tool_type: &'static str,
     pub function: ChatCompletionFunctionDefinition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,10 +105,63 @@ pub struct UsageAccountingRequest {
     pub include: bool,
 }
 
+/// A message as sent in a request. Its content becomes a one-part array when it carries a
+/// cache breakpoint, the only shape that can hold cache_control.
+#[derive(Debug, Serialize)]
+pub struct RequestMessage {
+    pub role: ChatCompletionMessageRole,
+    pub content: Option<RequestContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatCompletionToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RequestContent {
+    Text(String),
+    TextWithCacheBreakpoint([RequestTextPart; 1]),
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestTextPart {
+    #[serde(rename = "type")]
+    pub part_type: &'static str,
+    pub text: String,
+    pub cache_control: CacheControl,
+}
+
+impl RequestMessage {
+    pub fn from_message(message: &ChatCompletionMessage) -> Self {
+        Self {
+            role: message.role.clone(),
+            content: message.content.clone().map(RequestContent::Text),
+            tool_calls: message.tool_calls.clone(),
+            tool_call_id: message.tool_call_id.clone(),
+        }
+    }
+
+    pub fn add_cache_breakpoint(&mut self) {
+        let text = match self.content.take() {
+            Some(RequestContent::Text(text)) => text,
+            other => panic!(
+                "cache breakpoint on a message without text content: {:?}",
+                other
+            ),
+        };
+        self.content = Some(RequestContent::TextWithCacheBreakpoint([RequestTextPart {
+            part_type: "text",
+            text,
+            cache_control: EPHEMERAL_CACHE_CONTROL,
+        }]));
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
-    pub messages: Vec<ChatCompletionMessage>,
+    pub messages: Vec<RequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ChatCompletionToolDefinition>>,
     pub usage: UsageAccountingRequest,
@@ -106,6 +173,13 @@ pub struct Usage {
     pub completion_tokens: u64,
     /// USD charged by OpenRouter for this request.
     pub cost: f64,
+    /// Not every provider reports it; a request without it counts as having no cached tokens.
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromptTokensDetails {
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]

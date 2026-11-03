@@ -35,9 +35,6 @@ OPENROUTER_API_KEY=your_openrouter_api_key
 `MINERVE_MODEL` overrides the default model. Any model id from https://openrouter.ai/models that
 supports tool calling works, for example `MINERVE_MODEL=~anthropic/claude-sonnet-latest`.
 
-The status bar shows tokens sent and received and the session cost in USD, as reported by
-OpenRouter for each request. Headless runs print the same line when they finish.
-
 ## Usage
 
 Run the terminal UI with:

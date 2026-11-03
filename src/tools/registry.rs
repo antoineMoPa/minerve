@@ -1,7 +1,8 @@
 use crate::tools::Tool;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::compile_typescript_project_tool::CompileTypescriptProjectTool;
 use super::edit_tool::EditTool;
 use super::extract_structure_tool::ExtractStructureTool;
 use super::get_general_context_tool::GetGeneralContext;
@@ -16,10 +17,11 @@ use super::run_shell_command_tool::RunShellCommandTool;
 use super::search_for_path_pattern_tool::SearchForPathPatternTool;
 use super::search_for_string_tool::SearchForStringTool;
 use super::write_tool::WriteTool;
-use super::compile_typescript_project_tool::CompileTypescriptProjectTool;
 
-pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
-    let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
+/// Sorted by tool name: the tool definitions open every request, so their order must not
+/// change between requests or no provider can reuse its prompt cache.
+pub fn get_tool_registry() -> BTreeMap<&'static str, Arc<dyn Tool>> {
+    let mut map: BTreeMap<&'static str, Arc<dyn Tool>> = BTreeMap::new();
 
     map.insert("get_general_context", Arc::new(GetGeneralContext));
     map.insert("search_for_string", Arc::new(SearchForStringTool));
@@ -37,7 +39,10 @@ pub fn get_tool_registry() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("run_shell_command", Arc::new(RunShellCommandTool));
     map.insert("extract_structure", Arc::new(ExtractStructureTool));
-    map.insert("compile_typescript_project", Arc::new(CompileTypescriptProjectTool));
+    map.insert(
+        "compile_typescript_project",
+        Arc::new(CompileTypescriptProjectTool),
+    );
     map.insert("get_url", Arc::new(GetUrlTool));
     map
 }

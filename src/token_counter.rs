@@ -5,6 +5,7 @@ use std::sync::{
 
 pub struct TokenCounter {
     prompt_tokens: AtomicUsize,
+    cached_prompt_tokens: AtomicUsize,
     completion_tokens: AtomicUsize,
     cost_usd: Mutex<f64>,
 }
@@ -13,6 +14,7 @@ impl TokenCounter {
     pub fn new() -> Self {
         TokenCounter {
             prompt_tokens: AtomicUsize::new(0),
+            cached_prompt_tokens: AtomicUsize::new(0),
             completion_tokens: AtomicUsize::new(0),
             cost_usd: Mutex::new(0.0),
         }
@@ -20,6 +22,10 @@ impl TokenCounter {
 
     pub fn increment_prompt(&self, count: usize) {
         self.prompt_tokens.fetch_add(count, Ordering::SeqCst);
+    }
+
+    pub fn increment_cached_prompt(&self, count: usize) {
+        self.cached_prompt_tokens.fetch_add(count, Ordering::SeqCst);
     }
 
     pub fn increment_completion(&self, count: usize) {
@@ -44,9 +50,16 @@ impl TokenCounter {
 
     /// One line for the TUI status bar and the end of headless runs.
     pub fn format_usage_summary(&self) -> String {
+        let prompt_tokens = self.current_prompt();
+        let cached_percent = if prompt_tokens == 0 {
+            0
+        } else {
+            self.cached_prompt_tokens.load(Ordering::SeqCst) * 100 / prompt_tokens
+        };
         format!(
-            "Sent: {} | Received: {} | Cost: ${:.4}",
-            self.current_prompt(),
+            "Sent: {} ({}% cached) | Received: {} | Cost: ${:.4}",
+            prompt_tokens,
+            cached_percent,
             self.current_completion(),
             self.current_cost_usd()
         )

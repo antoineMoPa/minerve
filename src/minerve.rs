@@ -35,6 +35,9 @@ pub async fn post_request_with_token_count(
         token_counter.increment_prompt(usage.prompt_tokens as usize);
         token_counter.increment_completion(usage.completion_tokens as usize);
         token_counter.increment_cost_usd(usage.cost);
+        if let Some(details) = &usage.prompt_tokens_details {
+            token_counter.increment_cached_prompt(details.cached_tokens as usize);
+        }
     }
 
     Ok(chat_response)
@@ -43,8 +46,6 @@ pub async fn post_request_with_token_count(
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
-const HIST_CUTOFF: usize = 30;
-
 use crate::openrouter::OpenRouterConnection;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::run_shell_command_tool::RunShellCommandTool;
@@ -52,7 +53,8 @@ use crate::tools::utils::cap_tool_output;
 use crate::{
     update_chat_ui, ChatCompletionFunctionDefinition, ChatCompletionMessage,
     ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse,
-    ChatCompletionToolCall, ChatCompletionToolDefinition, ToolCallResult, UsageAccountingRequest,
+    ChatCompletionToolCall, ChatCompletionToolDefinition, RequestMessage, ToolCallResult,
+    UsageAccountingRequest, EPHEMERAL_CACHE_CONTROL,
 };
 
 pub struct Minerve {
@@ -61,6 +63,7 @@ pub struct Minerve {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub uses_cache_breakpoints: bool,
     pub request_in_flight: Arc<AtomicBool>,
     pub token_counter: Arc<TokenCounter>,
 }
@@ -69,8 +72,8 @@ pub fn get_system_prompt() -> String {
     return String::from(include_str!("../prompts/MAIN_SYSTEM_PROMPT.txt"));
 }
 
-fn get_tool_definitions() -> Option<Vec<ChatCompletionToolDefinition>> {
-    let tools: Vec<ChatCompletionToolDefinition> = get_tool_registry()
+fn get_tool_definitions(uses_cache_breakpoints: bool) -> Option<Vec<ChatCompletionToolDefinition>> {
+    let mut tools: Vec<ChatCompletionToolDefinition> = get_tool_registry()
         .values()
         .map(|tool| ChatCompletionToolDefinition {
             tool_type: "function",
@@ -79,8 +82,14 @@ fn get_tool_definitions() -> Option<Vec<ChatCompletionToolDefinition>> {
                 description: Some(tool.description().to_string()),
                 parameters: Some(tool.function_definition()),
             },
+            cache_control: None,
         })
         .collect();
+    if uses_cache_breakpoints {
+        if let Some(last_tool) = tools.last_mut() {
+            last_tool.cache_control = Some(EPHEMERAL_CACHE_CONTROL);
+        }
+    }
     if tools.is_empty() {
         None
     } else {
@@ -284,25 +293,42 @@ pub async fn handle_tool_call(
     }
 }
 
-fn clean_old_tool_outputs(history: &[ChatCompletionMessage]) -> Vec<ChatCompletionMessage> {
-    let mut cleaned_history = history.to_vec();
-    let old_message_count = cleaned_history.len().saturating_sub(HIST_CUTOFF);
-    for msg in cleaned_history.iter_mut().take(old_message_count) {
+/// Called when the user sends a new prompt. Tool results of earlier prompts are dropped then,
+/// never during a run of tool calls, so every request of a run extends the previous one and
+/// hits the prompt cache.
+fn clean_tool_outputs_of_previous_prompts(messages: &mut [ChatCompletionMessage]) {
+    for msg in messages.iter_mut() {
         if let ChatCompletionMessageRole::Tool = msg.role {
             msg.content = Some(String::from("[cleaned from history]"));
         }
     }
-    cleaned_history
 }
 
 impl Minerve {
     fn build_request(&self, history: &[ChatCompletionMessage]) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: self.model.clone(),
-            messages: clean_old_tool_outputs(history),
-            tools: get_tool_definitions(),
+            messages: self.build_request_messages(history),
+            tools: get_tool_definitions(self.uses_cache_breakpoints),
             usage: UsageAccountingRequest { include: true },
         }
+    }
+
+    /// Breakpoints, when the model needs them, go after the system prompt and on the latest
+    /// message, like opencode does: the next request reads everything up to there from cache.
+    fn build_request_messages(&self, history: &[ChatCompletionMessage]) -> Vec<RequestMessage> {
+        let mut messages: Vec<RequestMessage> =
+            history.iter().map(RequestMessage::from_message).collect();
+        if self.uses_cache_breakpoints {
+            messages
+                .first_mut()
+                .expect("request without messages")
+                .add_cache_breakpoint();
+            if messages.len() > 1 {
+                messages.last_mut().unwrap().add_cache_breakpoint();
+            }
+        }
+        messages
     }
 
     fn get_completions_url(&self) -> String {
@@ -397,6 +423,7 @@ impl Minerve {
             api_key: openrouter_connection.api_key,
             base_url: openrouter_connection.base_url,
             model: openrouter_connection.model,
+            uses_cache_breakpoints: openrouter_connection.uses_cache_breakpoints,
             request_in_flight: Arc::new(AtomicBool::new(false)),
             token_counter: Arc::new(TokenCounter::new()),
         }
@@ -414,6 +441,7 @@ impl Minerve {
 
         {
             let mut msgs = self.messages.lock().unwrap();
+            clean_tool_outputs_of_previous_prompts(&mut msgs);
             msgs.push(ChatCompletionMessage::user(user_input));
 
             let request_status = false;
