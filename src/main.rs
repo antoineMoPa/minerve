@@ -8,6 +8,7 @@ pub fn get_global_runtime() -> &'static Runtime {
     GLOBAL_RUNTIME.get_or_init(|| Runtime::new().unwrap())
 }
 
+mod boot;
 mod chat;
 mod history;
 mod token_counter;
@@ -46,8 +47,9 @@ pub fn run_headless(
     prompt: String,
     openrouter_connection: OpenRouterConnection,
     resume: Option<session::SessionFile>,
+    extra_system_prompts: &[String],
 ) {
-    let minerve = Minerve::new(openrouter_connection, resume);
+    let minerve = Minerve::new(openrouter_connection, resume, extra_system_prompts);
     minerve
         .messages
         .lock()
@@ -60,8 +62,12 @@ pub fn run_headless(
     println!("{}", minerve.token_counter.format_usage_summary());
 }
 
-fn launch_tui(openrouter_connection: OpenRouterConnection, resume: Option<session::SessionFile>) {
-    if let Err(err) = tui::run(openrouter_connection, resume) {
+fn launch_tui(
+    openrouter_connection: OpenRouterConnection,
+    resume: Option<session::SessionFile>,
+    extra_system_prompts: &[String],
+) {
+    if let Err(err) = tui::run(openrouter_connection, resume, extra_system_prompts) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
 }
@@ -136,9 +142,9 @@ fn main() {
     };
 
     if let Some(prompt) = cli.prompt {
-        run_headless(prompt, openrouter_connection, resume);
+        run_headless(prompt, openrouter_connection, resume, &cli.system_prompt);
         return;
     }
 
-    launch_tui(openrouter_connection, resume);
+    launch_tui(openrouter_connection, resume, &cli.system_prompt);
 }

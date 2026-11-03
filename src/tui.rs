@@ -18,6 +18,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::boot::BootAnimation;
 use crate::history::HistoryTracker;
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
@@ -46,15 +47,22 @@ struct App {
     /// Tool outputs are collapsed to one line unless this is set (Ctrl+O).
     tools_expanded: bool,
     should_quit: bool,
+    /// Boot clip shown until the first key press or paste (or until it ends).
+    boot: Option<BootAnimation>,
 }
 
 /// Runs the interactive UI until the user quits.
 pub fn run(
     openrouter_connection: OpenRouterConnection,
     resume: Option<SessionFile>,
+    extra_system_prompts: &[String],
 ) -> io::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel();
-    let minerve = Arc::new(Minerve::new(openrouter_connection, resume));
+    let minerve = Arc::new(Minerve::new(
+        openrouter_connection,
+        resume,
+        extra_system_prompts,
+    ));
     let transcript = minerve.ui_messages();
     let mut app = App {
         minerve,
@@ -68,6 +76,7 @@ pub fn run(
         scroll_up: 0,
         tools_expanded: false,
         should_quit: false,
+        boot: BootAnimation::start(),
     };
 
     let mut terminal = ratatui::init();
@@ -92,11 +101,22 @@ impl App {
 
             terminal.draw(|frame| self.draw(frame))?;
 
-            if event::poll(Duration::from_millis(50))? {
+            // While the boot clip plays, wake up at the next frame boundary.
+            let timeout = match &self.boot {
+                Some(boot) => boot.time_to_next_frame().min(Duration::from_millis(50)),
+                None => Duration::from_millis(50),
+            };
+            if event::poll(timeout)? {
                 match event::read()? {
                     // Windows also reports key releases; only presses count.
-                    Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
-                    Event::Paste(text) => self.handle_paste(&text),
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.stop_boot();
+                        self.handle_key(key);
+                    }
+                    Event::Paste(text) => {
+                        self.stop_boot();
+                        self.handle_paste(&text);
+                    }
                     _ => {}
                 }
             }
@@ -219,6 +239,134 @@ impl App {
         self.input.remove(idx);
     }
 
+    /// Stops the video now (key press). The dotted ring then erodes away; the boot state is
+    /// dropped and the screen cleared once the erosion finishes (see `draw_boot_overlay`).
+    fn stop_boot(&mut self) {
+        self.boot = None;
+    }
+
+    /// Draws the boot overlay in `area`: a dotted ring around the centered video, and the
+    /// current video frame. Only non-blank video characters are written, so the rest of the UI
+    /// shows through the transparent background. Once the ring has eroded away, drops the boot
+    /// state and schedules a screen clear.
+    fn draw_boot_overlay(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(boot) = self.boot.as_ref() else {
+            return;
+        };
+        let erosion = boot.erosion();
+        let sweep = boot.sweep_progress();
+        let finished = boot.is_finished();
+        let (width, height) = boot.size();
+        let text = boot.current_frame();
+        if finished {
+            self.boot = None;
+            return;
+        }
+
+        // Fit the video into the area, keeping its aspect ratio. Reserve 2 columns on each side
+        // for the ring, and 4 rows for the ring (1 above and below) plus the caption block
+        // (1 blank row, then the caption). Work in i32 so the ring can extend past the area.
+        let (ax, ay) = (area.x as i32, area.y as i32);
+        let (aw, ah) = (area.width as i32, area.height as i32);
+        let (sw, sh) = (width as i32, height as i32);
+        // 0.8 shrinks the fitted video by 20%, leaving more of the dot pattern visible around it.
+        let scale = 0.8 * ((aw - 4).max(1) as f32 / sw as f32).min((ah - 4).max(1) as f32 / sh as f32);
+        let w = ((sw as f32 * scale) as i32).max(1);
+        let h = ((sh as f32 * scale) as i32).max(1);
+        let vx = ax + (aw - w) / 2;
+        let vy = ay + ((ah - h - 4).max(0)) / 2 + 1;
+        let in_area = |x: i32, y: i32| x >= ax && x < ax + aw && y >= ay && y < ay + ah;
+        let buf = frame.buffer_mut();
+
+        // Dot pattern filling the whole chat area, except the video's own cells (drawn over it
+        // below). Dots sit on every other cell. Erosion hides cells whose hashed threshold is
+        // below the progress, so the pattern disappears unevenly.
+        // Distance from the video border, in cells. Vertical distance is doubled because a
+        // terminal cell is about twice as tall as it is wide. Cells closer than EDGE_BLEND to the
+        // border are the blend band.
+        const EDGE_BLEND: i32 = 7;
+        let edge_distance = |c: i32, r: i32| (c.min(w - 1 - c)).min(2 * r.min(h - 1 - r));
+        // Stable pseudo-random value in [0, 1) per cell.
+        let cell_hash = |x: i32, y: i32| {
+            let h = ((x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663)) % 1000;
+            h as f32 / 1000.0
+        };
+
+        // Sparse dot grid: one dot every 3 columns and every 2 rows, across the whole area, including
+        // behind the video. The video's blank cells show these dots, so the pattern runs seamlessly
+        // into the video. Erosion hides dots unevenly.
+        let dot_grid = |x: i32, y: i32| x % 3 == 0 && y % 2 == 0;
+        for y in ay..ay + ah {
+            for x in ax..ax + aw {
+                if !dot_grid(x, y) {
+                    continue;
+                }
+                let visible = erosion.map_or(true, |e| cell_hash(x, y) >= e);
+                if visible {
+                    buf[(x as u16, y as u16)].set_char('·').set_fg(ratatui::style::Color::DarkGray);
+                }
+            }
+        }
+
+        // Video frame, centered inside the ring. Blank characters are transparent.
+        if let Some(text) = text {
+            // Nearest-neighbour resample of the source characters to the fitted size.
+            let src: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+            for r in 0..h {
+                let sr = (r * sh / h) as usize;
+                for c in 0..w {
+                    let sc = (c * sw / w) as usize;
+                    let ch = src.get(sr).and_then(|row| row.get(sc)).copied().unwrap_or(' ');
+                    let (x, y) = (vx + c, vy + r);
+                    // Video cells in the blend band show with a chance rising from the border
+                    // inward, so the edge dissolves into the dots.
+                    let d = edge_distance(c, r);
+                    let show = d >= EDGE_BLEND || cell_hash(x, y) < (d as f32 + 0.5) / EDGE_BLEND as f32;
+                    if show && ch != ' ' && in_area(x, y) {
+                        buf[(x as u16, y as u16)].set_char(ch);
+                    }
+                }
+            }
+
+        }
+
+        // Caption centered under the video, one blank line below the ring. It stays for the
+        // whole boot screen (also after the video stops) until the dash sweep erases it.
+        const CAPTION: &str = "loading ancient knowledge";
+        let caption_y = vy + h + 2;
+        let caption_len = CAPTION.chars().count() as i32;
+        let cap_l = vx + (w - caption_len) / 2;
+        let cap_r = cap_l + caption_len - 1;
+        for (col, ch) in CAPTION.chars().enumerate() {
+            let x = cap_l + col as i32;
+            if in_area(x, caption_y) {
+                buf[(x as u16, caption_y as u16)].set_char(ch).set_fg(ratatui::style::Color::Gray);
+            }
+        }
+
+        // Dashes frame the caption from the start. After the dots erode, they move in along the
+        // caption row toward its center. Every caption cell they pass is blanked; they vanish at
+        // the center.
+        let dash_l = cap_l - 2;
+        let dash_r = cap_r + 2;
+        let mid = (cap_l + cap_r) / 2;
+        let p = sweep.unwrap_or(0.0);
+        let lf = dash_l + ((mid - dash_l) as f32 * p) as i32;
+        let rf = dash_r - ((dash_r - mid) as f32 * p) as i32;
+        if sweep.is_some() {
+            for x in (dash_l..lf).chain(rf + 1..=dash_r) {
+                if in_area(x, caption_y) {
+                    buf[(x as u16, caption_y as u16)].set_char(' ');
+                }
+            }
+        }
+        for x in [lf, rf] {
+            if in_area(x, caption_y) {
+                buf[(x as u16, caption_y as u16)].set_char('-').set_fg(ratatui::style::Color::White);
+            }
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         // Input grows with its wrapped text: 1 line minimum, at most 8 lines of text.
         let inner_width = frame.area().width.saturating_sub(2);
@@ -256,6 +404,10 @@ impl App {
             .style(Style::default().fg(Color::DarkGray)),
             hint_area,
         );
+
+        if self.boot.is_some() {
+            self.draw_boot_overlay(frame, chat_area);
+        }
     }
 
     fn draw_chat(&mut self, frame: &mut Frame, area: Rect) {

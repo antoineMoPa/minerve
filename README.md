@@ -49,6 +49,17 @@ For executing a command with a specific prompt:
 minerve -p "Your query here"
 ```
 
+Add extra system prompts after the default one with `-s` (repeatable).
+
+
+```
+minerve -s "Answer in French" -s "Be terse" -p "Explain this repo"
+```
+
+## Credits
+
+Minerva boot screen is based on an image by wikipedia user JackyM59. [[source]](https://ast.wikipedia.org/wiki/Minerva#/media/Ficheru:Statue_de_la_d%C3%A9esse_Minerve_-_Mus%C3%A9e_du_Louvre_(Ma_332).jpg)
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

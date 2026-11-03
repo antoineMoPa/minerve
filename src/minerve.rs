@@ -341,16 +341,23 @@ impl Minerve {
     }
 
     /// Starts a new session, or continues the saved one when `resume` is given.
+    /// `extra_system_prompts` are added after the default system prompt of a new session.
     pub fn new(
         openrouter_connection: OpenRouterConnection,
         resume: Option<SessionFile>,
+        extra_system_prompts: &[String],
     ) -> Self {
         let (session_id, messages) = match resume {
             Some(file) => (file.id, file.messages),
-            None => (
-                uuid::Uuid::new_v4().to_string(),
-                vec![ChatCompletionMessage::system(get_system_prompt())],
-            ),
+            None => {
+                let mut messages = vec![ChatCompletionMessage::system(get_system_prompt())];
+                messages.extend(
+                    extra_system_prompts
+                        .iter()
+                        .map(|prompt| ChatCompletionMessage::system(prompt.clone())),
+                );
+                (uuid::Uuid::new_v4().to_string(), messages)
+            }
         };
         Self {
             session_id,
