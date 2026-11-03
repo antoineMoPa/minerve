@@ -10,6 +10,7 @@ pub mod git_diff_tool;
 pub mod git_status_tool;
 pub mod list_files_tool;
 pub mod compile_typescript_project_tool;
+pub mod delete_file_tool;
 pub mod edit_tool;
 pub mod read_tool;
 pub mod registry;
@@ -91,6 +92,8 @@ impl ToolParams {
 }
 
 pub struct ExecuteCommandSettings {
+    // Kept for the Tool trait signature; not read yet (confirmation is handled by the UI).
+    #[allow(dead_code)]
     pub is_headless: bool,
 }
 

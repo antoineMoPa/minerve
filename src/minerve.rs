@@ -1,5 +1,4 @@
 use crate::token_counter::TokenCounter;
-use cursive::views::{ResizedView, TextView};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,7 +8,6 @@ pub async fn post_request_with_token_count(
     url: &str,
     api_key: &str,
     request: ChatCompletionRequest,
-    _cb_sink: Option<&cursive::CbSink>,
     token_counter: Arc<TokenCounter>,
 ) -> Result<ChatCompletionResponse, String> {
     let response = client
@@ -50,11 +48,12 @@ use crate::openrouter::OpenRouterConnection;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::run_shell_command_tool::RunShellCommandTool;
 use crate::tools::utils::cap_tool_output;
+use crate::ui::{send_status, update_chat_ui, UiEvent, UiSender};
 use crate::{
-    update_chat_ui, ChatCompletionFunctionDefinition, ChatCompletionMessage,
-    ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse,
-    ChatCompletionToolCall, ChatCompletionToolDefinition, RequestMessage, ToolCallResult,
-    UsageAccountingRequest, EPHEMERAL_CACHE_CONTROL,
+    ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole,
+    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionToolCall,
+    ChatCompletionToolDefinition, RequestMessage, ToolCallResult, UsageAccountingRequest,
+    EPHEMERAL_CACHE_CONTROL,
 };
 
 pub struct Minerve {
@@ -138,7 +137,7 @@ fn get_ui_messages(messages: &[ChatCompletionMessage]) -> Vec<(String, String)> 
 /// Returns whether the conversation should continue with another request.
 async fn run_tool_calls(
     tool_calls: &[ChatCompletionToolCall],
-    cb_sink: Option<cursive::CbSink>,
+    ui: Option<UiSender>,
     is_headless: bool,
     on_tool_message: &mut impl FnMut(ChatCompletionMessage),
     on_error: &mut impl FnMut(String),
@@ -152,7 +151,7 @@ async fn run_tool_calls(
             ));
             continue;
         }
-        match handle_tool_call(tool_call, cb_sink.clone(), is_headless).await {
+        match handle_tool_call(tool_call, ui.clone(), is_headless).await {
             ToolCallResult::Success(mut msg) => {
                 msg.content = msg.content.map(cap_tool_output);
                 on_tool_message(msg)
@@ -179,7 +178,7 @@ async fn run_tool_calls(
 
 pub async fn handle_tool_call(
     tool_call: &ChatCompletionToolCall,
-    cb_sink: Option<cursive::CbSink>,
+    ui: Option<UiSender>,
     is_headless: bool,
 ) -> ToolCallResult {
     let settings = crate::tools::ExecuteCommandSettings { is_headless };
@@ -207,37 +206,21 @@ pub async fn handle_tool_call(
             };
 
         if tool_name.as_str() == "run_shell_command" {
-            if let Some(cb_sink) = &cb_sink {
-                use cursive::views::Dialog;
+            if let Some(ui) = &ui {
                 use std::sync::mpsc::sync_channel;
 
-                let (tx, rx) = sync_channel::<bool>(0);
+                // Capacity 1 so answering never blocks the UI thread.
+                let (tx, rx) = sync_channel::<bool>(1);
                 let command = args.get("command").unwrap_or(&String::new()).clone();
 
-                let tx_yes = tx.clone();
-                let tx_no = tx.clone();
-                let command_for_dialog = command.clone();
-
-                // Send confirmation dialog to main UI
-                let cb_sink_clone = cb_sink.clone();
-                cb_sink_clone
-                    .send(Box::new(move |s| {
-                        s.add_layer(
-                            Dialog::text(format!(
-                                "Accept running the following shell command?\n{}",
-                                command_for_dialog
-                            ))
-                            .button("Yes", move |s| {
-                                s.pop_layer();
-                                let _ = tx_yes.send(true);
-                            })
-                            .button("No", move |s| {
-                                s.pop_layer();
-                                let _ = tx_no.send(false);
-                            }),
-                        );
-                    }))
-                    .unwrap();
+                // The UI asks the user and answers through `tx`.
+                let asked = ui.send(UiEvent::ConfirmShell {
+                    command: command.clone(),
+                    reply: tx,
+                });
+                if asked.is_err() {
+                    return ToolCallResult::Cancelled;
+                }
 
                 // Wait for user confirmation
                 let confirmed = rx.recv().unwrap_or(false);
@@ -254,34 +237,14 @@ pub async fn handle_tool_call(
             }
         }
 
-        let function_name_for_indicator = tool_name.clone();
-
-        // Show working indicator
-        if let Some(cb_sink) = &cb_sink {
-            let _ = cb_sink.send(Box::new(move |s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                    let message = format!("Running tool: {}", function_name_for_indicator);
-                    view.get_inner_mut().set_content(message);
-                } else {
-                    panic!("working_textview view not found");
-                }
-            }));
+        if let Some(ui) = &ui {
+            send_status(ui, format!("Running tool: {}", tool_name));
         }
 
         let result = tool.run(args, settings).await;
 
-        let function_name_for_indicator = tool_name.clone();
-
-        // Hide working indicator
-        if let Some(cb_sink) = &cb_sink {
-            let _ = cb_sink.send(Box::new(move |s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                    let message = format!("Reading tool result: {}", function_name_for_indicator);
-                    view.get_inner_mut().set_content(message);
-                } else {
-                    panic!("working_textview view not found");
-                }
-            }));
+        if let Some(ui) = &ui {
+            send_status(ui, format!("Reading tool result: {}", tool_name));
         }
 
         ToolCallResult::Success(ChatCompletionMessage::tool_result(
@@ -354,7 +317,6 @@ impl Minerve {
                 &self.get_completions_url(),
                 &self.api_key,
                 self.build_request(&history),
-                None,
                 self.token_counter.clone(),
             )
             .await;
@@ -400,18 +362,11 @@ impl Minerve {
         &self,
         messages: &Arc<Mutex<Vec<ChatCompletionMessage>>>,
         message_content: String,
-        cb_sink: &cursive::CbSink,
+        ui: &UiSender,
     ) {
         let mut msgs = messages.lock().unwrap();
         msgs.push(ChatCompletionMessage::assistant(message_content));
-
-        let request_status = false;
-        update_chat_ui(
-            cb_sink.clone(),
-            get_ui_messages(&msgs),
-            request_status,
-            self.token_counter.clone(),
-        );
+        update_chat_ui(ui, get_ui_messages(&msgs));
     }
 
     pub fn new(openrouter_connection: OpenRouterConnection) -> Self {
@@ -429,12 +384,7 @@ impl Minerve {
         }
     }
 
-    pub fn chat_with_arc(
-        self: Arc<Self>,
-        user_input: String,
-        cb_sink: cursive::CbSink,
-        is_headless: bool,
-    ) {
+    pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
         use std::sync::atomic::Ordering;
 
         self.request_in_flight.store(true, Ordering::SeqCst);
@@ -443,26 +393,10 @@ impl Minerve {
             let mut msgs = self.messages.lock().unwrap();
             clean_tool_outputs_of_previous_prompts(&mut msgs);
             msgs.push(ChatCompletionMessage::user(user_input));
-
-            let request_status = false;
-            update_chat_ui(
-                cb_sink.clone(),
-                get_ui_messages(&msgs),
-                request_status,
-                self.token_counter.clone(),
-            );
+            update_chat_ui(&ui, get_ui_messages(&msgs));
         }
 
-        // Show working indicator
-        cb_sink
-            .send(Box::new(|s| {
-                if let Some(mut view) = s.find_name::<ResizedView<TextView>>("working_textview") {
-                    view.get_inner_mut().set_content("working...");
-                } else {
-                    panic!("working_textview view not found");
-                }
-            }))
-            .unwrap();
+        send_status(&ui, "working...");
 
         crate::get_global_runtime().spawn({
             let self_clone = self.clone();
@@ -474,17 +408,7 @@ impl Minerve {
                     should_continue = false;
 
                     // Show working indicator at start of each loop iteration
-                    cb_sink
-                        .send(Box::new(|s| {
-                            if let Some(mut view) =
-                                s.find_name::<ResizedView<TextView>>("working_textview")
-                            {
-                                view.get_inner_mut().set_content("working...");
-                            } else {
-                                panic!("working_textview view not found");
-                            }
-                        }))
-                        .unwrap();
+                    send_status(&ui, "working...");
 
                     let request = {
                         let msgs = messages.lock().unwrap();
@@ -496,7 +420,6 @@ impl Minerve {
                         &self_clone.get_completions_url(),
                         &self_clone.api_key,
                         request,
-                        Some(&cb_sink),
                         self_clone.token_counter.clone(),
                     )
                     .await;
@@ -517,7 +440,7 @@ impl Minerve {
                                 let mut errors = Vec::new();
                                 should_continue = run_tool_calls(
                                     &tool_calls,
-                                    Some(cb_sink.clone()),
+                                    Some(ui.clone()),
                                     is_headless,
                                     &mut |msg| messages.lock().unwrap().push(msg),
                                     &mut |err| errors.push(err),
@@ -525,40 +448,24 @@ impl Minerve {
                                 .await;
                                 for err in errors {
                                     self_clone.add_assistant_message_with_update_ui(
-                                        &messages, err, &cb_sink,
+                                        &messages, err, &ui,
                                     );
                                 }
                             }
 
-                            let request_status = false;
-                            update_chat_ui(
-                                cb_sink.clone(),
-                                get_ui_messages(&messages.lock().unwrap()),
-                                request_status,
-                                self_clone.token_counter.clone(),
-                            );
+                            update_chat_ui(&ui, get_ui_messages(&messages.lock().unwrap()));
                         }
                         Err(req_err) => {
                             let error_msg = format!("Request Error: {}", req_err);
                             self_clone.add_assistant_message_with_update_ui(
-                                &messages, error_msg, &cb_sink,
+                                &messages, error_msg, &ui,
                             );
                         }
                     }
                 }
 
                 self_clone.request_in_flight.store(false, Ordering::SeqCst);
-                cb_sink
-                    .send(Box::new(|s| {
-                        if let Some(mut view) =
-                            s.find_name::<ResizedView<TextView>>("working_textview")
-                        {
-                            view.get_inner_mut().set_content("");
-                        } else {
-                            panic!("working_textview view not found");
-                        }
-                    }))
-                    .unwrap();
+                send_status(&ui, "");
             }
         });
     }

@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::io::{self, Write};
 
 use super::{ExecuteCommandSettings, Tool, ToolParams};
 
@@ -42,25 +41,8 @@ impl RunShellCommandTool {
         Self::execute_command(&command, Some(settings))
     }
 
-    pub fn execute_command(command: &str, settings: Option<ExecuteCommandSettings>) -> String {
-        let settings = settings.unwrap_or_default();
-
-        if settings.is_headless {
-            // Prompt user for confirmation in headless mode
-            print!("Do you want to run the command '{}'? (y/n): ", command);
-            io::stdout().flush().unwrap();
-
-            let mut input = String::new();
-            if let Err(_) = io::stdin().read_line(&mut input) {
-                return String::from("[Error] Failed to read user input");
-            }
-
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                return String::from("Command execution cancelled by user.");
-            }
-        }
-
+    /// No confirmation happens here: the TUI asks before calling this (see `handle_tool_call`).
+    pub fn execute_command(command: &str, _settings: Option<ExecuteCommandSettings>) -> String {
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(command)

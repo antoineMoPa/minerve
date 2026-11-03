@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::compile_typescript_project_tool::CompileTypescriptProjectTool;
+use super::delete_file_tool::DeleteFileTool;
 use super::edit_tool::EditTool;
 use super::extract_structure_tool::ExtractStructureTool;
 use super::get_general_context_tool::GetGeneralContext;
@@ -36,6 +37,7 @@ pub fn get_tool_registry() -> BTreeMap<&'static str, Arc<dyn Tool>> {
     map.insert("read", Arc::new(ReadTool));
     map.insert("edit", Arc::new(EditTool));
     map.insert("write", Arc::new(WriteTool));
+    map.insert("delete_file", Arc::new(DeleteFileTool));
     map.insert("run_cargo_check", Arc::new(RunCargoCheckTool));
     map.insert("run_shell_command", Arc::new(RunShellCommandTool));
     map.insert("extract_structure", Arc::new(ExtractStructureTool));
