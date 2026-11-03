@@ -3,8 +3,11 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;
 
+use crate::tools::utils::MAX_TOOL_OUTPUT_BYTES;
+
 const MAX_LINES: usize = 2000;
-const MAX_BYTES: usize = 50 * 1024;
+// Leaves room for the continuation note under the cap every tool result goes through.
+const MAX_BYTES: usize = MAX_TOOL_OUTPUT_BYTES - 200;
 
 pub struct ReadTool;
 
@@ -54,7 +57,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read the contents of a file. Output is truncated to 2000 lines or 50KB, whichever is hit first. Use offset/limit for large files; when you need the full file, continue with offset until complete. Prefer extract_structure when you just need an overview."
+        "Read the contents of a file. Output is truncated to 2000 lines or about 10KB, whichever is hit first. Use offset/limit for large files; when you need the full file, continue with offset until complete. Prefer extract_structure when you just need an overview."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {

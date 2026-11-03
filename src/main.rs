@@ -128,44 +128,17 @@ fn update_chat_ui(
 use std::fs::OpenOptions;
 use std::io::Write;
 
-pub fn run_headless(prompt: String, openrouter_connection: OpenRouterConnection) -> String {
-    get_global_runtime().block_on(run_headless_with_capture(
-        prompt,
-        openrouter_connection,
-        false,
-    ))
-}
-
-pub async fn run_headless_with_capture(
-    prompt: String,
-    openrouter_connection: OpenRouterConnection,
-    capture_output: bool,
-) -> String {
-    if !capture_output {
-        println!("run_headless started with prompt: {}", prompt);
-    }
-
-    // Create a Minerve instance to reuse existing initialization logic
+pub fn run_headless(prompt: String, openrouter_connection: OpenRouterConnection) {
     let minerve = Minerve::new(openrouter_connection);
+    minerve
+        .messages
+        .lock()
+        .unwrap()
+        .push(ChatCompletionMessage::user(prompt));
 
-    let user_message = ChatCompletionMessage::user(prompt.clone());
+    get_global_runtime().block_on(minerve.chat_headless());
 
-    // Add user message to minerve's messages
-    {
-        let mut msgs = minerve.messages.lock().unwrap();
-        msgs.push(user_message);
-    }
-
-    // Use minerve's chat_headless method
-    let result = minerve.chat_headless(capture_output).await;
-
-    if capture_output {
-        result
-    } else {
-        println!("{}", minerve.token_counter.format_usage_summary());
-        println!("run_headless completed.");
-        String::new()
-    }
+    println!("{}", minerve.token_counter.format_usage_summary());
 }
 
 fn launch_tui(openrouter_connection: OpenRouterConnection) {
@@ -358,7 +331,7 @@ fn main() {
     let openrouter_connection = read_openrouter_connection_from_env();
 
     if let Some(prompt) = cli.prompt {
-        let _ = run_headless(prompt, openrouter_connection);
+        run_headless(prompt, openrouter_connection);
         return;
     }
 

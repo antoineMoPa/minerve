@@ -48,6 +48,7 @@ const HIST_CUTOFF: usize = 30;
 use crate::openrouter::OpenRouterConnection;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::run_shell_command_tool::RunShellCommandTool;
+use crate::tools::utils::cap_tool_output;
 use crate::{
     update_chat_ui, ChatCompletionFunctionDefinition, ChatCompletionMessage,
     ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse,
@@ -143,7 +144,10 @@ async fn run_tool_calls(
             continue;
         }
         match handle_tool_call(tool_call, cb_sink.clone(), is_headless).await {
-            ToolCallResult::Success(msg) => on_tool_message(msg),
+            ToolCallResult::Success(mut msg) => {
+                msg.content = msg.content.map(cap_tool_output);
+                on_tool_message(msg)
+            }
             ToolCallResult::Cancelled => {
                 on_tool_message(ChatCompletionMessage::tool_result(
                     tool_call.id.clone(),
@@ -305,8 +309,8 @@ impl Minerve {
         format!("{}/chat/completions", self.base_url)
     }
 
-    pub async fn chat_headless(&self, capture_output: bool) -> String {
-        let mut output_buffer = Vec::new();
+    /// Prints assistant replies to stdout and errors to stderr as the conversation goes.
+    pub async fn chat_headless(&self) {
         let is_headless = true;
 
         let mut history: Vec<ChatCompletionMessage> = {
@@ -339,53 +343,30 @@ impl Minerve {
                         .message;
 
                     if let Some(content) = &assistant_message.content {
-                        if capture_output {
-                            output_buffer.push(content.clone());
-                        }
+                        println!("{}", content);
                     }
 
                     let tool_calls = assistant_message.tool_calls.clone();
                     history.push(assistant_message);
 
                     if let Some(tool_calls) = tool_calls {
-                        if !capture_output {
-                            for tool_call in &tool_calls {
-                                println!("Handling tool call: {}", tool_call.function.name);
-                            }
+                        for tool_call in &tool_calls {
+                            println!("Handling tool call: {}", tool_call.function.name);
                         }
-                        let mut errors = Vec::new();
                         should_continue = run_tool_calls(
                             &tool_calls,
                             None,
                             is_headless,
                             &mut |msg| history.push(msg),
-                            &mut |err| errors.push(err),
+                            &mut |err| eprintln!("{}", err),
                         )
                         .await;
-                        for err in errors {
-                            if capture_output {
-                                output_buffer.push(err);
-                            } else {
-                                eprintln!("{}", err);
-                            }
-                        }
                     }
                 }
                 Err(req_err) => {
-                    let error_msg = format!("Request Error: {req_err}");
-                    if capture_output {
-                        output_buffer.push(error_msg);
-                    } else {
-                        eprintln!("{}", error_msg);
-                    }
+                    eprintln!("Request Error: {}", req_err);
                 }
             }
-        }
-
-        if capture_output {
-            output_buffer.join("\n")
-        } else {
-            String::new()
         }
     }
 
