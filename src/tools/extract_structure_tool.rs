@@ -19,7 +19,7 @@ impl Tool for ExtractStructureTool {
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
         let mut params = HashMap::new();
-        params.insert("filepath", "string");
+        params.insert("path", "string");
         params
     }
 
@@ -28,9 +28,9 @@ impl Tool for ExtractStructureTool {
         args: HashMap<String, String>,
         _settings: ExecuteCommandSettings,
     ) -> String {
-        let filepath = match args.get("filepath") {
+        let filepath = match args.get("path") {
             Some(f) => f,
-            None => return String::from("[Error] Missing 'filepath' parameter."),
+            None => return String::from("[Error] Missing 'path' parameter."),
         };
 
         match extract_structure(filepath) {

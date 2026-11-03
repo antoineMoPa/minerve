@@ -1,11 +1,12 @@
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
 };
 
 pub struct TokenCounter {
     prompt_tokens: AtomicUsize,
     completion_tokens: AtomicUsize,
+    cost_usd: Mutex<f64>,
 }
 
 impl TokenCounter {
@@ -13,6 +14,7 @@ impl TokenCounter {
         TokenCounter {
             prompt_tokens: AtomicUsize::new(0),
             completion_tokens: AtomicUsize::new(0),
+            cost_usd: Mutex::new(0.0),
         }
     }
 
@@ -30,6 +32,24 @@ impl TokenCounter {
 
     pub fn current_completion(&self) -> usize {
         self.completion_tokens.load(Ordering::SeqCst)
+    }
+
+    pub fn increment_cost_usd(&self, cost_usd: f64) {
+        *self.cost_usd.lock().unwrap() += cost_usd;
+    }
+
+    pub fn current_cost_usd(&self) -> f64 {
+        *self.cost_usd.lock().unwrap()
+    }
+
+    /// One line for the TUI status bar and the end of headless runs.
+    pub fn format_usage_summary(&self) -> String {
+        format!(
+            "Sent: {} | Received: {} | Cost: ${:.4}",
+            self.current_prompt(),
+            self.current_completion(),
+            self.current_cost_usd()
+        )
     }
 }
 

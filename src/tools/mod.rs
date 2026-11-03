@@ -10,19 +10,19 @@ pub mod git_diff_tool;
 pub mod git_status_tool;
 pub mod list_files_tool;
 pub mod compile_typescript_project_tool;
+pub mod edit_tool;
+pub mod read_tool;
 pub mod registry;
-pub mod replace_content_tool;
 pub mod run_cargo_check_tool;
 pub mod run_shell_command_tool;
 pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
-pub mod set_whole_file_contents_tool;
-pub mod show_file_tool;
 pub mod utils;
+pub mod write_tool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamName {
-    FilePath,
+    Path,
     Dir,
     SearchString,
     PathPattern,
@@ -32,7 +32,7 @@ pub enum ParamName {
 impl ParamName {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ParamName::FilePath => "filepath",
+            ParamName::Path => "path",
             ParamName::Dir => "dir",
             ParamName::SearchString => "search_string",
             ParamName::PathPattern => "path_pattern",
@@ -61,6 +61,25 @@ impl ToolParams {
                     param
                 )
             })
+    }
+
+    pub fn get_present_string(&self, param: &str) -> Result<String, String> {
+        self.args
+            .get(param)
+            .cloned()
+            .ok_or_else(|| format!("[Error] Parameter '{}' is required.", param))
+    }
+
+    pub fn get_usize_optional(&self, param: &str) -> Result<Option<usize>, String> {
+        match self.args.get(param) {
+            None => Ok(None),
+            Some(value) => value.parse::<usize>().map(Some).map_err(|_| {
+                format!(
+                    "[Error] Parameter '{}' must be a non-negative integer, got '{}'.",
+                    param, value
+                )
+            }),
+        }
     }
 
     pub fn get_string_optional(&self, param: &str, default: &str) -> String {
@@ -94,19 +113,23 @@ pub trait Tool: Send + Sync {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
 
+        // Parameter types are "string" or "integer", prefixed with "optional " when not required.
         for (param_name, param_type) in self.parameters() {
-            if param_type == "string" {
-                properties.insert(
-                    param_name.to_string(),
-                    serde_json::json!({"type": "string"}),
-                );
-            } else if param_type == "integer" {
-                properties.insert(
-                    param_name.to_string(),
-                    serde_json::json!({"type": "integer"}),
-                );
+            let (json_type, is_required) = match param_type.strip_prefix("optional ") {
+                Some(json_type) => (json_type, false),
+                None => (param_type, true),
+            };
+            assert!(
+                json_type == "string" || json_type == "integer",
+                "tool {} parameter {} has unsupported type '{}', override function_definition",
+                self.name(),
+                param_name,
+                param_type
+            );
+            properties.insert(param_name.to_string(), serde_json::json!({ "type": json_type }));
+            if is_required {
+                required.push(param_name.to_string());
             }
-            required.push(param_name.to_string());
         }
 
         serde_json::json!({

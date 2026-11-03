@@ -2,7 +2,6 @@ use crate::tools::{Tool, ExecuteCommandSettings};
 use std::collections::HashMap;
 use std::process::Command;
 use async_trait::async_trait;
-use serde_json::Value;
 
 pub struct CompileTypescriptProjectTool;
 

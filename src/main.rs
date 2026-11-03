@@ -34,10 +34,19 @@ use cli::*;
 mod utils;
 
 mod minerve;
+mod openrouter;
+use openrouter::{read_openrouter_connection_from_env, OpenRouterConnection};
 mod theme;
 
-pub const MODEL_NAME: &str = "gpt-4o";
 pub const HISTORY_PATH: &str = ".minerve/history.json";
+pub const PANIC_LOG_PATH: &str = ".minerve/panic.log";
+
+fn load_home_dotenv() {
+    let dotenv_path = dirs::home_dir().expect("no home directory").join(".env");
+    if dotenv_path.exists() {
+        dotenvy::from_path(&dotenv_path).expect("Failed to load ~/.env");
+    }
+}
 
 fn update_chat_ui(
     cb_sink: cursive::CbSink,
@@ -110,9 +119,7 @@ fn update_chat_ui(
             }
 
             s.call_on_name("token_count", |view: &mut TextView| {
-                let sent = token_counter.current_prompt();
-                let received = token_counter.current_completion();
-                view.set_content(format!("Sent: {} | Received: {}", sent, received));
+                view.set_content(token_counter.format_usage_summary());
             });
         }))
         .unwrap();
@@ -121,26 +128,27 @@ fn update_chat_ui(
 use std::fs::OpenOptions;
 use std::io::Write;
 
-pub fn run_headless(prompt: String) -> String {
-    get_global_runtime().block_on(run_headless_with_capture(prompt, false))
+pub fn run_headless(prompt: String, openrouter_connection: OpenRouterConnection) -> String {
+    get_global_runtime().block_on(run_headless_with_capture(
+        prompt,
+        openrouter_connection,
+        false,
+    ))
 }
 
-pub async fn run_headless_with_capture(prompt: String, capture_output: bool) -> String {
+pub async fn run_headless_with_capture(
+    prompt: String,
+    openrouter_connection: OpenRouterConnection,
+    capture_output: bool,
+) -> String {
     if !capture_output {
         println!("run_headless started with prompt: {}", prompt);
     }
 
     // Create a Minerve instance to reuse existing initialization logic
-    let minerve = Minerve::new();
+    let minerve = Minerve::new(openrouter_connection);
 
-    let user_message = ChatCompletionMessage {
-        role: ChatCompletionMessageRole::User,
-        content: Some(prompt.clone()),
-        name: None,
-        function_call: None,
-        tool_call_id: None,
-        tool_calls: None,
-    };
+    let user_message = ChatCompletionMessage::user(prompt.clone());
 
     // Add user message to minerve's messages
     {
@@ -154,16 +162,17 @@ pub async fn run_headless_with_capture(prompt: String, capture_output: bool) -> 
     if capture_output {
         result
     } else {
+        println!("{}", minerve.token_counter.format_usage_summary());
         println!("run_headless completed.");
         String::new()
     }
 }
 
-fn launch_tui() {
+fn launch_tui(openrouter_connection: OpenRouterConnection) {
     let is_headless = false;
     let mut siv = cursive::default();
     siv.set_theme(custom_theme());
-    let minerve = Arc::new(Minerve::new());
+    let minerve = Arc::new(Minerve::new(openrouter_connection));
     let history_tracker = Arc::new(Mutex::new(HistoryTracker::new()));
     let token_counter_ref = get_global_token_counter();
 
@@ -192,7 +201,7 @@ fn launch_tui() {
         // Clear input
         s.call_on_name("input", |view: &mut TextArea| view.set_content(""));
 
-        // Select the input for better UX after querying OpenAI
+        // Select the input for better UX after querying OpenRouter
         s.call_on_name("input", |view: &mut TextArea| {
             view.set_cursor(0);
         });
@@ -200,10 +209,7 @@ fn launch_tui() {
     });
 
     let chat_view = TextView::new("").with_name("chat").full_height();
-    let sent = token_counter_ref.current_prompt();
-    let received = token_counter_ref.current_completion();
-
-    let token_count_view = TextView::new(format!("Sent: {} | Received: {}", sent, received))
+    let token_count_view = TextView::new(token_counter_ref.format_usage_summary())
         .with_name("token_count")
         .fixed_height(1);
 
@@ -308,11 +314,14 @@ fn main() {
         }
     }
 
+    let panic_log_path = dirs::home_dir()
+        .expect("no home directory")
+        .join(PANIC_LOG_PATH);
     let panic_log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open("panic.log")
-        .expect("Failed to open panic.log");
+        .open(&panic_log_path)
+        .unwrap_or_else(|e| panic!("Failed to open {}: {}", panic_log_path.display(), e));
 
     let panic_log_file = std::sync::Mutex::new(panic_log_file);
 
@@ -335,15 +344,23 @@ fn main() {
         let log_message = format!("Panic occurred at {}: {}\n", location, msg);
 
         let _ = file.write_all(log_message.as_bytes());
+        // Inside the TUI this lands on the alternate screen and is wiped, hence the log file.
+        eprintln!(
+            "minerve: {}\n(at {}, logged to ~/{})",
+            msg, location, PANIC_LOG_PATH
+        );
     }));
 
     let cli = Cli::parse();
 
+    // Read configuration before the TUI takes over the terminal, so errors stay visible.
+    load_home_dotenv();
+    let openrouter_connection = read_openrouter_connection_from_env();
+
     if let Some(prompt) = cli.prompt {
-        let _ = run_headless(prompt);
+        let _ = run_headless(prompt, openrouter_connection);
         return;
     }
 
-    // Otherwise, launch full TUI
-    launch_tui();
+    launch_tui(openrouter_connection);
 }

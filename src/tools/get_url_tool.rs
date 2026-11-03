@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest;
 use std::collections::HashMap;
 
-use super::{ExecuteCommandSettings, Tool, ToolParams};
+use super::{ExecuteCommandSettings, Tool};
 
 pub struct GetUrlTool;
 

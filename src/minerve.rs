@@ -1,6 +1,5 @@
 use crate::token_counter::TokenCounter;
 use cursive::views::{ResizedView, TextView};
-use dotenvy::from_path;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,38 +11,47 @@ pub async fn post_request_with_token_count(
     request: ChatCompletionRequest,
     _cb_sink: Option<&cursive::CbSink>,
     token_counter: Arc<TokenCounter>,
-) -> Result<ChatCompletionResponse, reqwest::Error> {
+) -> Result<ChatCompletionResponse, String> {
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&request)
         .send()
-        .await?;
+        .await
+        .map_err(|err| err.to_string())?;
 
-    let chat_response: ChatCompletionResponse = response.json().await?;
+    let status = response.status();
+    let body = response.text().await.map_err(|err| err.to_string())?;
+    if !status.is_success() {
+        return Err(format!("{}: {}", status, body));
+    }
+
+    let chat_response: ChatCompletionResponse = serde_json::from_str(&body)
+        .map_err(|err| format!("Unexpected response ({}): {}", err, body))?;
 
     if let Some(ref usage) = chat_response.usage {
         // Correctly use the increment with the provided token_counter
         token_counter.increment_prompt(usage.prompt_tokens as usize);
         token_counter.increment_completion(usage.completion_tokens as usize);
+        token_counter.increment_cost_usd(usage.cost);
     }
 
     Ok(chat_response)
 }
 
-use std::env;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 const HIST_CUTOFF: usize = 30;
 
+use crate::openrouter::OpenRouterConnection;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::run_shell_command_tool::RunShellCommandTool;
 use crate::{
-    update_chat_ui, ChatCompletionFunctionCall, ChatCompletionFunctionDefinition,
-    ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest,
-    ChatCompletionResponse, ToolCallResult, MODEL_NAME,
+    update_chat_ui, ChatCompletionFunctionDefinition, ChatCompletionMessage,
+    ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse,
+    ChatCompletionToolCall, ChatCompletionToolDefinition, ToolCallResult, UsageAccountingRequest,
 };
 
 pub struct Minerve {
@@ -51,6 +59,7 @@ pub struct Minerve {
     pub client: Client,
     pub api_key: String,
     pub base_url: String,
+    pub model: String,
     pub request_in_flight: Arc<AtomicBool>,
     pub token_counter: Arc<TokenCounter>,
 }
@@ -59,15 +68,111 @@ pub fn get_system_prompt() -> String {
     return String::from(include_str!("../prompts/MAIN_SYSTEM_PROMPT.txt"));
 }
 
+fn get_tool_definitions() -> Option<Vec<ChatCompletionToolDefinition>> {
+    let tools: Vec<ChatCompletionToolDefinition> = get_tool_registry()
+        .values()
+        .map(|tool| ChatCompletionToolDefinition {
+            tool_type: "function",
+            function: ChatCompletionFunctionDefinition {
+                name: tool.name().to_string(),
+                description: Some(tool.description().to_string()),
+                parameters: Some(tool.function_definition()),
+            },
+        })
+        .collect();
+    if tools.is_empty() {
+        None
+    } else {
+        Some(tools)
+    }
+}
+
+/// Messages shown in the chat view. Tool results are labeled with the function name
+/// found in the assistant tool call they answer; assistant messages that only carry
+/// tool calls have no text and are left out.
+fn get_ui_messages(messages: &[ChatCompletionMessage]) -> Vec<(String, String)> {
+    let mut function_name_by_tool_call_id: HashMap<String, String> = HashMap::new();
+    let mut ui_messages = Vec::new();
+    for msg in messages {
+        if let Some(tool_calls) = &msg.tool_calls {
+            for tool_call in tool_calls {
+                function_name_by_tool_call_id
+                    .insert(tool_call.id.clone(), tool_call.function.name.clone());
+            }
+        }
+        let Some(content) = &msg.content else {
+            continue;
+        };
+        let role_label = match msg.role {
+            ChatCompletionMessageRole::System => String::from("system"),
+            ChatCompletionMessageRole::User => String::from("user"),
+            ChatCompletionMessageRole::Assistant => String::from("minerve"),
+            ChatCompletionMessageRole::Tool => {
+                let tool_call_id = msg
+                    .tool_call_id
+                    .as_ref()
+                    .expect("tool message without tool_call_id");
+                function_name_by_tool_call_id
+                    .get(tool_call_id)
+                    .expect("tool message answering an unknown tool call")
+                    .clone()
+            }
+        };
+        ui_messages.push((role_label, content.clone()));
+    }
+    ui_messages
+}
+
+/// Every tool call of an assistant message needs a tool message answering it,
+/// otherwise OpenRouter rejects the next request.
+/// Returns whether the conversation should continue with another request.
+async fn run_tool_calls(
+    tool_calls: &[ChatCompletionToolCall],
+    cb_sink: Option<cursive::CbSink>,
+    is_headless: bool,
+    on_tool_message: &mut impl FnMut(ChatCompletionMessage),
+    on_error: &mut impl FnMut(String),
+) -> bool {
+    let mut should_continue = true;
+    for tool_call in tool_calls {
+        if !should_continue {
+            on_tool_message(ChatCompletionMessage::tool_result(
+                tool_call.id.clone(),
+                String::from("Skipped: a previous tool call was cancelled or failed."),
+            ));
+            continue;
+        }
+        match handle_tool_call(tool_call, cb_sink.clone(), is_headless).await {
+            ToolCallResult::Success(msg) => on_tool_message(msg),
+            ToolCallResult::Cancelled => {
+                on_tool_message(ChatCompletionMessage::tool_result(
+                    tool_call.id.clone(),
+                    String::from("Cancelled by the user."),
+                ));
+                should_continue = false;
+            }
+            ToolCallResult::Error(err) => {
+                on_tool_message(ChatCompletionMessage::tool_result(
+                    tool_call.id.clone(),
+                    format!("Error: {}", err),
+                ));
+                on_error(format!("Error occurred in tool call: {}", err));
+                should_continue = false;
+            }
+        }
+    }
+    should_continue
+}
+
 pub async fn handle_tool_call(
-    tool_call: &ChatCompletionFunctionCall,
+    tool_call: &ChatCompletionToolCall,
     cb_sink: Option<cursive::CbSink>,
     is_headless: bool,
 ) -> ToolCallResult {
     let settings = crate::tools::ExecuteCommandSettings { is_headless };
     let registry = get_tool_registry();
-    let tool_name = &tool_call.name;
-    let args_str = &tool_call.arguments;
+    let tool_name = &tool_call.function.name;
+    let args_str = &tool_call.function.arguments;
 
     if let Some(tool) = registry.get(tool_name.as_str()) {
         // Parse as generic JSON value first, then convert all values to strings
@@ -129,14 +234,10 @@ pub async fn handle_tool_call(
 
                 let output = RunShellCommandTool::execute_command(&command, Some(settings));
 
-                return ToolCallResult::Success(ChatCompletionMessage {
-                    role: ChatCompletionMessageRole::Function,
-                    content: Some(output),
-                    name: Some(tool_name.clone()),
-                    function_call: None,
-                    tool_call_id: Some(tool_call.name.clone()),
-                    tool_calls: None,
-                });
+                return ToolCallResult::Success(ChatCompletionMessage::tool_result(
+                    tool_call.id.clone(),
+                    output,
+                ));
             }
         }
 
@@ -170,20 +271,40 @@ pub async fn handle_tool_call(
             }));
         }
 
-        ToolCallResult::Success(ChatCompletionMessage {
-            role: ChatCompletionMessageRole::Function,
-            content: Some(result),
-            name: Some(tool_name.clone()),
-            function_call: None,
-            tool_call_id: Some(tool_call.name.clone()),
-            tool_calls: None,
-        })
+        ToolCallResult::Success(ChatCompletionMessage::tool_result(
+            tool_call.id.clone(),
+            result,
+        ))
     } else {
         ToolCallResult::Error(format!("Function '{}' not found", tool_name))
     }
 }
 
+fn clean_old_tool_outputs(history: &[ChatCompletionMessage]) -> Vec<ChatCompletionMessage> {
+    let mut cleaned_history = history.to_vec();
+    let old_message_count = cleaned_history.len().saturating_sub(HIST_CUTOFF);
+    for msg in cleaned_history.iter_mut().take(old_message_count) {
+        if let ChatCompletionMessageRole::Tool = msg.role {
+            msg.content = Some(String::from("[cleaned from history]"));
+        }
+    }
+    cleaned_history
+}
+
 impl Minerve {
+    fn build_request(&self, history: &[ChatCompletionMessage]) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: clean_old_tool_outputs(history),
+            tools: get_tool_definitions(),
+            usage: UsageAccountingRequest { include: true },
+        }
+    }
+
+    fn get_completions_url(&self) -> String {
+        format!("{}/chat/completions", self.base_url)
+    }
+
     pub async fn chat_headless(&self, capture_output: bool) -> String {
         let mut output_buffer = Vec::new();
         let is_headless = true;
@@ -193,104 +314,70 @@ impl Minerve {
             msgs.clone()
         };
 
-        let registry = get_tool_registry();
-        let functions: Vec<ChatCompletionFunctionDefinition> = registry
-            .values()
-            .map(|tool| ChatCompletionFunctionDefinition {
-                name: tool.name().to_string(),
-                description: Some(tool.description().to_string()),
-                parameters: Some(tool.function_definition()),
-            })
-            .collect();
-
         let mut should_continue = true;
 
         while should_continue {
             should_continue = false;
 
-            // Clean old function outputs from history
-            if history.len() > HIST_CUTOFF {
-                for i in 0..history.len().saturating_sub(HIST_CUTOFF) {
-                    if let ChatCompletionMessageRole::Function = history[i].role {
-                        history[i].content = Some(String::from("[cleaned from history]"));
-                    }
-                }
-            }
-
-            let request = ChatCompletionRequest {
-                model: String::from(MODEL_NAME),
-                messages: history.clone(),
-                functions: if functions.is_empty() {
-                    None
-                } else {
-                    Some(functions.clone())
-                },
-            };
-
-            let url = format!("{}/chat/completions", self.base_url);
-
             let chat_result = post_request_with_token_count(
                 &self.client,
-                &url,
+                &self.get_completions_url(),
                 &self.api_key,
-                request,
+                self.build_request(&history),
                 None,
                 self.token_counter.clone(),
             )
             .await;
 
-            if let Ok(chat_response) = chat_result {
-                let choice = chat_response.choices.first().unwrap();
-                let assistant_message = &choice.message;
+            match chat_result {
+                Ok(chat_response) => {
+                    let assistant_message = chat_response
+                        .choices
+                        .into_iter()
+                        .next()
+                        .expect("chat completion response without choices")
+                        .message;
 
-                // Add assistant message to history
-                history.push(ChatCompletionMessage {
-                    role: ChatCompletionMessageRole::Assistant,
-                    content: assistant_message.content.clone(),
-                    name: None,
-                    function_call: assistant_message.function_call.clone(),
-                    tool_call_id: None,
-                    tool_calls: None,
-                });
-
-                // Print or capture assistant response
-                if let Some(content) = &assistant_message.content {
-                    if capture_output {
-                        output_buffer.push(content.clone());
-                    } else {
-                    }
-                }
-
-                // Handle function call if present
-                if let Some(function_call) = &assistant_message.function_call {
-                    if !capture_output {
-                        println!("Handling function call: {}", function_call.name);
-                    }
-                    let function_call_result =
-                        handle_tool_call(function_call, None, is_headless).await;
-                    match function_call_result {
-                        ToolCallResult::Success(msg) => {
-                            history.push(msg);
-                            should_continue = true;
+                    if let Some(content) = &assistant_message.content {
+                        if capture_output {
+                            output_buffer.push(content.clone());
                         }
-                        ToolCallResult::Cancelled => break,
-                        ToolCallResult::Error(err) => {
-                            let error_msg = format!("Error occurred in tool call: {}", err);
-                            if capture_output {
-                                output_buffer.push(error_msg);
-                            } else {
-                                eprintln!("Error occurred in tool call: {}", err);
+                    }
+
+                    let tool_calls = assistant_message.tool_calls.clone();
+                    history.push(assistant_message);
+
+                    if let Some(tool_calls) = tool_calls {
+                        if !capture_output {
+                            for tool_call in &tool_calls {
+                                println!("Handling tool call: {}", tool_call.function.name);
                             }
-                            break;
+                        }
+                        let mut errors = Vec::new();
+                        should_continue = run_tool_calls(
+                            &tool_calls,
+                            None,
+                            is_headless,
+                            &mut |msg| history.push(msg),
+                            &mut |err| errors.push(err),
+                        )
+                        .await;
+                        for err in errors {
+                            if capture_output {
+                                output_buffer.push(err);
+                            } else {
+                                eprintln!("{}", err);
+                            }
                         }
                     }
                 }
-            } else if let Err(req_err) = chat_result {
-                let error_msg = format!("Request Error: {req_err}");
-                if capture_output {
-                    output_buffer.push(error_msg);
-                } else {
-                    eprintln!("Request Error: {req_err}");
+                Err(req_err) => {
+                    let error_msg = format!("Request Error: {req_err}");
+                    if capture_output {
+                        output_buffer.push(error_msg);
+                    } else {
+                        eprintln!("{}", error_msg);
+                    }
                 }
             }
         }
@@ -309,66 +396,26 @@ impl Minerve {
         cb_sink: &cursive::CbSink,
     ) {
         let mut msgs = messages.lock().unwrap();
-        msgs.push(ChatCompletionMessage {
-            role: ChatCompletionMessageRole::Assistant,
-            content: Some(message_content),
-            name: None,
-            function_call: None,
-            tool_call_id: None,
-            tool_calls: None,
-        });
-
-        let ui_messages = msgs
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    ChatCompletionMessageRole::System => "system".to_string(),
-                    ChatCompletionMessageRole::User => "user".to_string(),
-                    ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                    ChatCompletionMessageRole::Function => msg
-                        .tool_call_id
-                        .clone()
-                        .unwrap_or(String::from("unknown function call")),
-                };
-                (role, msg.content.clone().unwrap_or_default())
-            })
-            .collect();
+        msgs.push(ChatCompletionMessage::assistant(message_content));
 
         let request_status = false;
         update_chat_ui(
             cb_sink.clone(),
-            ui_messages,
+            get_ui_messages(&msgs),
             request_status,
             self.token_counter.clone(),
         );
     }
 
-    pub fn new() -> Self {
-        if let Some(home_dir) = dirs::home_dir() {
-            let dotenv_path = home_dir.join(".env");
-            if dotenv_path.exists() {
-                from_path(&dotenv_path).expect("Failed to load ~/.env");
-            }
-        }
-
-        let api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-        let base_url =
-            env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
-
-        let system_message = ChatCompletionMessage {
-            role: ChatCompletionMessageRole::System,
-            content: Some(get_system_prompt()),
-            name: None,
-            function_call: None,
-            tool_call_id: None,
-            tool_calls: None,
-        };
-
+    pub fn new(openrouter_connection: OpenRouterConnection) -> Self {
         Self {
-            messages: Arc::new(Mutex::new(vec![system_message])),
+            messages: Arc::new(Mutex::new(vec![ChatCompletionMessage::system(
+                get_system_prompt(),
+            )])),
             client: Client::new(),
-            api_key,
-            base_url,
+            api_key: openrouter_connection.api_key,
+            base_url: openrouter_connection.base_url,
+            model: openrouter_connection.model,
             request_in_flight: Arc::new(AtomicBool::new(false)),
             token_counter: Arc::new(TokenCounter::new()),
         }
@@ -382,45 +429,20 @@ impl Minerve {
     ) {
         use std::sync::atomic::Ordering;
 
-        let cb_sink = cb_sink.clone();
-
         self.request_in_flight.store(true, Ordering::SeqCst);
 
-        let mut msgs = self.messages.lock().unwrap();
+        {
+            let mut msgs = self.messages.lock().unwrap();
+            msgs.push(ChatCompletionMessage::user(user_input));
 
-        let user_message = ChatCompletionMessage {
-            role: ChatCompletionMessageRole::User,
-            content: Some(user_input.clone()),
-            name: None,
-            function_call: None,
-            tool_call_id: None,
-            tool_calls: None,
-        };
-        msgs.push(user_message);
-
-        let ui_messages = msgs
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    ChatCompletionMessageRole::System => "system".to_string(),
-                    ChatCompletionMessageRole::User => "user".to_string(),
-                    ChatCompletionMessageRole::Assistant => "minerve".to_string(),
-                    ChatCompletionMessageRole::Function => msg
-                        .tool_call_id
-                        .clone()
-                        .unwrap_or(String::from("unknown function call")),
-                };
-                (role, msg.content.clone().unwrap_or_default())
-            })
-            .collect();
-
-        let request_status = false;
-        update_chat_ui(
-            cb_sink.clone(),
-            ui_messages,
-            request_status,
-            self.token_counter.clone(),
-        );
+            let request_status = false;
+            update_chat_ui(
+                cb_sink.clone(),
+                get_ui_messages(&msgs),
+                request_status,
+                self.token_counter.clone(),
+            );
+        }
 
         // Show working indicator
         cb_sink
@@ -433,38 +455,17 @@ impl Minerve {
             }))
             .unwrap();
 
-        let messages = msgs.clone();
-        drop(msgs);
-
-        let client = self.client.clone();
-        let api_key = self.api_key.clone();
-        let base_url = self.base_url.clone();
-        let messages_clone = self.messages.clone();
-        let request_in_flight = self.request_in_flight.clone();
-        let token_counter = self.token_counter.clone();
-        let cb_sink_clone = cb_sink.clone();
-
         crate::get_global_runtime().spawn({
             let self_clone = self.clone();
             async move {
-                let mut history: Vec<ChatCompletionMessage> = messages;
-                let registry = get_tool_registry();
-                let functions: Vec<ChatCompletionFunctionDefinition> = registry
-                    .values()
-                    .map(|tool| ChatCompletionFunctionDefinition {
-                        name: tool.name().to_string(),
-                        description: Some(tool.description().to_string()),
-                        parameters: Some(tool.function_definition()),
-                    })
-                    .collect();
-
+                let messages = self_clone.messages.clone();
                 let mut should_continue = true;
 
                 while should_continue {
                     should_continue = false;
 
                     // Show working indicator at start of each loop iteration
-                    cb_sink_clone
+                    cb_sink
                         .send(Box::new(|s| {
                             if let Some(mut view) =
                                 s.find_name::<ResizedView<TextView>>("working_textview")
@@ -476,137 +477,69 @@ impl Minerve {
                         }))
                         .unwrap();
 
-                    let history_len = history.len();
-                    let mut cleaned_history = history.clone();
-                    if history_len > 30 {
-                        for i in 0..history_len - 30 {
-                            if let ChatCompletionMessageRole::Function = cleaned_history[i].role {
-                                cleaned_history[i].content =
-                                    Some("[cleaned from history]".to_string());
-                            }
-                        }
-                    }
-
-                    let request = ChatCompletionRequest {
-                        model: String::from(MODEL_NAME),
-                        messages: cleaned_history,
-                        functions: if functions.is_empty() {
-                            None
-                        } else {
-                            Some(functions.clone())
-                        },
+                    let request = {
+                        let msgs = messages.lock().unwrap();
+                        self_clone.build_request(&msgs)
                     };
 
-                    let url = format!("{}/chat/completions", base_url);
-
                     let chat_result = post_request_with_token_count(
-                        &client,
-                        &url,
-                        &api_key,
+                        &self_clone.client,
+                        &self_clone.get_completions_url(),
+                        &self_clone.api_key,
                         request,
-                        Some(&cb_sink_clone),
-                        token_counter.clone(),
+                        Some(&cb_sink),
+                        self_clone.token_counter.clone(),
                     )
                     .await;
 
                     match chat_result {
                         Ok(response) => {
-                            let choice = response.choices.first().unwrap();
-                            let assistant_message = &choice.message;
+                            let assistant_message = response
+                                .choices
+                                .into_iter()
+                                .next()
+                                .expect("chat completion response without choices")
+                                .message;
 
-                            history.push(ChatCompletionMessage {
-                                role: ChatCompletionMessageRole::Assistant,
-                                content: assistant_message.content.clone(),
-                                name: None,
-                                function_call: assistant_message.function_call.clone(),
-                                tool_call_id: None,
-                                tool_calls: None,
-                            });
+                            let tool_calls = assistant_message.tool_calls.clone();
+                            messages.lock().unwrap().push(assistant_message);
 
-                            if let Some(content) = &assistant_message.content {
-                                let mut msgs = messages_clone.lock().unwrap();
-                                msgs.push(ChatCompletionMessage {
-                                    role: ChatCompletionMessageRole::Assistant,
-                                    content: Some(content.clone()),
-                                    name: None,
-                                    function_call: None,
-                                    tool_call_id: None,
-                                    tool_calls: None,
-                                });
-                            }
-
-                            if let Some(function_call) = &assistant_message.function_call {
-                                let tool_call_result = handle_tool_call(
-                                    function_call,
-                                    Some(cb_sink_clone.clone()),
+                            if let Some(tool_calls) = tool_calls {
+                                let mut errors = Vec::new();
+                                should_continue = run_tool_calls(
+                                    &tool_calls,
+                                    Some(cb_sink.clone()),
                                     is_headless,
+                                    &mut |msg| messages.lock().unwrap().push(msg),
+                                    &mut |err| errors.push(err),
                                 )
                                 .await;
-
-                                match tool_call_result {
-                                    ToolCallResult::Cancelled => break,
-                                    ToolCallResult::Success(msg) => {
-                                        if msg.content.is_some() {
-                                            let mut msgs = messages_clone.lock().unwrap();
-                                            msgs.push(msg.clone());
-                                        }
-                                        history.push(msg);
-                                        should_continue = true;
-                                    }
-                                    ToolCallResult::Error(err) => {
-                                        let msg = format!("Error occurred in tool call: {}", err);
-                                        self_clone.add_assistant_message_with_update_ui(
-                                            &messages_clone,
-                                            msg,
-                                            &cb_sink_clone,
-                                        );
-                                        break;
-                                    }
+                                for err in errors {
+                                    self_clone.add_assistant_message_with_update_ui(
+                                        &messages, err, &cb_sink,
+                                    );
                                 }
                             }
 
-                            let ui_messages = messages_clone
-                                .lock()
-                                .unwrap()
-                                .iter()
-                                .map(|msg| {
-                                    let role = match msg.role {
-                                        ChatCompletionMessageRole::System => "system".to_string(),
-                                        ChatCompletionMessageRole::User => "user".to_string(),
-                                        ChatCompletionMessageRole::Assistant => {
-                                            "minerve".to_string()
-                                        }
-                                        ChatCompletionMessageRole::Function => msg
-                                            .tool_call_id
-                                            .clone()
-                                            .unwrap_or(String::from("unknown function call")),
-                                    };
-                                    (role, msg.content.clone().unwrap_or_default())
-                                })
-                                .collect();
-
                             let request_status = false;
                             update_chat_ui(
-                                cb_sink_clone.clone(),
-                                ui_messages,
+                                cb_sink.clone(),
+                                get_ui_messages(&messages.lock().unwrap()),
                                 request_status,
-                                token_counter.clone(),
+                                self_clone.token_counter.clone(),
                             );
                         }
                         Err(req_err) => {
                             let error_msg = format!("Request Error: {}", req_err);
                             self_clone.add_assistant_message_with_update_ui(
-                                &messages_clone,
-                                error_msg,
-                                &cb_sink_clone,
+                                &messages, error_msg, &cb_sink,
                             );
-                            break;
                         }
                     }
                 }
 
-                request_in_flight.store(false, Ordering::SeqCst);
-                cb_sink_clone
+                self_clone.request_in_flight.store(false, Ordering::SeqCst);
+                cb_sink
                     .send(Box::new(|s| {
                         if let Some(mut view) =
                             s.find_name::<ResizedView<TextView>>("working_textview")

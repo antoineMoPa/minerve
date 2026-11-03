@@ -22,16 +22,21 @@ This will handle the building and installation of the project.
 ## Prerequisites
 
 - Rust
-- [OpenAI API Key](https://platform.openai.com/signup)
+- An [OpenRouter API key](https://openrouter.ai/keys)
 
 ## Configuration
 
-Create a `.env` file in your home directory with the following contents:
+Create a `.env` file in your home directory:
 
 ```
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_BASE_URL=https://api.openai.com/v1/
+OPENROUTER_API_KEY=your_openrouter_api_key
 ```
+
+`MINERVE_MODEL` overrides the default model. Any model id from https://openrouter.ai/models that
+supports tool calling works, for example `MINERVE_MODEL=~anthropic/claude-sonnet-latest`.
+
+The status bar shows tokens sent and received and the session cost in USD, as reported by
+OpenRouter for each request. Headless runs print the same line when they finish.
 
 ## Usage
 
