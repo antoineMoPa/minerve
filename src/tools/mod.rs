@@ -92,7 +92,7 @@ impl ToolParams {
 }
 
 pub struct ExecuteCommandSettings {
-    // Kept for the Tool trait signature; not read yet (confirmation is handled by the UI).
+    // Kept for the Tool trait signature; not read yet.
     #[allow(dead_code)]
     pub is_headless: bool,
 }

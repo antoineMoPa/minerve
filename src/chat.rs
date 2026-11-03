@@ -195,6 +195,5 @@ pub struct ChatCompletionChoice {
 
 pub enum ToolCallResult {
     Success(ChatCompletionMessage),
-    Cancelled,
     Error(String),
 }

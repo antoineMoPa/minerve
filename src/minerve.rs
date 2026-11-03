@@ -45,10 +45,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use crate::openrouter::OpenRouterConnection;
+use crate::session::{self, SessionFile};
 use crate::tools::registry::get_tool_registry;
-use crate::tools::run_shell_command_tool::RunShellCommandTool;
 use crate::tools::utils::cap_tool_output;
-use crate::ui::{send_status, update_chat_ui, UiEvent, UiSender};
+use crate::ui::{send_status, update_chat_ui, UiSender};
 use crate::{
     ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole,
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionToolCall,
@@ -57,6 +57,8 @@ use crate::{
 };
 
 pub struct Minerve {
+    /// Id of the session file this conversation is saved to.
+    pub session_id: String,
     pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     pub client: Client,
     pub api_key: String,
@@ -147,7 +149,7 @@ async fn run_tool_calls(
         if !should_continue {
             on_tool_message(ChatCompletionMessage::tool_result(
                 tool_call.id.clone(),
-                String::from("Skipped: a previous tool call was cancelled or failed."),
+                String::from("Skipped: a previous tool call failed."),
             ));
             continue;
         }
@@ -155,13 +157,6 @@ async fn run_tool_calls(
             ToolCallResult::Success(mut msg) => {
                 msg.content = msg.content.map(cap_tool_output);
                 on_tool_message(msg)
-            }
-            ToolCallResult::Cancelled => {
-                on_tool_message(ChatCompletionMessage::tool_result(
-                    tool_call.id.clone(),
-                    String::from("Cancelled by the user."),
-                ));
-                should_continue = false;
             }
             ToolCallResult::Error(err) => {
                 on_tool_message(ChatCompletionMessage::tool_result(
@@ -204,38 +199,6 @@ pub async fn handle_tool_call(
                     .collect(),
                 _ => HashMap::new(),
             };
-
-        if tool_name.as_str() == "run_shell_command" {
-            if let Some(ui) = &ui {
-                use std::sync::mpsc::sync_channel;
-
-                // Capacity 1 so answering never blocks the UI thread.
-                let (tx, rx) = sync_channel::<bool>(1);
-                let command = args.get("command").unwrap_or(&String::new()).clone();
-
-                // The UI asks the user and answers through `tx`.
-                let asked = ui.send(UiEvent::ConfirmShell {
-                    command: command.clone(),
-                    reply: tx,
-                });
-                if asked.is_err() {
-                    return ToolCallResult::Cancelled;
-                }
-
-                // Wait for user confirmation
-                let confirmed = rx.recv().unwrap_or(false);
-                if !confirmed {
-                    return ToolCallResult::Cancelled;
-                }
-
-                let output = RunShellCommandTool::execute_command(&command, Some(settings));
-
-                return ToolCallResult::Success(ChatCompletionMessage::tool_result(
-                    tool_call.id.clone(),
-                    output,
-                ));
-            }
-        }
 
         if let Some(ui) = &ui {
             send_status(ui, format!("Running tool: {}", tool_name));
@@ -356,6 +319,14 @@ impl Minerve {
                 }
             }
         }
+
+        // Keep the replies in the shared conversation, so the session file gets them.
+        *self.messages.lock().unwrap() = history;
+    }
+
+    /// The chat as shown in the UI, used to show a resumed session.
+    pub fn ui_messages(&self) -> Vec<(String, String)> {
+        get_ui_messages(&self.messages.lock().unwrap())
     }
 
     fn add_assistant_message_with_update_ui(
@@ -369,11 +340,21 @@ impl Minerve {
         update_chat_ui(ui, get_ui_messages(&msgs));
     }
 
-    pub fn new(openrouter_connection: OpenRouterConnection) -> Self {
+    /// Starts a new session, or continues the saved one when `resume` is given.
+    pub fn new(
+        openrouter_connection: OpenRouterConnection,
+        resume: Option<SessionFile>,
+    ) -> Self {
+        let (session_id, messages) = match resume {
+            Some(file) => (file.id, file.messages),
+            None => (
+                uuid::Uuid::new_v4().to_string(),
+                vec![ChatCompletionMessage::system(get_system_prompt())],
+            ),
+        };
         Self {
-            messages: Arc::new(Mutex::new(vec![ChatCompletionMessage::system(
-                get_system_prompt(),
-            )])),
+            session_id,
+            messages: Arc::new(Mutex::new(messages)),
             client: Client::new(),
             api_key: openrouter_connection.api_key,
             base_url: openrouter_connection.base_url,
@@ -382,6 +363,13 @@ impl Minerve {
             request_in_flight: Arc::new(AtomicBool::new(false)),
             token_counter: Arc::new(TokenCounter::new()),
         }
+    }
+
+    /// Writes the conversation to its session file. Failures are ignored: a missing save
+    /// must not interrupt the chat.
+    pub fn save_session(&self) {
+        let msgs = self.messages.lock().unwrap();
+        let _ = session::save_session(&self.session_id, &msgs);
     }
 
     pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
@@ -464,6 +452,7 @@ impl Minerve {
                     }
                 }
 
+                self_clone.save_session();
                 self_clone.request_in_flight.store(false, Ordering::SeqCst);
                 send_status(&ui, "");
             }

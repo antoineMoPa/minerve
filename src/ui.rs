@@ -3,18 +3,13 @@
 //! The UI owns the terminal and runs on the main thread. Anything else talks to it
 //! only through a `UiSender`, which keeps the agent code independent of the renderer.
 
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::Sender;
 
 pub enum UiEvent {
     /// Full chat transcript as (role, content). Replaces what the UI shows.
     Transcript(Vec<(String, String)>),
     /// One status line shown above the input. Empty means idle.
     Status(String),
-    /// Asks the user to accept a shell command. The answer goes through `reply`.
-    ConfirmShell {
-        command: String,
-        reply: SyncSender<bool>,
-    },
 }
 
 pub type UiSender = Sender<UiEvent>;

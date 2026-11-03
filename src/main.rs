@@ -25,6 +25,7 @@ mod utils;
 
 mod minerve;
 mod openrouter;
+mod session;
 use minerve::Minerve;
 use openrouter::{read_openrouter_connection_from_env, OpenRouterConnection};
 
@@ -41,8 +42,12 @@ fn load_home_dotenv() {
 use std::fs::OpenOptions;
 use std::io::Write;
 
-pub fn run_headless(prompt: String, openrouter_connection: OpenRouterConnection) {
-    let minerve = Minerve::new(openrouter_connection);
+pub fn run_headless(
+    prompt: String,
+    openrouter_connection: OpenRouterConnection,
+    resume: Option<session::SessionFile>,
+) {
+    let minerve = Minerve::new(openrouter_connection, resume);
     minerve
         .messages
         .lock()
@@ -50,12 +55,13 @@ pub fn run_headless(prompt: String, openrouter_connection: OpenRouterConnection)
         .push(ChatCompletionMessage::user(prompt));
 
     get_global_runtime().block_on(minerve.chat_headless());
+    minerve.save_session();
 
     println!("{}", minerve.token_counter.format_usage_summary());
 }
 
-fn launch_tui(openrouter_connection: OpenRouterConnection) {
-    if let Err(err) = tui::run(openrouter_connection) {
+fn launch_tui(openrouter_connection: OpenRouterConnection, resume: Option<session::SessionFile>) {
+    if let Err(err) = tui::run(openrouter_connection, resume) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
 }
@@ -120,10 +126,19 @@ fn main() {
     load_home_dotenv();
     let openrouter_connection = read_openrouter_connection_from_env();
 
+    // Load the session before the TUI takes over, so a bad id is reported on stderr.
+    let resume = match cli.resume.as_deref().map(session::load_for_resume).transpose() {
+        Ok(resume) => resume,
+        Err(err) => {
+            eprintln!("minerve: {}", err);
+            std::process::exit(1);
+        }
+    };
+
     if let Some(prompt) = cli.prompt {
-        run_headless(prompt, openrouter_connection);
+        run_headless(prompt, openrouter_connection, resume);
         return;
     }
 
-    launch_tui(openrouter_connection);
+    launch_tui(openrouter_connection, resume);
 }

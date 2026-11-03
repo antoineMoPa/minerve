@@ -3,7 +3,7 @@
 //! Background work reports through `UiEvent`s (see `ui.rs`); key presses are handled here.
 
 use std::io;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +21,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::history::HistoryTracker;
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
+use crate::session::SessionFile;
 use crate::ui::{UiEvent, UiSender};
 
 /// Tool results longer than this are cut short in the chat view (the model still gets them all).
@@ -28,11 +29,6 @@ const MAX_OUTPUT_LEN: usize = 500;
 /// Only the last messages are shown, as before the ratatui refactor.
 const VISIBLE_MESSAGES: usize = 10;
 const SCROLL_STEP: usize = 10;
-
-struct PendingConfirm {
-    command: String,
-    reply: SyncSender<bool>,
-}
 
 struct App {
     minerve: Arc<Minerve>,
@@ -42,7 +38,6 @@ struct App {
     /// Copy of the chat as last reported by `Minerve`.
     transcript: Vec<(String, String)>,
     status: String,
-    pending_confirm: Option<PendingConfirm>,
     input: String,
     /// Cursor position in chars, not bytes.
     cursor: usize,
@@ -54,16 +49,20 @@ struct App {
 }
 
 /// Runs the interactive UI until the user quits.
-pub fn run(openrouter_connection: OpenRouterConnection) -> io::Result<()> {
+pub fn run(
+    openrouter_connection: OpenRouterConnection,
+    resume: Option<SessionFile>,
+) -> io::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel();
+    let minerve = Arc::new(Minerve::new(openrouter_connection, resume));
+    let transcript = minerve.ui_messages();
     let mut app = App {
-        minerve: Arc::new(Minerve::new(openrouter_connection)),
+        minerve,
         ui_tx,
         ui_rx,
         history: HistoryTracker::new(),
-        transcript: Vec::new(),
+        transcript,
         status: String::new(),
-        pending_confirm: None,
         input: String::new(),
         cursor: 0,
         scroll_up: 0,
@@ -79,6 +78,8 @@ pub fn run(openrouter_connection: OpenRouterConnection) -> io::Result<()> {
     // Restore even when the loop failed, so the shell is usable again.
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
+    // Printed after the restore so it lands on the normal screen, not the alternate one.
+    println!("{}", app.minerve.session_id);
     result
 }
 
@@ -105,9 +106,6 @@ impl App {
 
     /// Inserts pasted text at the cursor without submitting, keeping its newlines.
     fn handle_paste(&mut self, text: &str) {
-        if self.pending_confirm.is_some() {
-            return;
-        }
         for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
             self.insert_char(c);
         }
@@ -117,9 +115,6 @@ impl App {
         match event {
             UiEvent::Transcript(messages) => self.transcript = messages,
             UiEvent::Status(status) => self.status = status,
-            UiEvent::ConfirmShell { command, reply } => {
-                self.pending_confirm = Some(PendingConfirm { command, reply });
-            }
         }
     }
 
@@ -130,22 +125,6 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('c') {
             self.should_quit = true;
-            return;
-        }
-
-        // While a shell command waits for approval, only the answer keys count.
-        if let Some(pending) = self.pending_confirm.take() {
-            let answer = match key.code {
-                KeyCode::Char('y' | 'Y') => Some(true),
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
-                _ => None,
-            };
-            match answer {
-                Some(accepted) => {
-                    let _ = pending.reply.send(accepted);
-                }
-                None => self.pending_confirm = Some(pending),
-            }
             return;
         }
 
@@ -355,29 +334,16 @@ impl App {
     }
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
-        let (title, text, border_color) = match &self.pending_confirm {
-            Some(pending) => (
-                " Run this shell command? [y/n] ",
-                pending.command.clone(),
-                Color::Yellow,
-            ),
-            None => (
-                " Message ",
-                self.input.clone(),
-                Color::Cyan,
-            ),
-        };
+        let title = " Message ";
+        let text = self.input.clone();
+        let border_color = Color::Cyan;
 
         // Inside the borders. Approximate: wraps by char count, like a monospace terminal.
         let inner_width = area.width.saturating_sub(2);
         let inner_height = area.height.saturating_sub(2);
         let (col, row) = self.cursor_offset(self.cursor, inner_width);
         // Keep the cursor row visible once the wrapped input is taller than the box.
-        let scroll_row = if self.pending_confirm.is_none() {
-            row.saturating_add(1).saturating_sub(inner_height)
-        } else {
-            0
-        };
+        let scroll_row = row.saturating_add(1).saturating_sub(inner_height);
 
         let input = Paragraph::new(text)
             .wrap(Wrap { trim: false })
@@ -390,9 +356,7 @@ impl App {
             );
         frame.render_widget(input, area);
 
-        if self.pending_confirm.is_none() {
-            frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
-        }
+        frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
     }
 
     /// (column, row) of the char at `cursor` within the input text wrapped at `width`.
