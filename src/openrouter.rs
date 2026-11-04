@@ -1,23 +1,17 @@
 use std::env;
 
+use crate::provider::{route_model_id, ApiKeys, Provider};
 use crate::recent_models::RecentModels;
 
-const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const API_KEY_ENV_VAR: &str = "OPENROUTER_API_KEY";
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const MODEL_ENV_VAR: &str = "MINERVE_MODEL";
-const DEFAULT_MODEL: &str = "~anthropic/claude-haiku-latest";
 
 /// Model id prefixes whose providers only cache up to explicit cache_control breakpoints.
 /// The other providers on OpenRouter cache automatically.
 const MODEL_PREFIXES_WITH_CACHE_BREAKPOINTS: [&str; 1] = ["anthropic/"];
 
-pub struct OpenRouterConnection {
-    pub base_url: String,
-    pub api_key: String,
-    pub model: String,
-}
-
-fn model_uses_cache_breakpoints(model: &str) -> bool {
+/// Whether an OpenRouter model id needs explicit cache breakpoints in its requests.
+pub fn model_uses_cache_breakpoints(model: &str) -> bool {
     // "~anthropic/claude-haiku-latest" style ids are OpenRouter aliases for the latest model.
     let model_id = model.strip_prefix('~').unwrap_or(model);
     MODEL_PREFIXES_WITH_CACHE_BREAKPOINTS
@@ -25,49 +19,25 @@ fn model_uses_cache_breakpoints(model: &str) -> bool {
         .any(|prefix| model_id.starts_with(prefix))
 }
 
-/// The model requests go to, with the cache setting derived from its id.
-/// `Minerve` holds one and replaces it when the user switches models with `/model`.
-#[derive(Clone)]
-pub struct ActiveModel {
-    pub id: String,
-    pub uses_cache_breakpoints: bool,
+/// Where Minerve sends requests and which keys it has. The model is the one the next turn uses.
+pub struct OpenRouterConnection {
+    pub base_url: String,
+    pub api_keys: ApiKeys,
+    pub model: String,
 }
 
-impl ActiveModel {
-    pub fn new(id: String) -> Self {
-        let uses_cache_breakpoints = model_uses_cache_breakpoints(&id);
-        Self {
-            id,
-            uses_cache_breakpoints,
-        }
-    }
-}
-
-/// Ids of every model on OpenRouter's public model list, in the order OpenRouter returns them.
-pub async fn fetch_model_ids(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Result<Vec<String>, String> {
-    let body: serde_json::Value = client
-        .get(format!("{}/models", base_url))
-        .send()
-        .await
-        .map_err(|err| err.to_string())?
-        .json()
-        .await
-        .map_err(|err| err.to_string())?;
-    let entries = body["data"]
-        .as_array()
-        .ok_or_else(|| format!("unexpected model list: {}", body))?;
-    entries
-        .iter()
-        .map(|entry| {
-            entry["id"]
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| format!("model list entry without id: {}", entry))
+/// First of `candidates` whose provider has a key, else the default model of a provider with a key.
+pub fn pick_model_with_key(candidates: impl IntoIterator<Item = String>, api_keys: &ApiKeys) -> String {
+    candidates
+        .into_iter()
+        .find(|id| api_keys.get(route_model_id(id).0).is_some())
+        .unwrap_or_else(|| {
+            String::from(
+                api_keys
+                    .default_model_id()
+                    .unwrap_or(Provider::OpenRouter.default_model_id()),
+            )
         })
-        .collect()
 }
 
 /// Context window size in tokens of `model`, from OpenRouter's public model list.
@@ -92,23 +62,47 @@ pub async fn fetch_context_window(
     entry["context_length"].as_u64().map(|tokens| tokens as usize)
 }
 
-/// Reads OPENROUTER_API_KEY (required). The model is MINERVE_MODEL if set,
-/// otherwise the model last picked with `/model`, otherwise ~anthropic/claude-haiku-latest.
+/// Reads the API keys of every provider; a key missing only fails requests to its provider.
+/// The model is the first of MINERVE_MODEL, then the models picked with `/model` (most recent first),
+/// whose provider has a key. Otherwise it is the default model of the first provider with a key
+/// (see `ApiKeys::default_model_id`). With no key at all it is OpenRouter's default; the setup modal
+/// then asks for a key.
 pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
-    let api_key = env::var(API_KEY_ENV_VAR).unwrap_or_else(|_| {
-        panic!(
-            "{} is not set. Add it to ~/.env or export it. Create a key at https://openrouter.ai/keys",
-            API_KEY_ENV_VAR
-        )
-    });
-    let model = env::var(MODEL_ENV_VAR)
+    let api_keys = ApiKeys::from_env();
+    let recent_models = RecentModels::load();
+    let candidates = env::var(MODEL_ENV_VAR)
         .ok()
-        .or_else(|| RecentModels::load().last_picked().map(str::to_string))
-        .unwrap_or_else(|| String::from(DEFAULT_MODEL));
+        .into_iter()
+        .chain(recent_models.ids().iter().cloned());
+    let model = pick_model_with_key(candidates, &api_keys);
 
     OpenRouterConnection {
         base_url: String::from(OPENROUTER_BASE_URL),
-        api_key,
+        api_keys,
         model,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn anthropic_only() -> ApiKeys {
+        ApiKeys {
+            anthropic: Some(String::from("sk-ant")),
+            ..ApiKeys::default()
+        }
+    }
+
+    #[test]
+    fn skips_recent_models_without_a_key() {
+        let recent = ["openrouter:x/one", "anthropic:claude-opus-4-1"].map(String::from);
+        assert_eq!(pick_model_with_key(recent, &anthropic_only()), "anthropic:claude-opus-4-1");
+    }
+
+    #[test]
+    fn falls_back_to_the_default_of_a_keyed_provider() {
+        let recent = ["~anthropic/claude-haiku-latest"].map(String::from);
+        assert_eq!(pick_model_with_key(recent, &anthropic_only()), "anthropic:claude-haiku-5-5");
     }
 }

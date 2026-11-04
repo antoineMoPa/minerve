@@ -164,15 +164,18 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<RequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ChatCompletionToolDefinition>>,
-    pub usage: UsageAccountingRequest,
+    /// OpenRouter only; OpenAI and Anthropic reject the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageAccountingRequest>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
-    /// USD charged by OpenRouter for this request.
-    pub cost: f64,
+    /// USD charged by OpenRouter for this request. None when the provider reports no cost.
+    #[serde(default)]
+    pub cost: Option<f64>,
     /// Not every provider reports it; a request without it counts as having no cached tokens.
     pub prompt_tokens_details: Option<PromptTokensDetails>,
 }

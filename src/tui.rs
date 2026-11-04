@@ -10,6 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input_layout::layout_input;
 use crate::model_picker::ModelPicker;
+use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
+use crate::setup::{self, SetupModal, SetupStep};
 use crate::recent_models::RecentModels;
 
 use ratatui::crossterm::event::{
@@ -45,6 +47,7 @@ const WHEEL_STEP: usize = 3;
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
     ("/model", "switch the OpenRouter model"),
+    ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
 ];
@@ -83,6 +86,8 @@ struct App {
     tetris: Option<Tetris>,
     /// Model picker from `/model`. While set it replaces the whole UI; Esc closes it.
     model_picker: Option<ModelPicker>,
+    /// First-start setup modal, drawn over the chat. While set it takes every key and paste.
+    setup_modal: Option<SetupModal>,
     /// Least recently used models, shown at the top of the picker.
     recent_models: RecentModels,
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
@@ -308,6 +313,7 @@ pub fn run(
     openrouter_connection: OpenRouterConnection,
     resume: Option<SessionFile>,
     extra_system_prompts: &[String],
+    force_setup: bool,
 ) -> io::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel();
     // The boot clip is for fresh sessions only; resuming one goes straight to the chat.
@@ -316,6 +322,9 @@ pub fn run(
     } else {
         None
     };
+    let needs_setup = force_setup
+        || setup::needs_setup(&openrouter_connection.api_keys);
+    let stored_keys = openrouter_connection.api_keys.clone();
     let minerve = Arc::new(Minerve::new(
         openrouter_connection,
         resume,
@@ -344,6 +353,7 @@ pub fn run(
         matrix: None,
         tetris: None,
         model_picker: None,
+        setup_modal: needs_setup.then(|| SetupModal::new(stored_keys.clone())),
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
@@ -425,6 +435,15 @@ impl App {
                             self.handle_model_picker_key(key);
                             continue;
                         }
+                        // The setup modal waits for the boot clip: the first key only ends the clip.
+                        if !quit_key && self.boot.is_some() && self.setup_modal.is_some() {
+                            self.stop_boot();
+                            continue;
+                        }
+                        if !quit_key && self.setup_modal.is_some() {
+                            self.handle_setup_key(key);
+                            continue;
+                        }
                         self.stop_boot();
                         self.handle_key(key);
                         // Clearing the input also clears the paste marker.
@@ -434,6 +453,10 @@ impl App {
                     }
                     Event::Paste(text) => {
                         if self.tetris.is_some() {
+                            continue;
+                        }
+                        if let Some(modal) = self.setup_modal.as_mut() {
+                            modal.paste(&text);
                             continue;
                         }
                         // Pasted text goes into the picker filter; newlines would not match any model id.
@@ -528,6 +551,7 @@ impl App {
             "/matrix" => self.matrix = Some(MatrixRain::new(0, 0)),
             "/tetris" => self.tetris = Some(Tetris::new()),
             "/model" => self.open_model_picker(),
+            "/apikeys" => self.setup_modal = Some(SetupModal::new(self.minerve.api_keys_snapshot())),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
                 let first_line = include_str!("../README.md")
@@ -550,24 +574,74 @@ impl App {
         match event {
             UiEvent::Transcript(messages) => self.transcript = messages,
             UiEvent::Status(status) => self.status = status,
-            UiEvent::ModelList(result) => {
+            UiEvent::ModelList(provider, result) => {
                 if let Some(picker) = self.model_picker.as_mut() {
-                    picker.all_models = Some(result);
+                    picker.lists.push((provider, result));
                 }
             }
         }
     }
 
-    /// Opens the `/model` picker and fetches the OpenRouter model list in the background.
+    /// Opens the `/model` picker and fetches, in the background, the model list of every provider
+    /// that has a key. Providers without a key are not listed.
     fn open_model_picker(&mut self) {
         let current_model = self.minerve.active_model().id;
-        self.model_picker = Some(ModelPicker::new(current_model));
-        let minerve = self.minerve.clone();
-        let ui = self.ui_tx.clone();
-        crate::get_global_runtime().spawn(async move {
-            let result = crate::openrouter::fetch_model_ids(&minerve.client, &minerve.base_url).await;
-            let _ = ui.send(UiEvent::ModelList(result));
-        });
+        let keys = self.minerve.api_keys_snapshot();
+        let keyed_providers: Vec<Provider> = PROVIDERS_BY_DEFAULT_PRIORITY
+            .into_iter()
+            .filter(|provider| keys.get(*provider).is_some())
+            .collect();
+        for provider in keyed_providers.iter().copied() {
+            let api_key = keys.get(provider).expect("filtered on key presence").to_string();
+            let minerve = self.minerve.clone();
+            let ui = self.ui_tx.clone();
+            crate::get_global_runtime().spawn(async move {
+                let result = crate::model_lists::fetch_model_ids(
+                    &minerve.client,
+                    provider,
+                    &api_key,
+                    &minerve.base_url,
+                )
+                .await;
+                let _ = ui.send(UiEvent::ModelList(provider, result));
+            });
+        }
+        self.model_picker = Some(ModelPicker::new(current_model, keyed_providers));
+    }
+
+    /// Keys while the setup modal is open. Enter on the last field saves the keys and applies them.
+    fn handle_setup_key(&mut self, key: KeyEvent) {
+        let Some(modal) = self.setup_modal.as_mut() else {
+            return;
+        };
+        match modal.handle_key(key) {
+            SetupStep::Stay => {}
+            SetupStep::Cancelled => self.setup_modal = None,
+            SetupStep::Completed(settings) => match setup::save(&settings) {
+                Ok(path) => {
+                    self.minerve.set_api_keys(
+                        settings.openrouter_key,
+                        settings.openai_key,
+                        settings.anthropic_key,
+                    );
+                    // Keep the active model if its provider has a key, else move to the most
+                    // recent model with a key, else a keyed provider's default.
+                    let keys = self.minerve.api_keys_snapshot();
+                    let active = self.minerve.active_model();
+                    let candidates = std::iter::once(active.id.clone())
+                        .chain(self.recent_models.ids().iter().cloned());
+                    let picked = crate::openrouter::pick_model_with_key(candidates, &keys);
+                    let model = (picked != active.id).then_some(picked);
+                    if let Some(model) = model {
+                        self.minerve.set_model(model);
+                        self.minerve.fetch_context_window_in_background();
+                    }
+                    self.status = format!("saved to {}", path.display());
+                    self.setup_modal = None;
+                }
+                Err(err) => modal.set_error(format!("could not save ~/.minerve/keys.json: {}", err)),
+            },
+        }
     }
 
     /// Keys while the model picker is open. Enter switches model, Esc closes.
@@ -580,6 +654,10 @@ impl App {
             KeyCode::Esc => self.model_picker = None,
             KeyCode::Up => picker.move_selection(-1, rows.len()),
             KeyCode::Down => picker.move_selection(1, rows.len()),
+            KeyCode::Tab => {
+                picker.cycle_provider_filter();
+                picker.selected = 0;
+            }
             KeyCode::Enter => {
                 let Some(row) = rows.get(picker.selected) else {
                     return;
@@ -1004,6 +1082,9 @@ impl App {
 
         self.draw_input(frame, input_area);
         self.draw_slash_menu(frame, input_area);
+        if let (Some(modal), None) = (self.setup_modal.as_ref(), self.boot.as_ref()) {
+            modal.draw(frame, frame.area());
+        }
 
         frame.render_widget(
             Paragraph::new(

@@ -3,18 +3,49 @@ use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Sends `request` to the API of `provider` and records its usage in `token_counter`.
+/// `url` is the endpoint of that provider; `api_key` is the key of that provider.
 pub async fn post_request_with_token_count(
     client: &Client,
+    provider: Provider,
     url: &str,
     api_key: &str,
     request: ChatCompletionRequest,
     token_counter: Arc<TokenCounter>,
 ) -> Result<ChatCompletionResponse, String> {
+    let chat_response = match provider {
+        Provider::Anthropic => anthropic::post_messages(client, url, api_key, &request).await?,
+        Provider::OpenRouter | Provider::OpenAi => {
+            post_chat_completions(client, url, api_key, &request).await?
+        }
+    };
+
+    if let Some(ref usage) = chat_response.usage {
+        // Correctly use the increment with the provided token_counter
+        token_counter.increment_prompt(usage.prompt_tokens as usize);
+        token_counter.increment_completion(usage.completion_tokens as usize);
+        token_counter.add_request_cost(usage.cost);
+        token_counter.set_last_prompt_tokens(usage.prompt_tokens as usize);
+        if let Some(details) = &usage.prompt_tokens_details {
+            token_counter.increment_cached_prompt(details.cached_tokens as usize);
+        }
+    }
+
+    Ok(chat_response)
+}
+
+/// OpenRouter and OpenAI share the chat completions request and answer shape.
+async fn post_chat_completions(
+    client: &Client,
+    url: &str,
+    api_key: &str,
+    request: &ChatCompletionRequest,
+) -> Result<ChatCompletionResponse, String> {
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
-        .json(&request)
+        .json(request)
         .send()
         .await
         .map_err(|err| err.to_string())?;
@@ -25,28 +56,17 @@ pub async fn post_request_with_token_count(
         return Err(format!("{}: {}", status, body));
     }
 
-    let chat_response: ChatCompletionResponse = serde_json::from_str(&body)
-        .map_err(|err| format!("Unexpected response ({}): {}", err, body))?;
-
-    if let Some(ref usage) = chat_response.usage {
-        // Correctly use the increment with the provided token_counter
-        token_counter.increment_prompt(usage.prompt_tokens as usize);
-        token_counter.increment_completion(usage.completion_tokens as usize);
-        token_counter.increment_cost_usd(usage.cost);
-        token_counter.set_last_prompt_tokens(usage.prompt_tokens as usize);
-        if let Some(details) = &usage.prompt_tokens_details {
-            token_counter.increment_cached_prompt(details.cached_tokens as usize);
-        }
-    }
-
-    Ok(chat_response)
+    serde_json::from_str(&body)
+        .map_err(|err| format!("Unexpected response ({}): {}", err, body))
 }
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
-use crate::openrouter::{ActiveModel, OpenRouterConnection};
+use crate::anthropic;
+use crate::openrouter::OpenRouterConnection;
+use crate::provider::{ActiveModel, ApiKeys, Provider};
 use crate::session::{self, SessionFile};
 use crate::tools::registry::get_tool_registry;
 use crate::tools::utils::cap_tool_output;
@@ -63,7 +83,10 @@ pub struct Minerve {
     pub session_id: String,
     pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     pub client: Client,
-    pub api_key: String,
+    /// Keys of every provider. A request fails if the key of its model's provider is not set.
+    /// Replaced by `set_openrouter_key` from the first-start modal.
+    pub api_keys: Mutex<ApiKeys>,
+    /// OpenRouter base url, e.g. https://openrouter.ai/api/v1.
     pub base_url: String,
     /// Model the next request goes to. Replaced by `set_model` from the `/model` picker.
     pub model: Mutex<ActiveModel>,
@@ -279,13 +302,40 @@ impl Minerve {
         *self.model.lock().unwrap() = ActiveModel::new(model_id);
     }
 
+    /// Copy of the keys this session currently uses, e.g. to show which ones are already set.
+    pub fn api_keys_snapshot(&self) -> ApiKeys {
+        self.api_keys.lock().unwrap().clone()
+    }
+
+    /// Sets the provider keys entered in the setup modal. A None key keeps the key already held.
+    pub fn set_api_keys(&self, openrouter: Option<String>, openai: Option<String>, anthropic: Option<String>) {
+        let mut keys = self.api_keys.lock().unwrap();
+        if openrouter.is_some() {
+            keys.openrouter = openrouter;
+        }
+        if openai.is_some() {
+            keys.openai = openai;
+        }
+        if anthropic.is_some() {
+            keys.anthropic = anthropic;
+        }
+    }
+
     fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage]) -> ChatCompletionRequest {
         ChatCompletionRequest {
-            model: model.id.clone(),
+            model: model.api_model.clone(),
             messages: build_request_messages(history, model.uses_cache_breakpoints),
             tools: get_tool_definitions(model.uses_cache_breakpoints),
-            usage: UsageAccountingRequest { include: true },
+            usage: (model.provider == Provider::OpenRouter)
+                .then_some(UsageAccountingRequest { include: true }),
         }
+    }
+
+    /// URL and key of the API the model is served from. Fails when that provider has no key set.
+    fn endpoint_for(&self, model: &ActiveModel) -> Result<(String, String), String> {
+        let url = model.provider.request_url(&self.base_url);
+        let api_key = self.api_keys.lock().unwrap().for_provider(model.provider)?.to_string();
+        Ok((url, api_key))
     }
 }
 
@@ -307,10 +357,6 @@ fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoi
 }
 
 impl Minerve {
-    fn get_completions_url(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
-    }
-
     /// Prints assistant replies to stdout and errors to stderr as the conversation goes.
     pub async fn chat_headless(&self) {
         let is_headless = true;
@@ -326,14 +372,20 @@ impl Minerve {
         while should_continue {
             should_continue = false;
 
-            let chat_result = post_request_with_token_count(
-                &self.client,
-                &self.get_completions_url(),
-                &self.api_key,
-                self.build_request(&model, &history),
-                self.token_counter.clone(),
-            )
-            .await;
+            let chat_result = match self.endpoint_for(&model) {
+                Ok((url, api_key)) => {
+                    post_request_with_token_count(
+                        &self.client,
+                        model.provider,
+                        &url,
+                        &api_key,
+                        self.build_request(&model, &history),
+                        self.token_counter.clone(),
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            };
 
             match chat_result {
                 Ok(chat_response) => {
@@ -418,7 +470,7 @@ impl Minerve {
             session_id,
             messages: Arc::new(Mutex::new(messages)),
             client: Client::new(),
-            api_key: openrouter_connection.api_key,
+            api_keys: Mutex::new(openrouter_connection.api_keys),
             base_url: openrouter_connection.base_url,
             model: Mutex::new(ActiveModel::new(openrouter_connection.model)),
             request_in_flight: Arc::new(AtomicBool::new(false)),
@@ -429,9 +481,14 @@ impl Minerve {
     }
 
     /// Looks up the context window of the model in the background, so the status bar can show a percent.
+    /// Only OpenRouter has the model list; other providers show no percent.
     pub fn fetch_context_window_in_background(self: &Arc<Self>) {
         let minerve = Arc::clone(self);
-        let model_id = minerve.active_model().id;
+        let model = minerve.active_model();
+        if model.provider != Provider::OpenRouter {
+            return;
+        }
+        let model_id = model.api_model;
         crate::get_global_runtime().spawn(async move {
             if let Some(tokens) = crate::openrouter::fetch_context_window(
                 &minerve.client,
@@ -497,19 +554,21 @@ impl Minerve {
                     let cancelled = self_clone.cancel_notify.notified();
                     tokio::pin!(cancelled);
                     cancelled.as_mut().enable();
-                    let url = self_clone.get_completions_url();
-                    let chat_result = if cancel_requested.load(Ordering::SeqCst) {
-                        None
-                    } else {
-                        tokio::select! {
-                            result = post_request_with_token_count(
-                                &self_clone.client,
-                                &url,
-                                &self_clone.api_key,
-                                request,
-                                self_clone.token_counter.clone(),
-                            ) => Some(result),
-                            _ = &mut cancelled => None,
+                    let chat_result = match self_clone.endpoint_for(&model) {
+                        Err(err) => Some(Err(err)),
+                        Ok(_) if cancel_requested.load(Ordering::SeqCst) => None,
+                        Ok((url, api_key)) => {
+                            tokio::select! {
+                                result = post_request_with_token_count(
+                                    &self_clone.client,
+                                    model.provider,
+                                    &url,
+                                    &api_key,
+                                    request,
+                                    self_clone.token_counter.clone(),
+                                ) => Some(result),
+                                _ = &mut cancelled => None,
+                            }
                         }
                     };
 

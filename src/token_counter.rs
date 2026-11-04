@@ -20,6 +20,8 @@ pub struct TokenCounter {
     cached_prompt_tokens: AtomicUsize,
     completion_tokens: AtomicUsize,
     cost_usd: Mutex<f64>,
+    /// Requests whose provider reported no cost (Anthropic and OpenAI do not; OpenRouter does).
+    requests_without_cost: AtomicUsize,
     /// Prompt size of the latest request, i.e. how much of the context window the conversation uses.
     last_prompt_tokens: AtomicUsize,
     /// Size of the model's context window in tokens. 0 while it is unknown.
@@ -33,6 +35,7 @@ impl TokenCounter {
             cached_prompt_tokens: AtomicUsize::new(0),
             completion_tokens: AtomicUsize::new(0),
             cost_usd: Mutex::new(0.0),
+            requests_without_cost: AtomicUsize::new(0),
             last_prompt_tokens: AtomicUsize::new(0),
             context_window: AtomicUsize::new(0),
         }
@@ -58,8 +61,27 @@ impl TokenCounter {
         self.completion_tokens.load(Ordering::SeqCst)
     }
 
-    pub fn increment_cost_usd(&self, cost_usd: f64) {
-        *self.cost_usd.lock().unwrap() += cost_usd;
+    /// Adds the cost of one request. None when its provider does not report a cost.
+    pub fn add_request_cost(&self, cost_usd: Option<f64>) {
+        match cost_usd {
+            Some(cost_usd) => *self.cost_usd.lock().unwrap() += cost_usd,
+            None => {
+                self.requests_without_cost.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// `$0.0123` when every request reported a cost, `n/a` when none did,
+    /// `$0.0123 + n/a` when the session mixed both (e.g. after switching provider).
+    fn format_cost(&self) -> String {
+        let known = format!("${:.4}", self.current_cost_usd());
+        let requests_without_cost = self.requests_without_cost.load(Ordering::SeqCst);
+        let known_is_zero = self.current_cost_usd() == 0.0;
+        match (requests_without_cost, known_is_zero) {
+            (0, _) => known,
+            (_, true) => String::from("n/a"),
+            (_, false) => format!("{} + n/a", known),
+        }
     }
 
     pub fn current_cost_usd(&self) -> f64 {
@@ -92,11 +114,11 @@ impl TokenCounter {
             self.cached_prompt_tokens.load(Ordering::SeqCst) * 100 / prompt_tokens
         };
         let mut summary = format!(
-            "Sent: {} ({}% cached) | Received: {} | Cost: ${:.4}",
+            "Sent: {} ({}% cached) | Received: {} | Cost: {}",
             format_tokens(prompt_tokens),
             cached_percent,
             format_tokens(self.current_completion()),
-            self.current_cost_usd()
+            self.format_cost()
         );
 
         let last_prompt = self.last_prompt_tokens.load(Ordering::SeqCst);
@@ -119,6 +141,18 @@ impl TokenCounter {
 #[cfg(test)]
 mod tests {
     use super::TokenCounter;
+
+    #[test]
+    fn cost_is_na_when_the_provider_reports_none() {
+        let counter = TokenCounter::new();
+        counter.add_request_cost(None);
+        assert!(counter.format_usage_summary().contains("Cost: n/a"));
+        counter.add_request_cost(Some(0.01));
+        assert!(counter.format_usage_summary().contains("Cost: $0.0100 + n/a"));
+        let counter = TokenCounter::new();
+        counter.add_request_cost(Some(0.01));
+        assert!(counter.format_usage_summary().ends_with("Cost: $0.0100"));
+    }
 
     #[test]
     fn shows_context_percent_when_window_is_known() {

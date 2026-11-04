@@ -1,4 +1,4 @@
-//! Least-recently-used list of OpenRouter model ids picked with `/model`, shown at the top of the picker.
+//! Least-recently-used list of model ids picked with `/model`, shown at the top of the picker.
 //! Saved as `~/.minerve/recent_models.json`, newest first.
 
 use std::fs;
@@ -40,11 +40,6 @@ impl RecentModels {
     /// Most recently used first.
     pub fn ids(&self) -> &[String] {
         &self.ids
-    }
-
-    /// The model picked last with `/model`, if any was saved.
-    pub fn last_picked(&self) -> Option<&str> {
-        self.ids.first().map(String::as_str)
     }
 
     /// Moves `model_id` to the front, dropping the oldest entry when the list is full, and saves.

@@ -13,6 +13,8 @@ mod boot;
 mod chat;
 mod history;
 mod input_layout;
+mod keys_file;
+mod model_lists;
 mod model_picker;
 mod markdown;
 mod recent_models;
@@ -31,8 +33,11 @@ use cli::*;
 mod utils;
 
 mod minerve;
+mod anthropic;
 mod openrouter;
+mod provider;
 mod session;
+mod setup;
 use minerve::Minerve;
 use openrouter::{read_openrouter_connection_from_env, OpenRouterConnection};
 
@@ -72,8 +77,9 @@ fn launch_tui(
     openrouter_connection: OpenRouterConnection,
     resume: Option<session::SessionFile>,
     extra_system_prompts: &[String],
+    force_setup: bool,
 ) {
-    if let Err(err) = tui::run(openrouter_connection, resume, extra_system_prompts) {
+    if let Err(err) = tui::run(openrouter_connection, resume, extra_system_prompts, force_setup) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
 }
@@ -152,5 +158,5 @@ fn main() {
         return;
     }
 
-    launch_tui(openrouter_connection, resume, &cli.system_prompt);
+    launch_tui(openrouter_connection, resume, &cli.system_prompt, cli.setup);
 }

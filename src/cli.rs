@@ -14,4 +14,9 @@ pub struct Cli {
     /// Only applies to new sessions: a resumed session keeps its own system messages.
     #[arg(short = 's', long = "append-system-prompt", value_name = "TEXT")]
     pub system_prompt: Vec<String>,
+
+    /// Open the API key setup modal, even when a key is already set. Same as `/apikeys`.
+    /// Saving writes ~/.minerve/keys.json; a blank field keeps the stored key.
+    #[arg(long)]
+    pub setup: bool,
 }

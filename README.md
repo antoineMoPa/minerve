@@ -36,19 +36,6 @@ This will handle the building and installation of the project.
 - Rust
 - An [OpenRouter API key](https://openrouter.ai/keys)
 
-## Configuration
-
-Create a `.env` file in your home directory:
-
-```
-OPENROUTER_API_KEY=your_openrouter_api_key
-```
-
-Switch models at runtime with `/model`: type to filter the OpenRouter list, the 4 most recently used models stay on top (saved in `~/.minerve/recent_models.json`).
-
-`MINERVE_MODEL` overrides the default model. Any model id from https://openrouter.ai/models that
-supports tool calling works, for example `MINERVE_MODEL=~anthropic/claude-sonnet-latest`.
-
 ## Usage
 
 Run the terminal UI with:
