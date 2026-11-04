@@ -30,6 +30,7 @@ use crate::boot::BootAnimation;
 use crate::history::HistoryTracker;
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
+use crate::pacman::Pacman;
 use crate::session::SessionFile;
 use crate::tetris::Tetris;
 use crate::ui::{UiEvent, UiSender};
@@ -47,6 +48,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "switch the OpenRouter model"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
+    ("/pacman", "eat dots, dodge ghosts; esc to leave"),
 ];
 
 struct App {
@@ -81,6 +83,8 @@ struct App {
     matrix: Option<MatrixRain>,
     /// Tetris game from `/tetris`. While set it replaces the whole UI; Esc or q leaves it.
     tetris: Option<Tetris>,
+    /// Pac-Man game from `/pacman`. While set it replaces the whole UI; Esc or q leaves it.
+    pacman: Option<Pacman>,
     /// Model picker from `/model`. While set it replaces the whole UI; Esc closes it.
     model_picker: Option<ModelPicker>,
     /// Least recently used models, shown at the top of the picker.
@@ -343,6 +347,7 @@ pub fn run(
         notices: Vec::new(),
         matrix: None,
         tetris: None,
+        pacman: None,
         model_picker: None,
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
@@ -392,6 +397,9 @@ impl App {
             if let Some(game) = self.tetris.as_mut() {
                 game.update(Instant::now());
             }
+            if let Some(game) = self.pacman.as_mut() {
+                game.update(Instant::now());
+            }
 
             terminal.draw(|frame| self.draw(frame))?;
 
@@ -419,6 +427,12 @@ impl App {
                                 }
                                 continue;
                             }
+                            if let Some(game) = self.pacman.as_mut() {
+                                if !game.handle_key(key.code) {
+                                    self.pacman = None;
+                                }
+                                continue;
+                            }
                         }
                         // The model picker takes every key, Ctrl+C still quits.
                         if !quit_key && self.model_picker.is_some() {
@@ -433,7 +447,7 @@ impl App {
                         }
                     }
                     Event::Paste(text) => {
-                        if self.tetris.is_some() {
+                        if self.tetris.is_some() || self.pacman.is_some() {
                             continue;
                         }
                         // Pasted text goes into the picker filter; newlines would not match any model id.
@@ -449,7 +463,7 @@ impl App {
                         self.stop_boot();
                         self.handle_paste(&text);
                     }
-                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() => self.handle_mouse(mouse),
+                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() && self.pacman.is_none() => self.handle_mouse(mouse),
                     _ => {}
                 }
             }
@@ -527,6 +541,7 @@ impl App {
         match name {
             "/matrix" => self.matrix = Some(MatrixRain::new(0, 0)),
             "/tetris" => self.tetris = Some(Tetris::new()),
+            "/pacman" => self.pacman = Some(Pacman::new()),
             "/model" => self.open_model_picker(),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
@@ -956,6 +971,11 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         if let Some(game) = self.tetris.as_ref() {
+            game.draw(frame, frame.area());
+            return;
+        }
+
+        if let Some(game) = self.pacman.as_ref() {
             game.draw(frame, frame.area());
             return;
         }

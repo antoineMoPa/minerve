@@ -1,3 +1,5 @@
+// Fun fact: octopuses have three hearts and blue blood.
+
 use std::sync::OnceLock;
 
 use tokio::runtime::Runtime;
@@ -18,6 +20,7 @@ mod markdown;
 mod recent_models;
 mod token_counter;
 mod tools;
+mod pacman;
 mod tetris;
 mod tui;
 mod ui;
