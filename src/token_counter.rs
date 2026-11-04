@@ -3,6 +3,8 @@ use std::sync::{
     Mutex,
 };
 
+use serde::{Deserialize, Serialize};
+
 /// Formats a token count with k (thousands) or m (millions), e.g. 512 -> "512", 15300 -> "15.3k", 1000000 -> "1.0m".
 pub fn format_tokens(tokens: usize) -> String {
     // 999_950 and up would round to "1000.0k", so those show as millions.
@@ -13,6 +15,18 @@ pub fn format_tokens(tokens: usize) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+/// Usage totals as saved in a session file, so a resumed session shows the same numbers.
+/// The context window is not saved: it is looked up again from the model list.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageSnapshot {
+    pub prompt_tokens: usize,
+    pub cached_prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub cost_usd: f64,
+    pub requests_without_cost: usize,
+    pub last_prompt_tokens: usize,
 }
 
 pub struct TokenCounter {
@@ -39,6 +53,27 @@ impl TokenCounter {
             last_prompt_tokens: AtomicUsize::new(0),
             context_window: AtomicUsize::new(0),
         }
+    }
+
+    pub fn snapshot(&self) -> UsageSnapshot {
+        UsageSnapshot {
+            prompt_tokens: self.current_prompt(),
+            cached_prompt_tokens: self.cached_prompt_tokens.load(Ordering::SeqCst),
+            completion_tokens: self.current_completion(),
+            cost_usd: self.current_cost_usd(),
+            requests_without_cost: self.requests_without_cost.load(Ordering::SeqCst),
+            last_prompt_tokens: self.last_prompt_tokens.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Replaces the totals with the saved ones. Used when a session is resumed.
+    pub fn restore(&self, usage: &UsageSnapshot) {
+        self.prompt_tokens.store(usage.prompt_tokens, Ordering::SeqCst);
+        self.cached_prompt_tokens.store(usage.cached_prompt_tokens, Ordering::SeqCst);
+        self.completion_tokens.store(usage.completion_tokens, Ordering::SeqCst);
+        *self.cost_usd.lock().unwrap() = usage.cost_usd;
+        self.requests_without_cost.store(usage.requests_without_cost, Ordering::SeqCst);
+        self.last_prompt_tokens.store(usage.last_prompt_tokens, Ordering::SeqCst);
     }
 
     pub fn increment_prompt(&self, count: usize) {
@@ -183,6 +218,28 @@ mod tests {
         counter.set_last_prompt_tokens(512);
         let summary = counter.format_usage_summary();
         assert!(summary.ends_with("| Context: 512 tokens"), "{}", summary);
+    }
+
+    #[test]
+    fn usage_survives_a_snapshot_and_restore() {
+        use super::UsageSnapshot;
+        let counter = TokenCounter::new();
+        counter.increment_prompt(1200);
+        counter.increment_cached_prompt(400);
+        counter.increment_completion(300);
+        counter.add_request_cost(Some(0.25));
+        counter.add_request_cost(None);
+        counter.set_last_prompt_tokens(900);
+        let saved = counter.snapshot();
+        let json = serde_json::to_string(&saved).unwrap();
+        let loaded: UsageSnapshot = serde_json::from_str(&json).unwrap();
+
+        let resumed = TokenCounter::new();
+        resumed.restore(&loaded);
+        assert_eq!(resumed.snapshot(), saved);
+        let summary = resumed.format_usage_summary();
+        assert!(summary.contains("Sent: 1.2k (33% cached) | Received: 300 | Cost: $0.2500 + n/a"), "{}", summary);
+        assert!(summary.ends_with("| Context: 900 tokens"), "{}", summary);
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod model_lists;
 mod model_picker;
 mod markdown;
 mod recent_models;
+mod session_picker;
 mod token_counter;
 mod tools;
 mod tetris;

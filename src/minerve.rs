@@ -79,8 +79,8 @@ use crate::{
 };
 
 pub struct Minerve {
-    /// Id of the session file this conversation is saved to.
-    pub session_id: String,
+    /// Id of the session file this conversation is saved to. Replaced by `replace_session`.
+    session_id: Mutex<String>,
     pub messages: Arc<Mutex<Vec<ChatCompletionMessage>>>,
     pub client: Client,
     /// Keys of every provider. A request fails if the key of its model's provider is not set.
@@ -452,8 +452,12 @@ impl Minerve {
         resume: Option<SessionFile>,
         extra_system_prompts: &[String],
     ) -> Self {
+        let token_counter = Arc::new(TokenCounter::new());
         let (session_id, messages) = match resume {
-            Some(file) => (file.id, file.messages),
+            Some(file) => {
+                token_counter.restore(&file.usage);
+                (file.id, file.messages)
+            }
             None => {
                 let mut messages = vec![ChatCompletionMessage::system(get_system_prompt())];
                 // AGENTS.md files come after the default prompt and before the --system-prompt ones.
@@ -467,7 +471,7 @@ impl Minerve {
             }
         };
         Self {
-            session_id,
+            session_id: Mutex::new(session_id),
             messages: Arc::new(Mutex::new(messages)),
             client: Client::new(),
             api_keys: Mutex::new(openrouter_connection.api_keys),
@@ -476,7 +480,7 @@ impl Minerve {
             request_in_flight: Arc::new(AtomicBool::new(false)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
-            token_counter: Arc::new(TokenCounter::new()),
+            token_counter,
         }
     }
 
@@ -513,7 +517,21 @@ impl Minerve {
     /// must not interrupt the chat.
     pub fn save_session(&self) {
         let msgs = self.messages.lock().unwrap();
-        let _ = session::save_session(&self.session_id, &msgs);
+        let session_id = self.session_id.lock().unwrap();
+        let _ = session::save_session(&session_id, &msgs, self.token_counter.snapshot());
+    }
+
+    /// Id of the session this conversation is saved to.
+    pub fn current_session_id(&self) -> String {
+        self.session_id.lock().unwrap().clone()
+    }
+
+    /// Continues another saved session: its messages, id and usage replace the current ones.
+    /// The caller makes sure no turn is running.
+    pub fn replace_session(&self, file: SessionFile) {
+        self.token_counter.restore(&file.usage);
+        *self.messages.lock().unwrap() = file.messages;
+        *self.session_id.lock().unwrap() = file.id;
     }
 
     pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {

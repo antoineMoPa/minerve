@@ -13,9 +13,10 @@ use crate::model_picker::ModelPicker;
 use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
 use crate::setup::{self, SetupModal, SetupStep};
 use crate::recent_models::RecentModels;
+use crate::session_picker::SessionPicker;
 
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    self, DisableBracketedPaste, DisableMouseCapture, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture,
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
     KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -38,8 +39,7 @@ use crate::ui::{UiEvent, UiSender};
 
 /// Tool results longer than this are cut short in the chat view (the model still gets them all).
 const MAX_OUTPUT_LEN: usize = 500;
-/// Only the last messages are shown, as before the ratatui refactor.
-const VISIBLE_MESSAGES: usize = 10;
+/// Lines scrolled per PageUp/PageDown.
 const SCROLL_STEP: usize = 10;
 /// Chat lines scrolled per mouse wheel notch.
 const WHEEL_STEP: usize = 3;
@@ -47,6 +47,7 @@ const WHEEL_STEP: usize = 3;
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
     ("/model", "switch the OpenRouter model"),
+    ("/resume", "continue a saved session"),
     ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
@@ -88,6 +89,8 @@ struct App {
     model_picker: Option<ModelPicker>,
     /// First-start setup modal, drawn over the chat. While set it takes every key and paste.
     setup_modal: Option<SetupModal>,
+    /// Saved sessions from `/resume`. While set it replaces the whole UI; Esc closes it.
+    session_picker: Option<SessionPicker>,
     /// Least recently used models, shown at the top of the picker.
     recent_models: RecentModels,
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
@@ -354,6 +357,7 @@ pub fn run(
         tetris: None,
         model_picker: None,
         setup_modal: needs_setup.then(|| SetupModal::new(stored_keys.clone())),
+        session_picker: None,
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
@@ -365,6 +369,8 @@ pub fn run(
     // Pasted text arrives as one `Event::Paste` instead of many key presses,
     // so newlines in a paste do not submit the prompt.
     let _ = execute!(io::stdout(), EnableBracketedPaste);
+    // Focus changes repaint the UI in full: the terminal may have drawn over the screen while minerve was in the background.
+    let _ = execute!(io::stdout(), EnableFocusChange);
     // Clicks move the cursor in the input box and the wheel scrolls the chat.
     // Terminals then select text only with a modifier held (Shift in most, Option in iTerm2).
     let _ = execute!(io::stdout(), EnableMouseCapture);
@@ -385,10 +391,10 @@ pub fn run(
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
     let _ = io::stdout().write_all(b"\x1b[?1003l");
-    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     // Printed after the restore so it lands on the normal screen, not the alternate one.
-    println!("{}", app.minerve.session_id);
+    println!("{}", app.minerve.current_session_id());
     result
 }
 
@@ -429,6 +435,10 @@ impl App {
                                 }
                                 continue;
                             }
+                        }
+                        if !quit_key && self.session_picker.is_some() {
+                            self.handle_session_picker_key(key);
+                            continue;
                         }
                         // The model picker takes every key, Ctrl+C still quits.
                         if !quit_key && self.model_picker.is_some() {
@@ -473,6 +483,8 @@ impl App {
                         self.handle_paste(&text);
                     }
                     Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() => self.handle_mouse(mouse),
+                    // Back in the terminal after another app had the screen, or resized: repaint every cell.
+                    Event::FocusGained | Event::Resize(_, _) => terminal.clear()?,
                     _ => {}
                 }
             }
@@ -483,6 +495,15 @@ impl App {
     /// Hovering or clicking the chat focuses it; hovering or clicking the input focuses the input.
     /// Left click inside the input box also moves the cursor there. The wheel scrolls the chat.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if let Some(picker) = self.session_picker.as_ref() {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                if let Some(index) = picker.row_at(mouse.column, mouse.row) {
+                    let id = picker.sessions[index].id.clone();
+                    self.resume_session(&id);
+                }
+            }
+            return;
+        }
         let over_chat = contains_cell(self.chat_area, mouse.column, mouse.row);
         let over_input = contains_cell(self.input_area, mouse.column, mouse.row);
         match mouse.kind {
@@ -551,6 +572,7 @@ impl App {
             "/matrix" => self.matrix = Some(MatrixRain::new(0, 0)),
             "/tetris" => self.tetris = Some(Tetris::new()),
             "/model" => self.open_model_picker(),
+            "/resume" => self.open_session_picker(),
             "/apikeys" => self.setup_modal = Some(SetupModal::new(self.minerve.api_keys_snapshot())),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
@@ -607,6 +629,52 @@ impl App {
             });
         }
         self.model_picker = Some(ModelPicker::new(current_model, keyed_providers));
+    }
+
+    /// Opens the `/resume` picker over the saved sessions, most recent first.
+    fn open_session_picker(&mut self) {
+        if self.minerve.request_in_flight.load(Ordering::SeqCst) {
+            self.status = String::from("wait for the running answer before resuming another session");
+            return;
+        }
+        self.session_picker = Some(SessionPicker::new(crate::session::list_sessions()));
+    }
+
+    /// Keys while the `/resume` picker is open. Enter continues the selected session.
+    fn handle_session_picker_key(&mut self, key: KeyEvent) {
+        let Some(picker) = self.session_picker.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.session_picker = None,
+            KeyCode::Up => picker.move_selection(-1),
+            KeyCode::Down => picker.move_selection(1),
+            KeyCode::Enter => {
+                let Some(session) = picker.sessions.get(picker.selected) else {
+                    return;
+                };
+                let id = session.id.clone();
+                self.resume_session(&id);
+            }
+            _ => {}
+        }
+    }
+
+    /// Loads the saved session `id` and shows its chat. A file that cannot be read keeps the
+    /// current session and reports why on the status line.
+    fn resume_session(&mut self, id: &str) {
+        match crate::session::load_for_resume(id) {
+            Ok(file) => {
+                self.minerve.replace_session(file);
+                self.transcript = self.minerve.ui_messages();
+                self.scroll_up = 0;
+                self.notices.clear();
+                self.pending_command_output.clear();
+                self.status = format!("resumed session {}", id);
+                self.session_picker = None;
+            }
+            Err(err) => self.status = err,
+        }
     }
 
     /// Keys while the setup modal is open. Enter on the last field saves the keys and applies them.
@@ -1044,6 +1112,11 @@ impl App {
             return;
         }
 
+        if let Some(picker) = self.session_picker.as_mut() {
+            picker.draw(frame, frame.area(), SystemTime::now());
+            return;
+        }
+
         // The rain replaces the whole UI until a key or paste ends it.
         if let Some(matrix) = self.matrix.as_mut() {
             if matrix.draw(frame, frame.area()) {
@@ -1101,20 +1174,33 @@ impl App {
 
     fn draw_chat(&mut self, frame: &mut Frame, area: Rect) {
         self.chat_area = area;
-        let lines = self.chat_lines();
+        let mut lines = self.chat_lines();
         let width = area.width.max(1) as usize;
-        let total: usize = lines
+        let rows_per_line: Vec<usize> = lines
             .iter()
             .map(|line| line.width().div_ceil(width).max(1))
-            .sum();
+            .collect();
+        let total: usize = rows_per_line.iter().sum();
 
         let max_scroll = total.saturating_sub(area.height as usize);
         self.scroll_up = self.scroll_up.min(max_scroll);
-        let top = (max_scroll - self.scroll_up).min(u16::MAX as usize) as u16;
+        let top = max_scroll - self.scroll_up;
+
+        // Paragraph::scroll takes a u16 row offset, which long chats overflow. Drop the whole
+        // lines above the offset first, then scroll the rest by what is left.
+        let mut first_line = 0;
+        let mut rows_before = 0;
+        while first_line < rows_per_line.len() && rows_before + rows_per_line[first_line] <= top {
+            rows_before += rows_per_line[first_line];
+            first_line += 1;
+        }
+        lines.drain(..first_line);
+        let offset_in_first_line = u16::try_from(top - rows_before)
+            .expect("one chat line taller than u16::MAX rows");
 
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .scroll((top, 0));
+            .scroll((offset_in_first_line, 0));
         frame.render_widget(paragraph, area);
     }
 
@@ -1124,10 +1210,8 @@ impl App {
             .iter()
             .filter(|(role, _)| role != "system")
             .collect();
-        let start = shown.len().saturating_sub(VISIBLE_MESSAGES);
-
         let mut lines = Vec::new();
-        for (role, content) in &shown[start..] {
+        for (role, content) in &shown {
             let (label, style) = match role.as_str() {
                 "user" => (
                     "You",
