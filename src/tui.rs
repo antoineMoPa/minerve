@@ -581,7 +581,7 @@ impl App {
             } else {
                 content.clone()
             };
-            lines.extend(text.split('\n').map(|part| Line::raw(part.to_string())));
+            lines.extend(crate::markdown::render(&text));
             lines.push(Line::default());
         }
         lines

@@ -11,6 +11,7 @@ pub fn get_global_runtime() -> &'static Runtime {
 mod boot;
 mod chat;
 mod history;
+mod markdown;
 mod token_counter;
 mod tools;
 mod tui;
