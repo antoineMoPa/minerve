@@ -7,7 +7,9 @@ Minerve is an open source rust-based code assistant.
 - **Headless Mode**: Run prompts in a non-interactive mode.
 - **Persistent Chat History**: Allows scrolling through previous conversations.
 
-<img src="./assets/minerve.gif" alt="demo" width="700"/>
+<p align="center">
+    <img src="./assets/minerve.gif" alt="demo" width="700"/>
+</p>
 
 ## Installation
 
