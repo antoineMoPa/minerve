@@ -12,17 +12,21 @@ pub struct ChatSelection {
     pub anchor: (u16, u16),
     /// Cell (column, row) under the pointer now.
     pub cursor: (u16, u16),
+    /// Chat row shown at the top of the chat area when the drag started. Once the chat shows
+    /// another row there (scroll, new message, resize), the cells no longer hold the selected text.
+    pub chat_top: usize,
 }
 
 impl ChatSelection {
-    pub fn new(cell: (u16, u16)) -> Self {
+    pub fn new(cell: (u16, u16), chat_top: usize) -> Self {
         Self {
             anchor: cell,
             cursor: cell,
+            chat_top,
         }
     }
 
-    /// True when the selection covers more than one cell.
+    /// True when the drag never left the cell it started on.
     pub fn is_empty(&self) -> bool {
         self.anchor == self.cursor
     }
@@ -142,8 +146,8 @@ mod tests {
 
     #[test]
     fn selection_follows_reading_order_even_when_dragged_backwards() {
-        let forward = ChatSelection { anchor: (2, 1), cursor: (4, 3) };
-        let backward = ChatSelection { anchor: (4, 3), cursor: (2, 1) };
+        let forward = ChatSelection { anchor: (2, 1), cursor: (4, 3), chat_top: 0 };
+        let backward = ChatSelection { anchor: (4, 3), cursor: (2, 1), chat_top: 0 };
         for selection in [forward, backward] {
             assert!(selection.contains(2, 1));
             assert!(!selection.contains(1, 1), "before the start column on the first row");
@@ -155,7 +159,7 @@ mod tests {
 
     #[test]
     fn single_row_selection_is_bounded_on_both_sides() {
-        let selection = ChatSelection { anchor: (3, 0), cursor: (6, 0) };
+        let selection = ChatSelection { anchor: (3, 0), cursor: (6, 0), chat_top: 0 };
         assert!(selection.contains(3, 0) && selection.contains(6, 0));
         assert!(!selection.contains(2, 0) && !selection.contains(7, 0));
     }
@@ -173,8 +177,8 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         buffer.set_string(0, 0, "hello", Style::default());
         buffer.set_string(0, 1, "world", Style::default());
-        let selection = ChatSelection { anchor: (1, 0), cursor: (2, 1) };
-        assert_eq!(selected_text(&buffer, area, &selection), "ello\nwo");
+        let selection = ChatSelection { anchor: (1, 0), cursor: (2, 1), chat_top: 0 };
+        assert_eq!(selected_text(&buffer, area, &selection), "ello\nwor");
     }
 
     #[test]

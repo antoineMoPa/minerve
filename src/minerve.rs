@@ -67,7 +67,7 @@ use tokio::sync::Notify;
 use crate::anthropic;
 use crate::openrouter::OpenRouterConnection;
 use crate::provider::{ActiveModel, ApiKeys, Provider};
-use crate::session::{self, SessionFile};
+use crate::session::{self, SessionFile, SessionStart};
 use crate::tools::registry::get_tool_registry;
 use crate::tools::utils::cap_tool_output;
 use crate::ui::{send_status, update_chat_ui, UiSender};
@@ -357,6 +357,19 @@ fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoi
     messages
 }
 
+/// System messages a new session opens with. AGENTS.md files come after the default prompt and
+/// before the --append-system-prompt ones.
+fn new_session_messages(extra_system_prompts: &[String]) -> Vec<ChatCompletionMessage> {
+    let mut messages = vec![ChatCompletionMessage::system(get_system_prompt())];
+    messages.extend(
+        crate::agents_md::load_agents_md()
+            .into_iter()
+            .chain(extra_system_prompts.iter().cloned())
+            .map(ChatCompletionMessage::system),
+    );
+    messages
+}
+
 impl Minerve {
     /// Prints assistant replies to stdout and errors to stderr as the conversation goes.
     pub async fn chat_headless(&self) {
@@ -446,32 +459,27 @@ impl Minerve {
         update_chat_ui(ui, get_ui_messages(&msgs));
     }
 
-    /// Starts a new session, or continues the saved one when `resume` is given.
+    /// Starts a new session, or continues a saved one.
     /// `extra_system_prompts` are added after the default system prompt of a new session.
     pub fn new(
         openrouter_connection: OpenRouterConnection,
-        resume: Option<SessionFile>,
+        start: SessionStart,
         extra_system_prompts: &[String],
     ) -> Self {
         let token_counter = Arc::new(TokenCounter::new());
-        let (session_id, messages) = match resume {
-            Some(file) => {
+        let save_now = matches!(start, SessionStart::NewWithId(_));
+        let (session_id, messages) = match start {
+            SessionStart::Resume(file) => {
                 token_counter.restore(&file.usage);
                 (file.id, file.messages)
             }
-            None => {
-                let mut messages = vec![ChatCompletionMessage::system(get_system_prompt())];
-                // AGENTS.md files come after the default prompt and before the --system-prompt ones.
-                messages.extend(
-                    crate::agents_md::load_agents_md()
-                        .into_iter()
-                        .chain(extra_system_prompts.iter().cloned())
-                        .map(ChatCompletionMessage::system),
-                );
-                (uuid::Uuid::new_v4().to_string(), messages)
-            }
+            SessionStart::New => (
+                uuid::Uuid::new_v4().to_string(),
+                new_session_messages(extra_system_prompts),
+            ),
+            SessionStart::NewWithId(id) => (id, new_session_messages(extra_system_prompts)),
         };
-        Self {
+        let minerve = Self {
             session_id: Mutex::new(session_id),
             messages: Arc::new(Mutex::new(messages)),
             client: Client::new(),
@@ -482,7 +490,11 @@ impl Minerve {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
             token_counter,
+        };
+        if save_now {
+            minerve.save_session();
         }
+        minerve
     }
 
     /// Looks up the context window of the model in the background, so the status bar can show a percent.

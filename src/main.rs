@@ -11,6 +11,7 @@ pub fn get_global_runtime() -> &'static Runtime {
 mod agents_md;
 mod boot;
 mod chat;
+mod chat_selection;
 mod history;
 mod input_layout;
 mod keys_file;
@@ -59,10 +60,10 @@ use std::io::Write;
 pub fn run_headless(
     prompt: String,
     openrouter_connection: OpenRouterConnection,
-    resume: Option<session::SessionFile>,
+    start: session::SessionStart,
     extra_system_prompts: &[String],
 ) {
-    let minerve = Minerve::new(openrouter_connection, resume, extra_system_prompts);
+    let minerve = Minerve::new(openrouter_connection, start, extra_system_prompts);
     minerve
         .messages
         .lock()
@@ -77,11 +78,11 @@ pub fn run_headless(
 
 fn launch_tui(
     openrouter_connection: OpenRouterConnection,
-    resume: Option<session::SessionFile>,
+    start: session::SessionStart,
     extra_system_prompts: &[String],
     force_setup: bool,
 ) {
-    if let Err(err) = tui::run(openrouter_connection, resume, extra_system_prompts, force_setup) {
+    if let Err(err) = tui::run(openrouter_connection, start, extra_system_prompts, force_setup) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
 }
@@ -146,9 +147,15 @@ fn main() {
     load_home_dotenv();
     let openrouter_connection = read_openrouter_connection_from_env();
 
-    // Load the session before the TUI takes over, so a bad id is reported on stderr.
-    let resume = match cli.resume.as_deref().map(session::load_for_resume).transpose() {
-        Ok(resume) => resume,
+    // Load or check the session before the TUI takes over, so a bad id is reported on stderr.
+    // Clap refuses --resume together with --session-id.
+    let start = match (cli.resume.as_deref(), cli.session_id) {
+        (Some(arg), _) => session::load_for_resume(arg).map(session::SessionStart::Resume),
+        (None, Some(id)) => session::check_new_session_id(&id).map(|()| session::SessionStart::NewWithId(id)),
+        (None, None) => Ok(session::SessionStart::New),
+    };
+    let start = match start {
+        Ok(start) => start,
         Err(err) => {
             eprintln!("minerve: {}", err);
             std::process::exit(1);
@@ -156,9 +163,9 @@ fn main() {
     };
 
     if let Some(prompt) = cli.prompt {
-        run_headless(prompt, openrouter_connection, resume, &cli.system_prompt);
+        run_headless(prompt, openrouter_connection, start, &cli.system_prompt);
         return;
     }
 
-    launch_tui(openrouter_connection, resume, &cli.system_prompt, cli.setup);
+    launch_tui(openrouter_connection, start, &cli.system_prompt, cli.setup);
 }

@@ -29,6 +29,29 @@ pub struct SessionFile {
     pub usage: UsageSnapshot,
 }
 
+/// Which session a run works in.
+pub enum SessionStart {
+    /// A new session under an id minerve picks.
+    New,
+    /// A new session under the id given with `--session-id`. Saved before the first message, so
+    /// the caller that picked the id (moon, for one) can resume it with `--resume=<id>` even when
+    /// nothing was sent.
+    NewWithId(String),
+    /// A saved session, continued.
+    Resume(SessionFile),
+}
+
+/// Checks an id given with `--session-id`: a UUID no saved session uses yet.
+pub fn check_new_session_id(id: &str) -> Result<(), String> {
+    if !is_session_id(id) {
+        return Err(format!("invalid session id {:?}: expected a lowercase hyphenated UUID", id));
+    }
+    if session_path(id).exists() {
+        return Err(format!("session {} already exists: resume it with --resume={}", id, id));
+    }
+    Ok(())
+}
+
 /// One row of the `/resume` list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSummary {

@@ -10,6 +10,11 @@ pub struct Cli {
     #[arg(short, long, num_args = 0..=1, default_missing_value = "latest", value_name = "UUID")]
     pub resume: Option<String>,
 
+    /// Start a new session under this id (a lowercase hyphenated UUID), so a launcher can
+    /// resume exactly this session later with `--resume=<uuid>`.
+    #[arg(long, value_name = "UUID", conflicts_with = "resume")]
+    pub session_id: Option<String>,
+
     /// Extra system prompt appended after the default one. Repeat the flag for several prompts.
     /// Only applies to new sessions: a resumed session keeps its own system messages.
     #[arg(short = 's', long = "append-system-prompt", value_name = "TEXT")]

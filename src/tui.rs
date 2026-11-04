@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::chat_selection::{self, ChatSelection};
 use crate::input_layout::layout_input;
 use crate::model_picker::ModelPicker;
 use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
@@ -33,7 +34,7 @@ use crate::boot::BootAnimation;
 use crate::history::HistoryTracker;
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
-use crate::session::SessionFile;
+use crate::session::SessionStart;
 use crate::tetris::Tetris;
 use crate::ui::{UiEvent, UiSender};
 
@@ -96,12 +97,18 @@ struct App {
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
     input_area: Rect,
     input_scroll_row: u16,
-    /// Dimmed hint shown while the message box is empty.
-    pro_tip: String,
+    /// Dimmed hint shown while the message box is empty, typed out one character at a time.
+    pro_tip: crate::pro_tips::ProTips,
     /// Chat as last drawn. Hovering or clicking it gives it focus.
     chat_area: Rect,
     /// True when the chat has focus: Up/Down scroll it and typing gives focus back to the input.
     chat_focused: bool,
+    /// Chat row shown at the top of the chat area in the last draw. A new selection remembers it.
+    chat_top: usize,
+    /// Text dragged over in the chat, highlighted until Esc, a click, or the chat moving.
+    chat_selection: Option<ChatSelection>,
+    /// Set when the drag ends: the next draw copies the selected cells to the clipboard.
+    copy_selection_on_draw: bool,
 }
 
 /// Where the last yank landed, so Alt+Y can swap it for the previous kill.
@@ -316,23 +323,22 @@ impl MatrixRain {
 /// Runs the interactive UI until the user quits.
 pub fn run(
     openrouter_connection: OpenRouterConnection,
-    resume: Option<SessionFile>,
+    start: SessionStart,
     extra_system_prompts: &[String],
     force_setup: bool,
 ) -> io::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel();
     // The boot clip is for fresh sessions only; resuming one goes straight to the chat.
-    let boot = if resume.is_none() {
-        BootAnimation::start()
-    } else {
-        None
+    let boot = match start {
+        SessionStart::Resume(_) => None,
+        SessionStart::New | SessionStart::NewWithId(_) => BootAnimation::start(),
     };
     let needs_setup = force_setup
         || setup::needs_setup(&openrouter_connection.api_keys);
     let stored_keys = openrouter_connection.api_keys.clone();
     let minerve = Arc::new(Minerve::new(
         openrouter_connection,
-        resume,
+        start,
         extra_system_prompts,
     ));
     minerve.fetch_context_window_in_background();
@@ -363,9 +369,12 @@ pub fn run(
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
-        pro_tip: crate::pro_tips::tip_for_launch(),
+        pro_tip: crate::pro_tips::ProTips::new(Instant::now()),
         chat_area: Rect::default(),
         chat_focused: false,
+        chat_top: 0,
+        chat_selection: None,
+        copy_selection_on_draw: false,
     };
 
     let mut terminal = ratatui::init();
@@ -487,7 +496,12 @@ impl App {
                     }
                     Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() => self.handle_mouse(mouse),
                     // Back in the terminal after another app had the screen, or resized: repaint every cell.
-                    Event::FocusGained | Event::Resize(_, _) => terminal.clear()?,
+                    Event::FocusGained => terminal.clear()?,
+                    // The chat rewraps, so a selection's cells no longer hold its text.
+                    Event::Resize(_, _) => {
+                        self.chat_selection = None;
+                        terminal.clear()?
+                    }
                     _ => {}
                 }
             }
@@ -520,6 +534,24 @@ impl App {
             _ => {}
         }
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.chat_selection = over_chat
+                    .then(|| ChatSelection::new((mouse.column, mouse.row), self.chat_top));
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = self.chat_selection.as_mut() {
+                    selection.cursor = chat_selection::clamp_to(self.chat_area, (mouse.column, mouse.row));
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => match self.chat_selection {
+                // A click without a drag selects nothing.
+                Some(selection) if selection.is_empty() => self.chat_selection = None,
+                Some(_) => self.copy_selection_on_draw = true,
+                None => {}
+            },
+            _ => {}
+        }
+        match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if over_input => {
                 // Inside the borders only.
                 let area = self.input_area;
@@ -543,6 +575,7 @@ impl App {
     /// Inserts pasted text at the cursor without submitting, keeping its newlines.
     fn handle_paste(&mut self, text: &str) {
         self.chat_focused = false;
+        self.pro_tip.restart_idle_delay(Instant::now());
         for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
             self.insert_char(c);
         }
@@ -756,14 +789,18 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        self.pro_tip.restart_idle_delay(Instant::now());
 
         if ctrl && key.code == KeyCode::Char('c') {
             self.should_quit = true;
             return;
         }
 
-        // Esc stops the running turn; with no turn running it does nothing.
+        // Esc clears the chat selection first, then stops the running turn.
         if key.code == KeyCode::Esc {
+            if self.chat_selection.take().is_some() {
+                return;
+            }
             if self.minerve.request_in_flight.load(Ordering::SeqCst) {
                 self.minerve.cancel_turn();
             }
@@ -1164,7 +1201,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(
-                "Enter send | Esc cancel turn | Shift+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
+                "Enter send | Esc clear selection / cancel turn | Shift+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
             )
             .style(Style::default().fg(Color::DarkGray)),
             hint_area,
@@ -1205,6 +1242,28 @@ impl App {
             .wrap(Wrap { trim: false })
             .scroll((offset_in_first_line, 0));
         frame.render_widget(paragraph, area);
+        self.chat_top = top;
+        self.draw_chat_selection(frame, area);
+    }
+
+    /// Highlights the chat selection, and copies it right after the drag ends. A selection made
+    /// while another row was at the top is dropped: its cells now hold other text.
+    fn draw_chat_selection(&mut self, frame: &mut Frame, area: Rect) {
+        let copy = std::mem::take(&mut self.copy_selection_on_draw);
+        let Some(selection) = self.chat_selection else {
+            return;
+        };
+        if selection.chat_top != self.chat_top || !contains_cell(area, selection.anchor.0, selection.anchor.1) {
+            self.chat_selection = None;
+            return;
+        }
+        if copy {
+            let text = chat_selection::selected_text(frame.buffer_mut(), area, &selection);
+            // Written before ratatui flushes this frame; terminals act on OSC 52 wherever it lands.
+            let _ = io::stdout().write_all(chat_selection::osc52_copy(&text).as_bytes());
+            self.status = format!("Copied {} chars", text.chars().count());
+        }
+        chat_selection::highlight(frame.buffer_mut(), area, &selection);
     }
 
     fn chat_lines(&self) -> Vec<Line<'static>> {
@@ -1339,7 +1398,9 @@ impl App {
 
         // Rows are pre-wrapped by display width (no Paragraph wrap) so they match the cursor position.
         let text = if self.input.is_empty() {
-            Text::from(Span::styled(self.pro_tip.clone(), Style::default().fg(Color::DarkGray)))
+            // Indented so the tip reads as a hint, apart from where typed text starts.
+            let tip = format!("   {}", self.pro_tip.visible_text(Instant::now()));
+            Text::from(Span::styled(tip, Style::default().fg(Color::DarkGray)))
         } else {
             Text::from(layout.rows.join("\n"))
         };
