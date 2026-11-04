@@ -1,0 +1,97 @@
+name: Native release
+run-name: Native release ${{ github.ref_name }} (${{ inputs.local_target }})
+on:
+  workflow_dispatch:
+    inputs:
+      build_only:
+        description: Test builds and installers without uploading a release
+        type: boolean
+        default: false
+      local_target:
+        description: Target already built and uploaded by publishFlow.sh
+        required: true
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+permissions:
+  contents: read
+concurrency:
+  group: native-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        if: matrix.target != inputs.local_target
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: matrix.target != inputs.local_target
+        with:
+          python-version: '3.12'
+      - name: Select build version
+        id: version
+        if: matrix.target != inputs.local_target
+        shell: bash
+        env:
+          BUILD_ONLY: ${{ inputs.build_only }}
+        run: |
+          if [[ "$BUILD_ONLY" == true ]]; then
+            tag=$(python3 -c 'import tomllib; print("v" + tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          else
+            [[ "$GITHUB_REF" == refs/tags/v* ]] || { echo 'Run release mode at a version tag'; exit 1; }
+            tag=$GITHUB_REF_NAME
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        if: matrix.target != inputs.local_target
+        shell: bash
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Install Linux build dependencies
+        if: matrix.target != inputs.local_target && startsWith(matrix.runner, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxcb1-dev libxkbcommon-dev libwayland-dev libgtk-3-dev
+      - name: Build and package
+        if: matrix.target != inputs.local_target
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: python3 scripts/release/release.py build "$RELEASE_TAG" "$RELEASE_TARGET"
+      - uses: actions/upload-artifact@v4
+        if: matrix.target != inputs.local_target
+        with:
+          name: native-${{ matrix.target }}
+          path: target/release-artifacts/${{ steps.version.outputs.tag }}/minerve-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 7
+  upload:
+    if: ${{ !inputs.build_only }}
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+      - name: Upload to existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
