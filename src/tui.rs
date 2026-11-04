@@ -2,20 +2,24 @@
 //!
 //! Background work reports through `UiEvent`s (see `ui.rs`); key presses are handled here.
 
-use std::io;
+use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input_layout::layout_input;
+use crate::model_picker::ModelPicker;
+use crate::recent_models::RecentModels;
 
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
-    KeyModifiers,
+    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -40,6 +44,7 @@ const WHEEL_STEP: usize = 3;
 /// Slash commands offered by the `/` menu: (name, one-line description).
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
+    ("/model", "switch the OpenRouter model"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
 ];
@@ -76,9 +81,17 @@ struct App {
     matrix: Option<MatrixRain>,
     /// Tetris game from `/tetris`. While set it replaces the whole UI; Esc or q leaves it.
     tetris: Option<Tetris>,
+    /// Model picker from `/model`. While set it replaces the whole UI; Esc closes it.
+    model_picker: Option<ModelPicker>,
+    /// Least recently used models, shown at the top of the picker.
+    recent_models: RecentModels,
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
     input_area: Rect,
     input_scroll_row: u16,
+    /// Chat as last drawn. Hovering or clicking it gives it focus.
+    chat_area: Rect,
+    /// True when the chat has focus: Up/Down scroll it and typing gives focus back to the input.
+    chat_focused: bool,
 }
 
 /// Where the last yank landed, so Alt+Y can swap it for the previous kill.
@@ -97,6 +110,11 @@ const KILL_RING_MAX: usize = 60;
 
 /// Characters the falling streams are made of (same set as the Emacs `matrix-mode` it follows).
 const MATRIX_GLYPHS: &str = "123456789abcdefghijklmnopqrstuvwxyzαβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+
+/// True when the terminal cell at (column, row) is inside `area`.
+fn contains_cell(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
+}
 
 /// Xorshift64 step, returning a float in [0, 1). Good enough for falling letters; avoids a crate.
 fn next_unit(state: &mut u64) -> f32 {
@@ -325,8 +343,12 @@ pub fn run(
         notices: Vec::new(),
         matrix: None,
         tetris: None,
+        model_picker: None,
+        recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
+        chat_area: Rect::default(),
+        chat_focused: false,
     };
 
     let mut terminal = ratatui::init();
@@ -336,8 +358,23 @@ pub fn run(
     // Clicks move the cursor in the input box and the wheel scrolls the chat.
     // Terminals then select text only with a modifier held (Shift in most, Option in iTerm2).
     let _ = execute!(io::stdout(), EnableMouseCapture);
+    // Mode 1003 reports moves without a button held, so hovering the chat gives it focus.
+    // Crossterm's EnableMouseCapture does not turn it on.
+    let _ = io::stdout().write_all(b"\x1b[?1003h");
+    // Lets Shift+Enter arrive as its own key where the terminal supports it.
+    let keyboard_enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    if keyboard_enhanced {
+        let _ = execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let result = app.run_loop(&mut terminal);
     // Restore even when the loop failed, so the shell is usable again.
+    if keyboard_enhanced {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+    let _ = io::stdout().write_all(b"\x1b[?1003l");
     let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     // Printed after the restore so it lands on the normal screen, not the alternate one.
@@ -383,6 +420,11 @@ impl App {
                                 continue;
                             }
                         }
+                        // The model picker takes every key, Ctrl+C still quits.
+                        if !quit_key && self.model_picker.is_some() {
+                            self.handle_model_picker_key(key);
+                            continue;
+                        }
                         self.stop_boot();
                         self.handle_key(key);
                         // Clearing the input also clears the paste marker.
@@ -392,6 +434,12 @@ impl App {
                     }
                     Event::Paste(text) => {
                         if self.tetris.is_some() {
+                            continue;
+                        }
+                        // Pasted text goes into the picker filter; newlines would not match any model id.
+                        if let Some(picker) = self.model_picker.as_mut() {
+                            picker.filter.extend(text.chars().filter(|c| !c.is_control()));
+                            picker.selected = 0;
                             continue;
                         }
                         if self.matrix.is_some() {
@@ -409,15 +457,28 @@ impl App {
         Ok(())
     }
 
-    /// Left click inside the input box moves the cursor there; the wheel scrolls the chat.
+    /// Hovering or clicking the chat focuses it; hovering or clicking the input focuses the input.
+    /// Left click inside the input box also moves the cursor there. The wheel scrolls the chat.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let over_chat = contains_cell(self.chat_area, mouse.column, mouse.row);
+        let over_input = contains_cell(self.input_area, mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
+            MouseEventKind::Moved | MouseEventKind::Down(_) => {
+                if over_chat {
+                    self.chat_focused = true;
+                } else if over_input {
+                    self.chat_focused = false;
+                }
+            }
+            _ => {}
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if over_input => {
                 // Inside the borders only.
                 let area = self.input_area;
-                let inside_x = mouse.column > area.x && mouse.column < area.right().saturating_sub(1);
-                let inside_y = mouse.row > area.y && mouse.row < area.bottom().saturating_sub(1);
-                if !(inside_x && inside_y) {
+                if !(mouse.column > area.x && mouse.column < area.right().saturating_sub(1)
+                    && mouse.row > area.y && mouse.row < area.bottom().saturating_sub(1))
+                {
                     return;
                 }
                 let layout = layout_input(&self.input, area.width.saturating_sub(2));
@@ -434,6 +495,7 @@ impl App {
 
     /// Inserts pasted text at the cursor without submitting, keeping its newlines.
     fn handle_paste(&mut self, text: &str) {
+        self.chat_focused = false;
         for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
             self.insert_char(c);
         }
@@ -465,6 +527,7 @@ impl App {
         match name {
             "/matrix" => self.matrix = Some(MatrixRain::new(0, 0)),
             "/tetris" => self.tetris = Some(Tetris::new()),
+            "/model" => self.open_model_picker(),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
                 let first_line = include_str!("../README.md")
@@ -487,6 +550,56 @@ impl App {
         match event {
             UiEvent::Transcript(messages) => self.transcript = messages,
             UiEvent::Status(status) => self.status = status,
+            UiEvent::ModelList(result) => {
+                if let Some(picker) = self.model_picker.as_mut() {
+                    picker.all_models = Some(result);
+                }
+            }
+        }
+    }
+
+    /// Opens the `/model` picker and fetches the OpenRouter model list in the background.
+    fn open_model_picker(&mut self) {
+        let current_model = self.minerve.active_model().id;
+        self.model_picker = Some(ModelPicker::new(current_model));
+        let minerve = self.minerve.clone();
+        let ui = self.ui_tx.clone();
+        crate::get_global_runtime().spawn(async move {
+            let result = crate::openrouter::fetch_model_ids(&minerve.client, &minerve.base_url).await;
+            let _ = ui.send(UiEvent::ModelList(result));
+        });
+    }
+
+    /// Keys while the model picker is open. Enter switches model, Esc closes.
+    fn handle_model_picker_key(&mut self, key: KeyEvent) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        let rows = picker.visible_rows(&self.recent_models);
+        match key.code {
+            KeyCode::Esc => self.model_picker = None,
+            KeyCode::Up => picker.move_selection(-1, rows.len()),
+            KeyCode::Down => picker.move_selection(1, rows.len()),
+            KeyCode::Enter => {
+                let Some(row) = rows.get(picker.selected) else {
+                    return;
+                };
+                let model_id = row.model_id.clone();
+                self.minerve.set_model(model_id.clone());
+                self.minerve.fetch_context_window_in_background();
+                self.recent_models.mark_used(&model_id);
+                self.status = format!("model: {}", model_id);
+                self.model_picker = None;
+            }
+            KeyCode::Backspace => {
+                picker.filter.pop();
+                picker.clamp_selection(picker.visible_rows(&self.recent_models).len());
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                picker.filter.push(c);
+                picker.selected = 0;
+            }
+            _ => {}
         }
     }
 
@@ -519,8 +632,13 @@ impl App {
             return;
         }
 
+        // Editing keys hand focus back to the input, so they are not swallowed by a focused chat.
+        if self.chat_focused && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
+            self.chat_focused = false;
+        }
+
         match key.code {
-            KeyCode::Enter if alt || shift => self.insert_char('\n'),
+            KeyCode::Enter if shift => self.insert_char('\n'),
             KeyCode::Enter => self.submit(),
             KeyCode::Char('j') if ctrl => self.insert_char('\n'),
             KeyCode::Char('a') if ctrl => self.cursor = 0,
@@ -536,6 +654,8 @@ impl App {
             KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input_len()),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input_len(),
+            KeyCode::Up if self.chat_focused => self.scroll_up = self.scroll_up.saturating_add(WHEEL_STEP),
+            KeyCode::Down if self.chat_focused => self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP),
             KeyCode::Up => {
                 if let Some(prompt) = self.history.get_previous_prompt() {
                     self.set_input(prompt);
@@ -840,6 +960,12 @@ impl App {
             return;
         }
 
+        if let Some(picker) = self.model_picker.as_ref() {
+            let rows = picker.visible_rows(&self.recent_models);
+            picker.draw(frame, frame.area(), &rows);
+            return;
+        }
+
         // The rain replaces the whole UI until a key or paste ends it.
         if let Some(matrix) = self.matrix.as_mut() {
             if matrix.draw(frame, frame.area()) {
@@ -881,7 +1007,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(
-                "Enter send | Esc cancel turn | Alt+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
+                "Enter send | Esc cancel turn | Shift+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
             )
             .style(Style::default().fg(Color::DarkGray)),
             hint_area,
@@ -893,6 +1019,7 @@ impl App {
     }
 
     fn draw_chat(&mut self, frame: &mut Frame, area: Rect) {
+        self.chat_area = area;
         let lines = self.chat_lines();
         let width = area.width.max(1) as usize;
         let total: usize = lines

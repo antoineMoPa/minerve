@@ -46,7 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
-use crate::openrouter::OpenRouterConnection;
+use crate::openrouter::{ActiveModel, OpenRouterConnection};
 use crate::session::{self, SessionFile};
 use crate::tools::registry::get_tool_registry;
 use crate::tools::utils::cap_tool_output;
@@ -65,8 +65,8 @@ pub struct Minerve {
     pub client: Client,
     pub api_key: String,
     pub base_url: String,
-    pub model: String,
-    pub uses_cache_breakpoints: bool,
+    /// Model the next request goes to. Replaced by `set_model` from the `/model` picker.
+    pub model: Mutex<ActiveModel>,
     pub request_in_flight: Arc<AtomicBool>,
     /// Set by `cancel_turn`; checked before each request and tool call of the running turn.
     pub cancel_requested: Arc<AtomicBool>,
@@ -269,32 +269,44 @@ fn clean_tool_outputs_of_previous_prompts(messages: &mut [ChatCompletionMessage]
 }
 
 impl Minerve {
-    fn build_request(&self, history: &[ChatCompletionMessage]) -> ChatCompletionRequest {
+    /// Model the next turn will use. A turn reads it once when it starts.
+    pub fn active_model(&self) -> ActiveModel {
+        self.model.lock().unwrap().clone()
+    }
+
+    /// Switches the model for the next turn. A turn already running keeps the model it started with.
+    pub fn set_model(&self, model_id: String) {
+        *self.model.lock().unwrap() = ActiveModel::new(model_id);
+    }
+
+    fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage]) -> ChatCompletionRequest {
         ChatCompletionRequest {
-            model: self.model.clone(),
-            messages: self.build_request_messages(history),
-            tools: get_tool_definitions(self.uses_cache_breakpoints),
+            model: model.id.clone(),
+            messages: build_request_messages(history, model.uses_cache_breakpoints),
+            tools: get_tool_definitions(model.uses_cache_breakpoints),
             usage: UsageAccountingRequest { include: true },
         }
     }
+}
 
-    /// Breakpoints, when the model needs them, go after the system prompt and on the latest
-    /// message, like opencode does: the next request reads everything up to there from cache.
-    fn build_request_messages(&self, history: &[ChatCompletionMessage]) -> Vec<RequestMessage> {
-        let mut messages: Vec<RequestMessage> =
-            history.iter().map(RequestMessage::from_message).collect();
-        if self.uses_cache_breakpoints {
-            messages
-                .first_mut()
-                .expect("request without messages")
-                .add_cache_breakpoint();
-            if messages.len() > 1 {
-                messages.last_mut().unwrap().add_cache_breakpoint();
-            }
-        }
+/// Breakpoints, when the model needs them, go after the system prompt and on the latest
+/// message, like opencode does: the next request reads everything up to there from cache.
+fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoints: bool) -> Vec<RequestMessage> {
+    let mut messages: Vec<RequestMessage> =
+        history.iter().map(RequestMessage::from_message).collect();
+    if uses_cache_breakpoints {
         messages
+            .first_mut()
+            .expect("request without messages")
+            .add_cache_breakpoint();
+        if messages.len() > 1 {
+            messages.last_mut().unwrap().add_cache_breakpoint();
+        }
     }
+    messages
+}
 
+impl Minerve {
     fn get_completions_url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
@@ -308,6 +320,7 @@ impl Minerve {
             msgs.clone()
         };
 
+        let model = self.active_model();
         let mut should_continue = true;
 
         while should_continue {
@@ -317,7 +330,7 @@ impl Minerve {
                 &self.client,
                 &self.get_completions_url(),
                 &self.api_key,
-                self.build_request(&history),
+                self.build_request(&model, &history),
                 self.token_counter.clone(),
             )
             .await;
@@ -407,8 +420,7 @@ impl Minerve {
             client: Client::new(),
             api_key: openrouter_connection.api_key,
             base_url: openrouter_connection.base_url,
-            model: openrouter_connection.model,
-            uses_cache_breakpoints: openrouter_connection.uses_cache_breakpoints,
+            model: Mutex::new(ActiveModel::new(openrouter_connection.model)),
             request_in_flight: Arc::new(AtomicBool::new(false)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
@@ -419,11 +431,12 @@ impl Minerve {
     /// Looks up the context window of the model in the background, so the status bar can show a percent.
     pub fn fetch_context_window_in_background(self: &Arc<Self>) {
         let minerve = Arc::clone(self);
+        let model_id = minerve.active_model().id;
         crate::get_global_runtime().spawn(async move {
             if let Some(tokens) = crate::openrouter::fetch_context_window(
                 &minerve.client,
                 &minerve.base_url,
-                &minerve.model,
+                &model_id,
             )
             .await
             {
@@ -464,6 +477,8 @@ impl Minerve {
             async move {
                 let messages = self_clone.messages.clone();
                 let cancel_requested = self_clone.cancel_requested.clone();
+                // One model for the whole turn, even if `/model` switches it meanwhile.
+                let model = self_clone.active_model();
                 let mut should_continue = true;
 
                 while should_continue {
@@ -474,7 +489,7 @@ impl Minerve {
 
                     let request = {
                         let msgs = messages.lock().unwrap();
-                        self_clone.build_request(&msgs)
+                        self_clone.build_request(&model, &msgs)
                     };
 
                     // Register for the cancel signal before checking the flag, so a cancel

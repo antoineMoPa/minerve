@@ -13,7 +13,6 @@ pub struct OpenRouterConnection {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    pub uses_cache_breakpoints: bool,
 }
 
 fn model_uses_cache_breakpoints(model: &str) -> bool {
@@ -22,6 +21,51 @@ fn model_uses_cache_breakpoints(model: &str) -> bool {
     MODEL_PREFIXES_WITH_CACHE_BREAKPOINTS
         .iter()
         .any(|prefix| model_id.starts_with(prefix))
+}
+
+/// The model requests go to, with the cache setting derived from its id.
+/// `Minerve` holds one and replaces it when the user switches models with `/model`.
+#[derive(Clone)]
+pub struct ActiveModel {
+    pub id: String,
+    pub uses_cache_breakpoints: bool,
+}
+
+impl ActiveModel {
+    pub fn new(id: String) -> Self {
+        let uses_cache_breakpoints = model_uses_cache_breakpoints(&id);
+        Self {
+            id,
+            uses_cache_breakpoints,
+        }
+    }
+}
+
+/// Ids of every model on OpenRouter's public model list, in the order OpenRouter returns them.
+pub async fn fetch_model_ids(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<Vec<String>, String> {
+    let body: serde_json::Value = client
+        .get(format!("{}/models", base_url))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?
+        .json()
+        .await
+        .map_err(|err| err.to_string())?;
+    let entries = body["data"]
+        .as_array()
+        .ok_or_else(|| format!("unexpected model list: {}", body))?;
+    entries
+        .iter()
+        .map(|entry| {
+            entry["id"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("model list entry without id: {}", entry))
+        })
+        .collect()
 }
 
 /// Context window size in tokens of `model`, from OpenRouter's public model list.
@@ -59,7 +103,6 @@ pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
     OpenRouterConnection {
         base_url: String::from(OPENROUTER_BASE_URL),
         api_key,
-        uses_cache_breakpoints: model_uses_cache_breakpoints(&model),
         model,
     }
 }

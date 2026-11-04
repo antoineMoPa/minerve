@@ -10,6 +10,8 @@ pub enum UiEvent {
     Transcript(Vec<(String, String)>),
     /// One status line shown above the input. Empty means idle.
     Status(String),
+    /// Result of the OpenRouter model list fetch started by `/model`.
+    ModelList(Result<Vec<String>, String>),
 }
 
 pub type UiSender = Sender<UiEvent>;

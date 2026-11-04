@@ -13,7 +13,15 @@ Minerve is an open source rust-based code assistant.
 
 ## Installation
 
-To set up Minerve, clone the repository and build the project using `make`:
+Install the latest release on macOS (Apple Silicon) or Linux (x64/ARM64) with:
+
+```bash
+curl -fsSL https://github.com/antoineMoPa/minerve/releases/latest/download/install.sh | sh
+```
+
+The installer downloads the release archive, verifies its SHA-256 checksum, and installs `minerve` to `~/.local/bin`. Set `MINERVE_INSTALL_DIR` to change the location or `MINERVE_VERSION=vX.Y.Z` to pin a release.
+
+To build from source instead, clone the repository and build the project using `make`:
 
 ```bash
 git clone git@github.com:antoineMoPa/minerve.git
@@ -35,6 +43,8 @@ Create a `.env` file in your home directory:
 ```
 OPENROUTER_API_KEY=your_openrouter_api_key
 ```
+
+Switch models at runtime with `/model`: type to filter the OpenRouter list, the 4 most recently used models stay on top (saved in `~/.minerve/recent_models.json`).
 
 `MINERVE_MODEL` overrides the default model. Any model id from https://openrouter.ai/models that
 supports tool calling works, for example `MINERVE_MODEL=~anthropic/claude-sonnet-latest`.
