@@ -19,9 +19,9 @@ Install the latest release on macOS (Apple Silicon) or Linux (x64/ARM64) with:
 curl -fsSL https://github.com/antoineMoPa/minerve/releases/latest/download/install.sh | sh
 ```
 
-The installer downloads the release archive, verifies its SHA-256 checksum, and installs `minerve` to `~/.local/bin`. Set `MINERVE_INSTALL_DIR` to change the location or `MINERVE_VERSION=vX.Y.Z` to pin a release.
+## Build from source & hack
 
-To build from source instead, clone the repository and build the project using `make`:
+Clone the repository and build the project using `make`:
 
 ```bash
 git clone git@github.com:antoineMoPa/minerve.git
