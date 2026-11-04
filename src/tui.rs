@@ -4,6 +4,7 @@
 
 use std::io;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -151,6 +152,14 @@ impl App {
 
         if ctrl && key.code == KeyCode::Char('c') {
             self.should_quit = true;
+            return;
+        }
+
+        // Esc stops the running turn; with no turn running it does nothing.
+        if key.code == KeyCode::Esc {
+            if self.minerve.request_in_flight.load(Ordering::SeqCst) {
+                self.minerve.cancel_turn();
+            }
             return;
         }
 
@@ -405,7 +414,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(
-                "Enter send | Alt+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
+                "Enter send | Esc cancel turn | Alt+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
             )
             .style(Style::default().fg(Color::DarkGray)),
             hint_area,

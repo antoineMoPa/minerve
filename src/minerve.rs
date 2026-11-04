@@ -41,8 +41,9 @@ pub async fn post_request_with_token_count(
     Ok(chat_response)
 }
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use tokio::sync::Notify;
 
 use crate::openrouter::OpenRouterConnection;
 use crate::session::{self, SessionFile};
@@ -66,6 +67,10 @@ pub struct Minerve {
     pub model: String,
     pub uses_cache_breakpoints: bool,
     pub request_in_flight: Arc<AtomicBool>,
+    /// Set by `cancel_turn`; checked before each request and tool call of the running turn.
+    pub cancel_requested: Arc<AtomicBool>,
+    /// Wakes a request that is waiting for the API when the turn is cancelled.
+    pub cancel_notify: Arc<Notify>,
     pub token_counter: Arc<TokenCounter>,
 }
 
@@ -134,6 +139,28 @@ fn get_ui_messages(messages: &[ChatCompletionMessage]) -> Vec<(String, String)> 
     ui_messages
 }
 
+/// Consecutive calls to the same tool, as (name, count), in call order.
+fn group_tool_calls(tool_calls: &[ChatCompletionToolCall]) -> Vec<(&str, usize)> {
+    let mut groups: Vec<(&str, usize)> = Vec::new();
+    for tool_call in tool_calls {
+        let name = tool_call.function.name.as_str();
+        match groups.last_mut() {
+            Some((last, count)) if *last == name => *count += 1,
+            _ => groups.push((name, 1)),
+        }
+    }
+    groups
+}
+
+/// One line per run of identical tool calls, e.g. `Handling tool call: read x 3`.
+fn format_tool_call_group(name: &str, count: usize) -> String {
+    if count == 1 {
+        format!("Handling tool call: {}", name)
+    } else {
+        format!("Handling tool call: {} x {}", name, count)
+    }
+}
+
 /// Every tool call of an assistant message needs a tool message answering it,
 /// otherwise OpenRouter rejects the next request.
 /// Returns whether the conversation should continue with another request.
@@ -141,11 +168,21 @@ async fn run_tool_calls(
     tool_calls: &[ChatCompletionToolCall],
     ui: Option<UiSender>,
     is_headless: bool,
+    cancel_requested: &AtomicBool,
     on_tool_message: &mut impl FnMut(ChatCompletionMessage),
     on_error: &mut impl FnMut(String),
 ) -> bool {
     let mut should_continue = true;
     for tool_call in tool_calls {
+        // Cancelled calls are still answered, so the history stays valid for the next prompt.
+        if cancel_requested.load(Ordering::SeqCst) {
+            on_tool_message(ChatCompletionMessage::tool_result(
+                tool_call.id.clone(),
+                String::from("Skipped: the turn was cancelled."),
+            ));
+            should_continue = false;
+            continue;
+        }
         if !should_continue {
             on_tool_message(ChatCompletionMessage::tool_result(
                 tool_call.id.clone(),
@@ -301,17 +338,19 @@ impl Minerve {
                     history.push(assistant_message);
 
                     if let Some(tool_calls) = tool_calls {
-                        for tool_call in &tool_calls {
-                            println!("Handling tool call: {}", tool_call.function.name);
+                        for (name, count) in group_tool_calls(&tool_calls) {
+                            println!("{}", format_tool_call_group(name, count));
                         }
                         should_continue = run_tool_calls(
                             &tool_calls,
                             None,
                             is_headless,
+                            &AtomicBool::new(false),
                             &mut |msg| history.push(msg),
                             &mut |err| eprintln!("{}", err),
                         )
                         .await;
+                        println!("{}", self.token_counter.format_usage_summary());
                     }
                 }
                 Err(req_err) => {
@@ -368,8 +407,17 @@ impl Minerve {
             model: openrouter_connection.model,
             uses_cache_breakpoints: openrouter_connection.uses_cache_breakpoints,
             request_in_flight: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
             token_counter: Arc::new(TokenCounter::new()),
         }
+    }
+
+    /// Asks the running turn to stop. The request in flight is dropped, and tool calls not
+    /// started yet are skipped, so the conversation stays valid for the next prompt.
+    pub fn cancel_turn(&self) {
+        self.cancel_requested.store(true, Ordering::SeqCst);
+        self.cancel_notify.notify_waiters();
     }
 
     /// Writes the conversation to its session file. Failures are ignored: a missing save
@@ -380,9 +428,8 @@ impl Minerve {
     }
 
     pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
-        use std::sync::atomic::Ordering;
-
         self.request_in_flight.store(true, Ordering::SeqCst);
+        self.cancel_requested.store(false, Ordering::SeqCst);
 
         {
             let mut msgs = self.messages.lock().unwrap();
@@ -397,6 +444,7 @@ impl Minerve {
             let self_clone = self.clone();
             async move {
                 let messages = self_clone.messages.clone();
+                let cancel_requested = self_clone.cancel_requested.clone();
                 let mut should_continue = true;
 
                 while should_continue {
@@ -410,17 +458,32 @@ impl Minerve {
                         self_clone.build_request(&msgs)
                     };
 
-                    let chat_result = post_request_with_token_count(
-                        &self_clone.client,
-                        &self_clone.get_completions_url(),
-                        &self_clone.api_key,
-                        request,
-                        self_clone.token_counter.clone(),
-                    )
-                    .await;
+                    // Register for the cancel signal before checking the flag, so a cancel
+                    // arriving in between is not missed.
+                    let cancelled = self_clone.cancel_notify.notified();
+                    tokio::pin!(cancelled);
+                    cancelled.as_mut().enable();
+                    let url = self_clone.get_completions_url();
+                    let chat_result = if cancel_requested.load(Ordering::SeqCst) {
+                        None
+                    } else {
+                        tokio::select! {
+                            result = post_request_with_token_count(
+                                &self_clone.client,
+                                &url,
+                                &self_clone.api_key,
+                                request,
+                                self_clone.token_counter.clone(),
+                            ) => Some(result),
+                            _ = &mut cancelled => None,
+                        }
+                    };
 
                     match chat_result {
-                        Ok(response) => {
+                        // Cancelled: nothing was added, so the conversation ends on the last user
+                        // or tool message and the next prompt can follow.
+                        None => {}
+                        Some(Ok(response)) => {
                             let assistant_message = response
                                 .choices
                                 .into_iter()
@@ -437,6 +500,7 @@ impl Minerve {
                                     &tool_calls,
                                     Some(ui.clone()),
                                     is_headless,
+                                    &cancel_requested,
                                     &mut |msg| messages.lock().unwrap().push(msg),
                                     &mut |err| errors.push(err),
                                 )
@@ -450,7 +514,7 @@ impl Minerve {
 
                             update_chat_ui(&ui, get_ui_messages(&messages.lock().unwrap()));
                         }
-                        Err(req_err) => {
+                        Some(Err(req_err)) => {
                             let error_msg = format!("Request Error: {}", req_err);
                             self_clone.add_assistant_message_with_update_ui(
                                 &messages, error_msg, &ui,
