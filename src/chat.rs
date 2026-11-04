@@ -57,6 +57,41 @@ impl ChatCompletionMessage {
     }
 }
 
+/// Providers reject a tool call that has no tool result right after it. A session can hold such
+/// a call when a turn was cut short, so each missing result gets a placeholder here, sent with
+/// the request only. The saved history is left as it is.
+pub fn with_placeholder_results_for_unanswered_tool_calls(
+    history: &[ChatCompletionMessage],
+) -> Vec<ChatCompletionMessage> {
+    let mut out = Vec::with_capacity(history.len());
+    let mut index = 0;
+    while index < history.len() {
+        let message = &history[index];
+        index += 1;
+        out.push(message.clone());
+        let Some(tool_calls) = &message.tool_calls else {
+            continue;
+        };
+        let mut answered = Vec::new();
+        while index < history.len() && matches!(history[index].role, ChatCompletionMessageRole::Tool) {
+            if let Some(id) = &history[index].tool_call_id {
+                answered.push(id.clone());
+            }
+            out.push(history[index].clone());
+            index += 1;
+        }
+        for call in tool_calls {
+            if !answered.contains(&call.id) {
+                out.push(ChatCompletionMessage::tool_result(
+                    call.id.clone(),
+                    "No result was recorded for this tool call; the turn was interrupted before it finished.".to_string(),
+                ));
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionToolCall {
     pub id: String,

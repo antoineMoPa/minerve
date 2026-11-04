@@ -25,7 +25,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
@@ -96,6 +96,8 @@ struct App {
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
     input_area: Rect,
     input_scroll_row: u16,
+    /// Dimmed hint shown while the message box is empty.
+    pro_tip: String,
     /// Chat as last drawn. Hovering or clicking it gives it focus.
     chat_area: Rect,
     /// True when the chat has focus: Up/Down scroll it and typing gives focus back to the input.
@@ -361,6 +363,7 @@ pub fn run(
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
+        pro_tip: crate::pro_tips::tip_for_launch(),
         chat_area: Rect::default(),
         chat_focused: false,
     };
@@ -1335,7 +1338,12 @@ impl App {
         self.input_scroll_row = scroll_row;
 
         // Rows are pre-wrapped by display width (no Paragraph wrap) so they match the cursor position.
-        let input = Paragraph::new(layout.rows.join("\n"))
+        let text = if self.input.is_empty() {
+            Text::from(Span::styled(self.pro_tip.clone(), Style::default().fg(Color::DarkGray)))
+        } else {
+            Text::from(layout.rows.join("\n"))
+        };
+        let input = Paragraph::new(text)
             .scroll((scroll_row, 0))
             .block(
                 Block::default()

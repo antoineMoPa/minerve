@@ -342,6 +342,7 @@ impl Minerve {
 /// Breakpoints, when the model needs them, go after the system prompt and on the latest
 /// message, like opencode does: the next request reads everything up to there from cache.
 fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoints: bool) -> Vec<RequestMessage> {
+    let history = crate::chat::with_placeholder_results_for_unanswered_tool_calls(history);
     let mut messages: Vec<RequestMessage> =
         history.iter().map(RequestMessage::from_message).collect();
     if uses_cache_breakpoints {

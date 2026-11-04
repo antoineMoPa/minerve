@@ -17,6 +17,7 @@ mod keys_file;
 mod model_lists;
 mod model_picker;
 mod markdown;
+mod pro_tips;
 mod recent_models;
 mod session_picker;
 mod token_counter;
