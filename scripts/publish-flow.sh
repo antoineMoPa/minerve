@@ -1,12 +1,12 @@
 #!/bin/sh
 # Package a built minerve binary into a release archive plus its SHA-256 checksum.
-# Usage: scripts/release/publish-flow.sh <target> <binary> <output-dir>
+# Usage: scripts/publish-flow.sh <target> <binary> <output-dir>
 # Output: <output-dir>/minerve-<target>.tar.gz and <output-dir>/minerve-<target>.tar.gz.sha256
 set -eu
 TARGET=$1
 BINARY=$2
 OUTPUT_DIR=$3
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 test -f "$BINARY" || { echo "Missing executable: $BINARY" >&2; exit 1; }
 test -f "$ROOT/LICENSE" || { echo "Missing LICENSE" >&2; exit 1; }
 if command -v sha256sum >/dev/null; then
