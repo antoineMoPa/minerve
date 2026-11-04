@@ -15,8 +15,8 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::boot::BootAnimation;
@@ -31,6 +31,8 @@ const MAX_OUTPUT_LEN: usize = 500;
 /// Only the last messages are shown, as before the ratatui refactor.
 const VISIBLE_MESSAGES: usize = 10;
 const SCROLL_STEP: usize = 10;
+/// Slash commands offered by the `/` menu: (name, one-line description).
+const SLASH_COMMANDS: &[(&str, &str)] = &[("/about", "describe Minerve")];
 
 struct App {
     minerve: Arc<Minerve>,
@@ -56,6 +58,10 @@ struct App {
     last_yank: Option<YankState>,
     /// Output of `!command` runs, sent to the model with the next message and then cleared.
     pending_command_output: Vec<String>,
+    /// True while the input holds pasted text. Pasted text never opens the slash menu or runs a command.
+    input_pasted: bool,
+    /// Results of local slash commands (e.g. `/about`), shown in the chat until the next message.
+    notices: Vec<String>,
 }
 
 /// Where the last yank landed, so Alt+Y can swap it for the previous kill.
@@ -108,6 +114,8 @@ pub fn run(
         kill_ring: Vec::new(),
         last_yank: None,
         pending_command_output: Vec::new(),
+        input_pasted: false,
+        notices: Vec::new(),
     };
 
     let mut terminal = ratatui::init();
@@ -143,6 +151,10 @@ impl App {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.stop_boot();
                         self.handle_key(key);
+                        // Clearing the input also clears the paste marker.
+                        if self.input.is_empty() {
+                            self.input_pasted = false;
+                        }
                     }
                     Event::Paste(text) => {
                         self.stop_boot();
@@ -160,6 +172,48 @@ impl App {
         for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
             self.insert_char(c);
         }
+        self.input_pasted = true;
+    }
+
+    /// Slash commands whose name starts with the typed input. Empty unless the input is a
+    /// typed (not pasted) single `/word`.
+    fn slash_matches(&self) -> Vec<(&'static str, &'static str)> {
+        if self.input_pasted || !self.input.starts_with('/') || self.input.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        SLASH_COMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(self.input.as_str()))
+            .copied()
+            .collect()
+    }
+
+    /// Tab: completes the input to the first matching slash command.
+    fn complete_slash_command(&mut self) {
+        if let Some((name, _)) = self.slash_matches().first().copied() {
+            self.set_input(name.to_string());
+        }
+    }
+
+    /// Runs a slash command. Returns false if the input is not one.
+    fn run_slash_command(&mut self, name: &str) -> bool {
+        match name {
+            "/about" => {
+                // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
+                let first_line = include_str!("../README.md")
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty() && !line.starts_with('#'))
+                    .unwrap_or_default();
+                self.notices.push(first_line.to_string());
+            }
+            _ => return false,
+        }
+        self.input.clear();
+        self.cursor = 0;
+        self.scroll_up = 0;
+        self.input_pasted = false;
+        true
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
@@ -207,6 +261,7 @@ impl App {
             KeyCode::Char('k') if ctrl => self.kill_input(),
             KeyCode::Char('q') if ctrl => self.should_quit = true,
             KeyCode::Char('o') if ctrl => self.tools_expanded = !self.tools_expanded,
+            KeyCode::Tab => self.complete_slash_command(),
             KeyCode::Char(c) if !ctrl && !alt => self.insert_char(c),
             KeyCode::Backspace => self.delete_before_cursor(),
             KeyCode::Delete => self.delete_at_cursor(),
@@ -232,6 +287,12 @@ impl App {
     fn submit(&mut self) {
         if self.input.trim().is_empty() {
             return;
+        }
+        // A typed `/command` (or the first menu match for a partial one) runs locally.
+        if let Some((name, _)) = self.slash_matches().first().copied() {
+            if self.run_slash_command(name) {
+                return;
+            }
         }
         let content = self.input.clone();
         self.history.add_prompt(content.clone());
@@ -265,11 +326,15 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.scroll_up = 0;
+        self.input_pasted = false;
+        self.notices.clear();
     }
 
     fn set_input(&mut self, text: String) {
         self.cursor = text.chars().count();
         self.input = text;
+        // History and completion text is typed, not pasted.
+        self.input_pasted = false;
     }
 
     fn input_len(&self) -> usize {
@@ -524,6 +589,7 @@ impl App {
         );
 
         self.draw_input(frame, input_area);
+        self.draw_slash_menu(frame, input_area);
 
         frame.render_widget(
             Paragraph::new(
@@ -611,6 +677,18 @@ impl App {
             lines.push(Line::default());
         }
 
+        // Results of local slash commands. Not sent to the model.
+        for notice in &self.notices {
+            lines.push(Line::styled(
+                "Command:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::styled(notice.clone(), Style::default().fg(Color::Gray)));
+            lines.push(Line::default());
+        }
+
         // Shell output queued with `!command`: shown here, sent to the model with the next message.
         for output in &self.pending_command_output {
             lines.push(Line::styled(
@@ -623,6 +701,43 @@ impl App {
             lines.push(Line::default());
         }
         lines
+    }
+
+    /// Popup listing the slash commands that match the input, just above the input box.
+    fn draw_slash_menu(&self, frame: &mut Frame, input_area: Rect) {
+        let matches = self.slash_matches();
+        if matches.is_empty() {
+            return;
+        }
+        let height = (matches.len() as u16 + 2).min(input_area.y);
+        let area = Rect {
+            x: input_area.x,
+            y: input_area.y.saturating_sub(height),
+            width: input_area.width,
+            height,
+        };
+        let lines: Vec<Line> = matches
+            .iter()
+            .map(|(name, description)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:<12}", name),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(description.to_string(), Style::default().fg(Color::Gray)),
+                ])
+            })
+            .collect();
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Commands (Tab complete, Enter run) ")
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+            area,
+        );
     }
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
