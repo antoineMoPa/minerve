@@ -8,6 +8,7 @@ pub fn get_global_runtime() -> &'static Runtime {
     GLOBAL_RUNTIME.get_or_init(|| Runtime::new().unwrap())
 }
 
+mod agents_md;
 mod boot;
 mod chat;
 mod history;

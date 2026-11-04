@@ -24,6 +24,28 @@ fn model_uses_cache_breakpoints(model: &str) -> bool {
         .any(|prefix| model_id.starts_with(prefix))
 }
 
+/// Context window size in tokens of `model`, from OpenRouter's public model list.
+/// Returns None if the list cannot be fetched or does not contain the model.
+pub async fn fetch_context_window(
+    client: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+) -> Option<usize> {
+    let body: serde_json::Value = client
+        .get(format!("{}/models", base_url))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let entry = body["data"]
+        .as_array()?
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some(model))?;
+    entry["context_length"].as_u64().map(|tokens| tokens as usize)
+}
+
 /// Reads OPENROUTER_API_KEY (required) and MINERVE_MODEL (default: ~anthropic/claude-haiku-latest).
 pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
     let api_key = env::var(API_KEY_ENV_VAR).unwrap_or_else(|_| {

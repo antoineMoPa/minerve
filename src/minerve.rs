@@ -33,6 +33,7 @@ pub async fn post_request_with_token_count(
         token_counter.increment_prompt(usage.prompt_tokens as usize);
         token_counter.increment_completion(usage.completion_tokens as usize);
         token_counter.increment_cost_usd(usage.cost);
+        token_counter.set_last_prompt_tokens(usage.prompt_tokens as usize);
         if let Some(details) = &usage.prompt_tokens_details {
             token_counter.increment_cached_prompt(details.cached_tokens as usize);
         }
@@ -390,10 +391,12 @@ impl Minerve {
             Some(file) => (file.id, file.messages),
             None => {
                 let mut messages = vec![ChatCompletionMessage::system(get_system_prompt())];
+                // AGENTS.md files come after the default prompt and before the --system-prompt ones.
                 messages.extend(
-                    extra_system_prompts
-                        .iter()
-                        .map(|prompt| ChatCompletionMessage::system(prompt.clone())),
+                    crate::agents_md::load_agents_md()
+                        .into_iter()
+                        .chain(extra_system_prompts.iter().cloned())
+                        .map(ChatCompletionMessage::system),
                 );
                 (uuid::Uuid::new_v4().to_string(), messages)
             }
@@ -411,6 +414,22 @@ impl Minerve {
             cancel_notify: Arc::new(Notify::new()),
             token_counter: Arc::new(TokenCounter::new()),
         }
+    }
+
+    /// Looks up the context window of the model in the background, so the status bar can show a percent.
+    pub fn fetch_context_window_in_background(self: &Arc<Self>) {
+        let minerve = Arc::clone(self);
+        crate::get_global_runtime().spawn(async move {
+            if let Some(tokens) = crate::openrouter::fetch_context_window(
+                &minerve.client,
+                &minerve.base_url,
+                &minerve.model,
+            )
+            .await
+            {
+                minerve.token_counter.set_context_window(tokens);
+            }
+        });
     }
 
     /// Asks the running turn to stop. The request in flight is dropped, and tool calls not

@@ -54,6 +54,8 @@ struct App {
     kill_ring: Vec<String>,
     /// Set right after a yank so that Alt+Y can replace the yanked text with an older kill.
     last_yank: Option<YankState>,
+    /// Output of `!command` runs, sent to the model with the next message and then cleared.
+    pending_command_output: Vec<String>,
 }
 
 /// Where the last yank landed, so Alt+Y can swap it for the previous kill.
@@ -88,6 +90,7 @@ pub fn run(
         resume,
         extra_system_prompts,
     ));
+    minerve.fetch_context_window_in_background();
     let transcript = minerve.ui_messages();
     let mut app = App {
         minerve,
@@ -104,6 +107,7 @@ pub fn run(
         boot,
         kill_ring: Vec::new(),
         last_yank: None,
+        pending_command_output: Vec::new(),
     };
 
     let mut terminal = ratatui::init();
@@ -230,8 +234,30 @@ impl App {
             return;
         }
         let content = self.input.clone();
-
         self.history.add_prompt(content.clone());
+
+        // `!command` runs locally and is only kept for the next message; it is not sent yet.
+        if let Some(command) = content.trim().strip_prefix('!') {
+            let command = command.trim();
+            if !command.is_empty() {
+                let output = crate::tools::run_shell_command_tool::RunShellCommandTool::execute_command(command, None);
+                self.pending_command_output
+                    .push(format!("```\n$ {}\n{}\n```", command, output.trim_end()));
+                self.input.clear();
+                self.cursor = 0;
+                self.scroll_up = 0;
+                self.status = format!("queued output of `{}` for the next message", command);
+            }
+            return;
+        }
+
+        let content = if self.pending_command_output.is_empty() {
+            content
+        } else {
+            let context = self.pending_command_output.join("\n\n");
+            self.pending_command_output.clear();
+            format!("Output of commands I ran in the shell:\n```\n{}\n```\n\n{}", context, content)
+        };
         self.minerve
             .clone()
             .chat_with_arc(content, self.ui_tx.clone(), false);
@@ -582,6 +608,18 @@ impl App {
                 content.clone()
             };
             lines.extend(crate::markdown::render(&text));
+            lines.push(Line::default());
+        }
+
+        // Shell output queued with `!command`: shown here, sent to the model with the next message.
+        for output in &self.pending_command_output {
+            lines.push(Line::styled(
+                "Shell (queued, sent with your next message):",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            lines.extend(crate::markdown::render(output));
             lines.push(Line::default());
         }
         lines
