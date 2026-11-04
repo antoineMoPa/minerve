@@ -129,20 +129,48 @@ def gh(*args, capture=False):
     return run("gh", *args, "--repo", REPO, capture=capture)
 
 
+def ensure_workflow_on_default_branch():
+    # GitHub only accepts workflow_dispatch for a workflow file on the default branch.
+    try:
+        gh("workflow", "view", "native-release.yml", capture=True)
+    except subprocess.CalledProcessError:
+        raise ValueError("native-release.yml is not on the repository's default branch; push it first") from None
+
+
+def release_draft_state(tag):
+    """Return True for a draft release, False for a published one, None if no release exists."""
+    releases = json.loads(gh("release", "list", "--json", "tagName,isDraft", "--limit", "200", capture=True))
+    for release in releases:
+        if release["tagName"] == tag:
+            return release["isDraft"]
+    return None
+
+
+def create_draft(tag, new_version):
+    gh("release", "create", tag, "--verify-tag", "--draft", "--title", tag,
+       "--notes", f"Minerve {new_version}: native macOS Apple Silicon, Linux x64/ARM64 builds.")
+
+
 def publish(resume):
     target = host_target()
     if run("git", "status", "--porcelain", capture=True):
         raise ValueError("commit your work first; publishing requires a clean worktree")
     run("gh", "auth", "status")
+    ensure_workflow_on_default_branch()
     if resume:
         new_version = version()
         tag = f"v{new_version}"
         check_tag(tag)
         if run("git", "rev-parse", f"{tag}^{{commit}}", capture=True) != run("git", "rev-parse", "HEAD", capture=True):
             raise ValueError("resume from the release tag's exact commit")
-        release = json.loads(gh("release", "view", tag, "--json", "isDraft", capture=True))
-        if not release["isDraft"]:
-            raise ValueError("resume requires an existing draft release")
+        if not run("git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}", capture=True):
+            raise ValueError(f"tag {tag} is not pushed; run: git push origin {tag}")
+        is_draft = release_draft_state(tag)
+        if is_draft is None:
+            # The tag was pushed but the draft was never created (e.g. gh failed).
+            create_draft(tag, new_version)
+        elif not is_draft:
+            raise ValueError("release is already published; resume only works on a draft")
     else:
         new_version = next_release_version()
         tag = f"v{new_version}"
@@ -158,16 +186,20 @@ def publish(resume):
         block, count = re.subn(r'^version\s*=\s*"[^\"]+"', f'version = "{new_version}"', text[start:end], count=1, flags=re.M)
         if count != 1:
             raise ValueError("could not update package version")
-        manifest.write_text(text[:start] + block + text[end:])
-        run("cargo", "update", "--workspace", "--offline", env=build_env())
-        # Finish the local build before creating any commit/tag/release.
-        build(tag, target)
+        try:
+            manifest.write_text(text[:start] + block + text[end:])
+            run("cargo", "update", "--workspace", "--offline", env=build_env())
+            # Finish the local build before creating any commit/tag/release.
+            build(tag, target)
+        except BaseException:
+            # The worktree was verified clean above, so restoring these two files loses nothing.
+            run("git", "checkout", "--", "Cargo.toml", "Cargo.lock")
+            raise
         run("git", "add", "Cargo.toml", "Cargo.lock")
         run("git", "commit", "-m", f"chore(release): {tag}")
         run("git", "tag", "-a", tag, "-m", tag)
         run("git", "push", "--atomic", "origin", "HEAD", f"refs/tags/{tag}")
-        gh("release", "create", tag, "--verify-tag", "--draft", "--title", tag,
-           "--notes", f"Minerve {new_version}: native macOS Apple Silicon, Linux x64/ARM64 builds.")
+        create_draft(tag, new_version)
     if resume:
         build(tag, target)
     archive = ROOT / "target" / "release-artifacts" / tag / archive_name(target)
@@ -190,7 +222,7 @@ def publish(resume):
             break
         time.sleep(2)
     if not run_id:
-        raise ValueError("workflow did not appear; draft remains unpublished")
+        raise ValueError("workflow did not appear; the draft release stays unpublished")
     gh("run", "watch", run_id, "--exit-status")
     # Download into an empty directory so stale local files cannot mask missing uploads.
     output = ROOT / "target" / "release-artifacts" / tag / "downloaded"
@@ -230,4 +262,4 @@ if __name__ == "__main__":
     try:
         main()
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        sys.exit(f"Release stopped: {error}\nAny draft remains unpublished. See docs/releases.md for recovery.")
+        sys.exit(f"Release stopped: {error}\nNothing is published. If the tag was already pushed, fix the cause and run scripts/publishFlow.sh --resume from the tag's commit.")

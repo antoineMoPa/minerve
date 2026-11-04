@@ -42,6 +42,11 @@ impl RecentModels {
         &self.ids
     }
 
+    /// The model picked last with `/model`, if any was saved.
+    pub fn last_picked(&self) -> Option<&str> {
+        self.ids.first().map(String::as_str)
+    }
+
     /// Moves `model_id` to the front, dropping the oldest entry when the list is full, and saves.
     pub fn mark_used(&mut self, model_id: &str) {
         self.move_to_front(model_id);

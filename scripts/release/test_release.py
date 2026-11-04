@@ -66,11 +66,13 @@ class ReleaseTests(unittest.TestCase):
         def fake_run(*args, **kwargs):
             if args[:2] == ("git", "rev-parse"):
                 return "same-commit"
+            if args[:2] == ("git", "ls-remote"):
+                return "abc123\trefs/tags/v0.1.0"
             return ""
         def fake_gh(*args, **kwargs):
             calls.append(args)
-            if args[:2] == ("release", "view"):
-                return '{"isDraft": true}'
+            if args[:2] == ("release", "list"):
+                return '[{"tagName": "v0.1.0", "isDraft": true}]'
             if args[:2] == ("run", "list"):
                 return "[]" if sum(c[:2] == ("run", "list") for c in calls) == 1 else '[{"databaseId": 123}]'
             if args[:2] == ("release", "download"):
@@ -88,6 +90,66 @@ class ReleaseTests(unittest.TestCase):
                 release.publish(resume=True)
         self.assertTrue(any(c[:2] == ("workflow", "run") and f"local_target={release.TARGETS[0]}" in c for c in calls))
         self.assertFalse(any(c[:2] == ("release", "edit") for c in calls))
+
+    def resume_calls(self, releases_json, remote_tag):
+        calls = []
+        def fake_run(*args, **kwargs):
+            if args[:2] == ("git", "rev-parse"):
+                return "same-commit"
+            if args[:2] == ("git", "ls-remote"):
+                return remote_tag
+            return ""
+        def fake_gh(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("release", "list"):
+                return releases_json
+            if args[:2] == ("release", "upload"):
+                raise RuntimeError("stop after the draft step")
+            return ""
+        with patch.object(release, "run", side_effect=fake_run), \
+             patch.object(release, "gh", side_effect=fake_gh), \
+             patch.object(release, "host_target", return_value=release.TARGETS[0]), \
+             patch.object(release, "build"):
+            with self.assertRaises((ValueError, RuntimeError)) as caught:
+                release.publish(resume=True)
+        return calls, caught.exception
+
+    def test_resume_creates_missing_draft_when_tag_was_pushed(self):
+        calls, _ = self.resume_calls("[]", "abc123\trefs/tags/v0.1.0")
+        self.assertTrue(any(c[:2] == ("release", "create") and "--draft" in c for c in calls))
+
+    def test_resume_reuses_existing_draft(self):
+        calls, error = self.resume_calls('[{"tagName": "v0.1.0", "isDraft": true}]', "abc123\trefs/tags/v0.1.0")
+        self.assertIn("stop after the draft step", str(error))
+        self.assertFalse(any(c[:2] == ("release", "create") for c in calls))
+
+    def test_resume_refuses_published_release(self):
+        calls, error = self.resume_calls('[{"tagName": "v0.1.0", "isDraft": false}]', "abc123\trefs/tags/v0.1.0")
+        self.assertIn("already published", str(error))
+        self.assertFalse(any(c[:2] in (("release", "create"), ("release", "edit")) for c in calls))
+
+    def test_resume_refuses_tag_that_was_never_pushed(self):
+        calls, error = self.resume_calls("[]", "")
+        self.assertIn("not pushed", str(error))
+        self.assertFalse(any(c[:2] == ("release", "create") for c in calls))
+
+    def test_failed_local_build_restores_version_files(self):
+        # The version bump looks for the section after [package], as in a real Cargo.toml.
+        (self.root / "Cargo.toml").write_text('[package]\nname = "minerve"\nversion = "0.1.0"\n\n[dependencies]\n')
+        commands = []
+        def fake_run(*args, **kwargs):
+            commands.append(args)
+            return ""
+        with patch.object(release, "run", side_effect=fake_run), \
+             patch.object(release, "gh", return_value=""), \
+             patch.object(release, "host_target", return_value=release.TARGETS[0]), \
+             patch.object(release, "build", side_effect=ValueError("compile failed")):
+            with self.assertRaisesRegex(ValueError, "compile failed"):
+                release.publish(resume=False)
+        self.assertIn(("git", "checkout", "--", "Cargo.toml", "Cargo.lock"), commands)
+        creating = [c for c in commands if c[:2] == ("git", "commit") or c[:3] == ("git", "tag", "-a")
+                    or (c[:2] == ("git", "push") and "--dry-run" not in c)]
+        self.assertEqual(creating, [])
 
     def test_missing_platform_prevents_publication(self):
         (self.output / release.archive_name(release.TARGETS[-1])).unlink()

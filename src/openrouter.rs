@@ -1,5 +1,7 @@
 use std::env;
 
+use crate::recent_models::RecentModels;
+
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const API_KEY_ENV_VAR: &str = "OPENROUTER_API_KEY";
 const MODEL_ENV_VAR: &str = "MINERVE_MODEL";
@@ -90,7 +92,8 @@ pub async fn fetch_context_window(
     entry["context_length"].as_u64().map(|tokens| tokens as usize)
 }
 
-/// Reads OPENROUTER_API_KEY (required) and MINERVE_MODEL (default: ~anthropic/claude-haiku-latest).
+/// Reads OPENROUTER_API_KEY (required). The model is MINERVE_MODEL if set,
+/// otherwise the model last picked with `/model`, otherwise ~anthropic/claude-haiku-latest.
 pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
     let api_key = env::var(API_KEY_ENV_VAR).unwrap_or_else(|_| {
         panic!(
@@ -98,7 +101,10 @@ pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
             API_KEY_ENV_VAR
         )
     });
-    let model = env::var(MODEL_ENV_VAR).unwrap_or_else(|_| String::from(DEFAULT_MODEL));
+    let model = env::var(MODEL_ENV_VAR)
+        .ok()
+        .or_else(|| RecentModels::load().last_picked().map(str::to_string))
+        .unwrap_or_else(|| String::from(DEFAULT_MODEL));
 
     OpenRouterConnection {
         base_url: String::from(OPENROUTER_BASE_URL),
