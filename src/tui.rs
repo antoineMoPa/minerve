@@ -58,6 +58,12 @@ pub fn run(
     extra_system_prompts: &[String],
 ) -> io::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel();
+    // The boot clip is for fresh sessions only; resuming one goes straight to the chat.
+    let boot = if resume.is_none() {
+        BootAnimation::start()
+    } else {
+        None
+    };
     let minerve = Arc::new(Minerve::new(
         openrouter_connection,
         resume,
@@ -76,7 +82,7 @@ pub fn run(
         scroll_up: 0,
         tools_expanded: false,
         should_quit: false,
-        boot: BootAnimation::start(),
+        boot,
     };
 
     let mut terminal = ratatui::init();
@@ -487,7 +493,6 @@ impl App {
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
         let title = " Message ";
-        let text = self.input.clone();
         let border_color = Color::Cyan;
 
         // Inside the borders. Approximate: wraps by char count, like a monospace terminal.
@@ -497,8 +502,9 @@ impl App {
         // Keep the cursor row visible once the wrapped input is taller than the box.
         let scroll_row = row.saturating_add(1).saturating_sub(inner_height);
 
+        // Wrap by char count ourselves (no word wrap) so the rendered rows match `cursor_offset`.
+        let text = self.wrap_input(inner_width);
         let input = Paragraph::new(text)
-            .wrap(Wrap { trim: false })
             .scroll((scroll_row, 0))
             .block(
                 Block::default()
@@ -509,6 +515,27 @@ impl App {
         frame.render_widget(input, area);
 
         frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
+    }
+
+    /// The input with a newline inserted wherever it wraps at `width`, matching `cursor_offset`.
+    fn wrap_input(&self, width: u16) -> String {
+        let width = width.max(1) as usize;
+        let mut wrapped = String::with_capacity(self.input.len() + 8);
+        let mut col = 0usize;
+        for c in self.input.chars() {
+            if c == '\n' {
+                wrapped.push('\n');
+                col = 0;
+            } else {
+                wrapped.push(c);
+                col += 1;
+                if col == width {
+                    wrapped.push('\n');
+                    col = 0;
+                }
+            }
+        }
+        wrapped
     }
 
     /// (column, row) of the char at `cursor` within the input text wrapped at `width`.
