@@ -12,9 +12,11 @@ mod agents_md;
 mod boot;
 mod chat;
 mod history;
+mod input_layout;
 mod markdown;
 mod token_counter;
 mod tools;
+mod tetris;
 mod tui;
 mod ui;
 

@@ -6,10 +6,13 @@ use std::io;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::input_layout::layout_input;
 
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
     KeyModifiers,
 };
 use ratatui::crossterm::execute;
@@ -24,6 +27,7 @@ use crate::history::HistoryTracker;
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
 use crate::session::SessionFile;
+use crate::tetris::Tetris;
 use crate::ui::{UiEvent, UiSender};
 
 /// Tool results longer than this are cut short in the chat view (the model still gets them all).
@@ -31,8 +35,14 @@ const MAX_OUTPUT_LEN: usize = 500;
 /// Only the last messages are shown, as before the ratatui refactor.
 const VISIBLE_MESSAGES: usize = 10;
 const SCROLL_STEP: usize = 10;
+/// Chat lines scrolled per mouse wheel notch.
+const WHEEL_STEP: usize = 3;
 /// Slash commands offered by the `/` menu: (name, one-line description).
-const SLASH_COMMANDS: &[(&str, &str)] = &[("/about", "describe Minerve")];
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/about", "describe Minerve"),
+    ("/matrix", "falling letters; any key to leave"),
+    ("/tetris", "play a mini Tetris; esc to leave"),
+];
 
 struct App {
     minerve: Arc<Minerve>,
@@ -62,6 +72,13 @@ struct App {
     input_pasted: bool,
     /// Results of local slash commands (e.g. `/about`), shown in the chat until the next message.
     notices: Vec<String>,
+    /// Falling-letter screen from `/matrix`. While set it replaces the whole UI; any key or paste ends it.
+    matrix: Option<MatrixRain>,
+    /// Tetris game from `/tetris`. While set it replaces the whole UI; Esc or q leaves it.
+    tetris: Option<Tetris>,
+    /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
+    input_area: Rect,
+    input_scroll_row: u16,
 }
 
 /// Where the last yank landed, so Alt+Y can swap it for the previous kill.
@@ -78,6 +95,196 @@ struct YankState {
 /// Maximum number of killed texts kept for yanking.
 const KILL_RING_MAX: usize = 60;
 
+/// Characters the falling streams are made of (same set as the Emacs `matrix-mode` it follows).
+const MATRIX_GLYPHS: &str = "123456789abcdefghijklmnopqrstuvwxyzαβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
+
+/// Xorshift64 step, returning a float in [0, 1). Good enough for falling letters; avoids a crate.
+fn next_unit(state: &mut u64) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    (*state >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// One falling column of letters.
+#[derive(Clone, Copy)]
+struct MatrixStream {
+    /// Row of the leading (brightest) letter. Negative while the stream is still above the screen.
+    head: f32,
+    /// Rows per second.
+    speed: f32,
+    /// Trail length in rows, head included.
+    length: u16,
+}
+
+impl MatrixStream {
+    /// A new stream. `scattered` streams start somewhere on screen; the others start above it,
+    /// so the screen fills in gradually.
+    fn random(rng: &mut u64, height: u16, scattered: bool) -> Self {
+        let height = height.max(1) as f32;
+        let head = if scattered {
+            next_unit(rng) * height
+        } else {
+            -next_unit(rng) * height
+        };
+        Self {
+            head,
+            speed: 8.0 + next_unit(rng) * 20.0,
+            length: 4 + (next_unit(rng) * height * 0.6) as u16,
+        }
+    }
+}
+
+/// Length of the fade-in when `/matrix` starts and the fade-out when it is stopped.
+const MATRIX_FADE: Duration = Duration::from_millis(500);
+
+/// Where the `/matrix` screen is in its life cycle.
+#[derive(Clone, Copy, PartialEq)]
+enum MatrixPhase {
+    /// Letters start falling from the top edge while the screen brightens.
+    FadingIn,
+    /// Full rain.
+    Running,
+    /// No new streams spawn; the existing ones fall off the bottom while the screen dims.
+    FadingOut,
+}
+
+/// State of the `/matrix` screen: one stream per column, advanced in real time.
+struct MatrixRain {
+    width: u16,
+    height: u16,
+    streams: Vec<MatrixStream>,
+    glyphs: Vec<char>,
+    rng: u64,
+    last_tick: Instant,
+    phase: MatrixPhase,
+    phase_started: Instant,
+    /// Brightness when `stop` was called, so a stop during the fade-in continues from there.
+    stop_level: f32,
+}
+
+impl MatrixRain {
+    fn new(width: u16, height: u16) -> Self {
+        let rng = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1)
+            | 1;
+        let mut rain = Self {
+            width: 0,
+            height: 0,
+            streams: Vec::new(),
+            glyphs: MATRIX_GLYPHS.chars().collect(),
+            rng,
+            last_tick: Instant::now(),
+            phase: MatrixPhase::FadingIn,
+            phase_started: Instant::now(),
+            stop_level: 1.0,
+        };
+        rain.resize(width, height);
+        rain
+    }
+
+    /// Rebuilds the streams for a new size. Every stream starts above the top edge, so the
+    /// letters fall in from the top.
+    fn resize(&mut self, width: u16, height: u16) {
+        self.width = width;
+        self.height = height;
+        self.streams = (0..width)
+            .map(|_| MatrixStream::random(&mut self.rng, height, false))
+            .collect();
+    }
+
+    /// Starts the fade-out. Ignored once it has begun.
+    fn stop(&mut self) {
+        if self.phase != MatrixPhase::FadingOut {
+            self.stop_level = self.level();
+            self.phase = MatrixPhase::FadingOut;
+            self.phase_started = Instant::now();
+        }
+    }
+
+    /// Brightness in [0, 1] that scales every colour.
+    fn level(&self) -> f32 {
+        let t = (self.phase_started.elapsed().as_secs_f32() / MATRIX_FADE.as_secs_f32()).min(1.0);
+        match self.phase {
+            MatrixPhase::FadingIn => t,
+            MatrixPhase::Running => 1.0,
+            MatrixPhase::FadingOut => self.stop_level * (1.0 - t),
+        }
+    }
+
+    /// Moves the phase on when its fade has finished.
+    fn update_phase(&mut self) {
+        if self.phase == MatrixPhase::FadingIn && self.phase_started.elapsed() >= MATRIX_FADE {
+            self.phase = MatrixPhase::Running;
+        }
+    }
+
+    /// Moves every stream down by the time since the last draw. A stream that has left the
+    /// bottom starts again above the top, unless the screen is fading out.
+    fn advance(&mut self) {
+        let now = Instant::now();
+        // Capped so a long pause (e.g. a suspended terminal) does not jump the streams.
+        let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.2);
+        self.last_tick = now;
+        let height = self.height as f32;
+        let stopping = self.phase == MatrixPhase::FadingOut;
+        for stream in &mut self.streams {
+            stream.head += stream.speed * dt;
+            if stream.head - stream.length as f32 > height {
+                if stopping {
+                    // Length 0 draws nothing, so the stream is gone for good.
+                    stream.length = 0;
+                } else {
+                    *stream = MatrixStream::random(&mut self.rng, self.height, false);
+                }
+            }
+        }
+    }
+
+    /// Paints the rain over `area`. Returns false once the fade-out is over and the normal
+    /// UI should come back.
+    fn draw(&mut self, frame: &mut Frame, area: Rect) -> bool {
+        self.update_phase();
+        if self.phase == MatrixPhase::FadingOut && self.level() <= 0.0 {
+            return false;
+        }
+        if self.width != area.width || self.height != area.height {
+            self.resize(area.width, area.height);
+        }
+        self.advance();
+
+        let level = self.level();
+        let scale = |value: f32| (value * level) as u8;
+        let buf = frame.buffer_mut();
+        for (col, stream) in self.streams.iter().enumerate() {
+            let x = area.x + col as u16;
+            for row in 0..area.height {
+                // Rows above the leading letter; the trail is the first `length` of them.
+                let distance = stream.head.floor() - row as f32;
+                let lit = distance >= 0.0 && distance < stream.length as f32;
+                let cell = &mut buf[(x, area.y + row)];
+                cell.set_bg(Color::Black);
+                if !lit {
+                    cell.set_char(' ');
+                    continue;
+                }
+                // Letters flicker: each drawn cell picks a new glyph.
+                let index = (next_unit(&mut self.rng) * self.glyphs.len() as f32) as usize;
+                let color = if distance < 1.0 {
+                    let white = scale(255.0);
+                    Color::Rgb(white, white, white)
+                } else {
+                    let fade = 1.0 - distance / stream.length as f32;
+                    Color::Rgb(0, scale(60.0 + 195.0 * fade), 0)
+                };
+                cell.set_char(self.glyphs[index % self.glyphs.len()]).set_fg(color);
+            }
+        }
+        true
+    }
+}
 /// Runs the interactive UI until the user quits.
 pub fn run(
     openrouter_connection: OpenRouterConnection,
@@ -116,15 +323,22 @@ pub fn run(
         pending_command_output: Vec::new(),
         input_pasted: false,
         notices: Vec::new(),
+        matrix: None,
+        tetris: None,
+        input_area: Rect::default(),
+        input_scroll_row: 0,
     };
 
     let mut terminal = ratatui::init();
     // Pasted text arrives as one `Event::Paste` instead of many key presses,
     // so newlines in a paste do not submit the prompt.
     let _ = execute!(io::stdout(), EnableBracketedPaste);
+    // Clicks move the cursor in the input box and the wheel scrolls the chat.
+    // Terminals then select text only with a modifier held (Shift in most, Option in iTerm2).
+    let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = app.run_loop(&mut terminal);
     // Restore even when the loop failed, so the shell is usable again.
-    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     // Printed after the restore so it lands on the normal screen, not the alternate one.
     println!("{}", app.minerve.session_id);
@@ -138,17 +352,37 @@ impl App {
                 self.handle_ui_event(event);
             }
 
+            if let Some(game) = self.tetris.as_mut() {
+                game.update(Instant::now());
+            }
+
             terminal.draw(|frame| self.draw(frame))?;
 
             // While the boot clip plays, wake up at the next frame boundary.
             let timeout = match &self.boot {
                 Some(boot) => boot.time_to_next_frame().min(Duration::from_millis(50)),
+                // The rain moves every frame, so it redraws about 30 times a second.
+                None if self.matrix.is_some() => Duration::from_millis(33),
                 None => Duration::from_millis(50),
             };
             if event::poll(timeout)? {
                 match event::read()? {
                     // Windows also reports key releases; only presses count.
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        // Any key starts the fade-out and is not typed into the prompt. Ctrl+C still quits.
+                        let quit_key = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+                        if !quit_key && self.matrix.is_some() {
+                            self.stop_matrix();
+                            continue;
+                        }
+                        if !quit_key {
+                            if let Some(game) = self.tetris.as_mut() {
+                                if !game.handle_key(key.code) {
+                                    self.tetris = None;
+                                }
+                                continue;
+                            }
+                        }
                         self.stop_boot();
                         self.handle_key(key);
                         // Clearing the input also clears the paste marker.
@@ -157,14 +391,45 @@ impl App {
                         }
                     }
                     Event::Paste(text) => {
+                        if self.tetris.is_some() {
+                            continue;
+                        }
+                        if self.matrix.is_some() {
+                            self.stop_matrix();
+                            continue;
+                        }
                         self.stop_boot();
                         self.handle_paste(&text);
                     }
+                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() => self.handle_mouse(mouse),
                     _ => {}
                 }
             }
         }
         Ok(())
+    }
+
+    /// Left click inside the input box moves the cursor there; the wheel scrolls the chat.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Inside the borders only.
+                let area = self.input_area;
+                let inside_x = mouse.column > area.x && mouse.column < area.right().saturating_sub(1);
+                let inside_y = mouse.row > area.y && mouse.row < area.bottom().saturating_sub(1);
+                if !(inside_x && inside_y) {
+                    return;
+                }
+                let layout = layout_input(&self.input, area.width.saturating_sub(2));
+                let col = mouse.column - area.x - 1;
+                let row = mouse.row - area.y - 1 + self.input_scroll_row;
+                self.cursor = layout.cursor_at_cell(col, row);
+                self.last_yank = None;
+            }
+            MouseEventKind::ScrollUp => self.scroll_up = self.scroll_up.saturating_add(WHEEL_STEP),
+            MouseEventKind::ScrollDown => self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP),
+            _ => {}
+        }
     }
 
     /// Inserts pasted text at the cursor without submitting, keeping its newlines.
@@ -198,6 +463,8 @@ impl App {
     /// Runs a slash command. Returns false if the input is not one.
     fn run_slash_command(&mut self, name: &str) -> bool {
         match name {
+            "/matrix" => self.matrix = Some(MatrixRain::new(0, 0)),
+            "/tetris" => self.tetris = Some(Tetris::new()),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
                 let first_line = include_str!("../README.md")
@@ -438,6 +705,13 @@ impl App {
         self.boot = None;
     }
 
+    /// Starts the `/matrix` fade-out. The screen returns to the chat once it has dimmed.
+    fn stop_matrix(&mut self) {
+        if let Some(matrix) = self.matrix.as_mut() {
+            matrix.stop();
+        }
+    }
+
     /// Draws the boot overlay in `area`: a dotted ring around the centered video, and the
     /// current video frame. Only non-blank video characters are written, so the rest of the UI
     /// shows through the transparent background. Once the ring has eroded away, drops the boot
@@ -561,10 +835,24 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        if let Some(game) = self.tetris.as_ref() {
+            game.draw(frame, frame.area());
+            return;
+        }
+
+        // The rain replaces the whole UI until a key or paste ends it.
+        if let Some(matrix) = self.matrix.as_mut() {
+            if matrix.draw(frame, frame.area()) {
+                return;
+            }
+            // The fade-out finished: fall through to the normal UI.
+            self.matrix = None;
+        }
+
         // Input grows with its wrapped text: 1 line minimum, at most 8 lines of text.
         let inner_width = frame.area().width.saturating_sub(2);
-        let (_, last_row) = self.cursor_offset(self.input_len(), inner_width);
-        let input_height = (last_row as u16 + 3).clamp(3, 10);
+        let row_count = layout_input(&self.input, inner_width).rows.len() as u16;
+        let input_height = (row_count + 2).clamp(3, 10);
 
         let [chat_area, token_area, status_area, input_area, hint_area] = Layout::vertical([
             Constraint::Min(3),
@@ -740,20 +1028,22 @@ impl App {
         );
     }
 
-    fn draw_input(&self, frame: &mut Frame, area: Rect) {
+    fn draw_input(&mut self, frame: &mut Frame, area: Rect) {
         let title = " Message ";
         let border_color = Color::Cyan;
 
-        // Inside the borders. Approximate: wraps by char count, like a monospace terminal.
+        // Inside the borders.
         let inner_width = area.width.saturating_sub(2);
         let inner_height = area.height.saturating_sub(2);
-        let (col, row) = self.cursor_offset(self.cursor, inner_width);
+        let layout = layout_input(&self.input, inner_width);
+        let (col, row) = layout.cursor_cell(self.cursor);
         // Keep the cursor row visible once the wrapped input is taller than the box.
         let scroll_row = row.saturating_add(1).saturating_sub(inner_height);
+        self.input_area = area;
+        self.input_scroll_row = scroll_row;
 
-        // Wrap by char count ourselves (no word wrap) so the rendered rows match `cursor_offset`.
-        let text = self.wrap_input(inner_width);
-        let input = Paragraph::new(text)
+        // Rows are pre-wrapped by display width (no Paragraph wrap) so they match the cursor position.
+        let input = Paragraph::new(layout.rows.join("\n"))
             .scroll((scroll_row, 0))
             .block(
                 Block::default()
@@ -764,45 +1054,5 @@ impl App {
         frame.render_widget(input, area);
 
         frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
-    }
-
-    /// The input with a newline inserted wherever it wraps at `width`, matching `cursor_offset`.
-    fn wrap_input(&self, width: u16) -> String {
-        let width = width.max(1) as usize;
-        let mut wrapped = String::with_capacity(self.input.len() + 8);
-        let mut col = 0usize;
-        for c in self.input.chars() {
-            if c == '\n' {
-                wrapped.push('\n');
-                col = 0;
-            } else {
-                wrapped.push(c);
-                col += 1;
-                if col == width {
-                    wrapped.push('\n');
-                    col = 0;
-                }
-            }
-        }
-        wrapped
-    }
-
-    /// (column, row) of the char at `cursor` within the input text wrapped at `width`.
-    fn cursor_offset(&self, cursor: usize, width: u16) -> (u16, u16) {
-        let width = width.max(1) as usize;
-        let (mut row, mut col) = (0usize, 0usize);
-        for c in self.input.chars().take(cursor) {
-            if c == '\n' {
-                row += 1;
-                col = 0;
-            } else {
-                col += 1;
-                if col == width {
-                    row += 1;
-                    col = 0;
-                }
-            }
-        }
-        (col.min(u16::MAX as usize) as u16, row.min(u16::MAX as usize) as u16)
     }
 }
