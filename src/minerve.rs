@@ -1,6 +1,7 @@
 use crate::token_counter::TokenCounter;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Sends `request` to the API of `provider` and records its usage in `token_counter`.
@@ -174,7 +175,11 @@ fn get_ui_messages(messages: &[ChatCompletionMessage]) -> Vec<(String, String)> 
                     .clone()
             }
         };
-        ui_messages.push((role_label, content.clone()));
+        let mut text = content.clone();
+        for image in &msg.images {
+            text.push_str(&format!("\n[image: {}]", image.display()));
+        }
+        ui_messages.push((role_label, text));
     }
     ui_messages
 }
@@ -289,28 +294,35 @@ pub async fn handle_tool_call(
                 _ => HashMap::new(),
             };
 
-        let result = tool.run(args, settings).await;
+        let (result, images) = tool.run_with_images(args, settings).await;
 
         if let Some(ui) = &ui {
             send_status(ui, format!("Reading tool result: {}", tool_name));
         }
 
-        ToolCallResult::Success(ChatCompletionMessage::tool_result(
-            tool_call.id.clone(),
-            result,
-        ))
+        ToolCallResult::Success(ChatCompletionMessage {
+            images,
+            ..ChatCompletionMessage::tool_result(tool_call.id.clone(), result)
+        })
     } else {
         ToolCallResult::Error(format!("Function '{}' not found", tool_name))
     }
 }
 
-/// Called when the user sends a new prompt. Tool results of earlier prompts are dropped then,
-/// never during a run of tool calls, so every request of a run extends the previous one and
-/// hits the prompt cache.
-fn clean_tool_outputs_of_previous_prompts(messages: &mut [ChatCompletionMessage]) {
+/// Called when a new prompt is added. Tool results and images of earlier prompts are dropped
+/// then, never during a run of tool calls, so every request of a run extends the previous one
+/// and hits the prompt cache. The agent can open a dropped image again with `view_image`.
+fn drop_tool_outputs_and_images_of_previous_prompts(messages: &mut [ChatCompletionMessage]) {
     for msg in messages.iter_mut() {
         if let ChatCompletionMessageRole::Tool = msg.role {
             msg.content = Some(String::from("[cleaned from history]"));
+        }
+        for image in std::mem::take(&mut msg.images) {
+            let note = format!("[image {} no longer attached; open it with view_image if needed]", image.display());
+            msg.content = Some(match msg.content.take() {
+                Some(text) => format!("{}\n{}", text, note),
+                None => note,
+            });
         }
     }
 }
@@ -345,14 +357,15 @@ impl Minerve {
         }
     }
 
-    fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage], mcp: &McpServers) -> ChatCompletionRequest {
-        ChatCompletionRequest {
+    /// Fails when an image of the history cannot be read.
+    fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage], mcp: &McpServers) -> Result<ChatCompletionRequest, String> {
+        Ok(ChatCompletionRequest {
             model: model.api_model.clone(),
-            messages: build_request_messages(history, model.uses_cache_breakpoints),
+            messages: build_request_messages(history, model.uses_cache_breakpoints)?,
             tools: get_tool_definitions(model.uses_cache_breakpoints, mcp),
             usage: (model.provider == Provider::OpenRouter)
                 .then_some(UsageAccountingRequest { include: true }),
-        }
+        })
     }
 
     /// URL and key of the API the model is served from. Fails when that provider has no key set.
@@ -365,10 +378,14 @@ impl Minerve {
 
 /// Breakpoints, when the model needs them, go after the system prompt and on the latest
 /// message, like opencode does: the next request reads everything up to there from cache.
-fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoints: bool) -> Vec<RequestMessage> {
-    let history = crate::chat::with_placeholder_results_for_unanswered_tool_calls(history);
-    let mut messages: Vec<RequestMessage> =
-        history.iter().map(RequestMessage::from_message).collect();
+fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoints: bool) -> Result<Vec<RequestMessage>, String> {
+    let history = crate::chat::with_tool_images_in_user_messages(
+        crate::chat::with_placeholder_results_for_unanswered_tool_calls(history),
+    );
+    let mut messages: Vec<RequestMessage> = history
+        .iter()
+        .map(RequestMessage::from_message)
+        .collect::<Result<_, _>>()?;
     if uses_cache_breakpoints {
         messages
             .first_mut()
@@ -378,7 +395,7 @@ fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoi
             messages.last_mut().unwrap().add_cache_breakpoint();
         }
     }
-    messages
+    Ok(messages)
 }
 
 /// System messages a new session opens with. AGENTS.md files come after the default prompt and
@@ -411,14 +428,17 @@ impl Minerve {
             should_continue = false;
             let mcp = crate::mcp::connected_servers().await;
 
-            let chat_result = match self.endpoint_for(&model) {
-                Ok((url, api_key)) => {
+            let chat_result = match self
+                .endpoint_for(&model)
+                .and_then(|endpoint| Ok((endpoint, self.build_request(&model, &history, &mcp)?)))
+            {
+                Ok(((url, api_key), request)) => {
                     post_request_with_token_count(
                         &self.client,
                         model.provider,
                         &url,
                         &api_key,
-                        self.build_request(&model, &history, &mcp),
+                        request,
                         self.token_counter.clone(),
                     )
                     .await
@@ -595,21 +615,17 @@ impl Minerve {
     }
 
     /// Marks a turn as running and adds the user's prompt to the conversation.
-    fn start_turn(&self, user_input: String, ui: &UiSender) {
+    fn start_turn(&self, prompt: ChatCompletionMessage, ui: &UiSender) {
         self.request_in_flight.store(true, Ordering::SeqCst);
         self.cancel_requested.store(false, Ordering::SeqCst);
         self.send_control_event(&MinerveEvent::State { state: AgentState::Working });
-        self.add_user_prompt(user_input, ui);
+        self.add_prompt(prompt, ui);
         send_status(ui, "working...");
-    }
-
-    fn add_user_prompt(&self, user_input: String, ui: &UiSender) {
-        self.add_prompt(ChatCompletionMessage::user(user_input), ui);
     }
 
     /// Adds a user-role message, written by the user or by minerve (see `PromptAuthor`).
     fn add_prompt(&self, prompt: ChatCompletionMessage, ui: &UiSender) {
-        clean_tool_outputs_of_previous_prompts(&mut self.messages.lock().unwrap());
+        drop_tool_outputs_and_images_of_previous_prompts(&mut self.messages.lock().unwrap());
         self.push_message(prompt);
         update_chat_ui(ui, get_ui_messages(&self.messages.lock().unwrap()));
     }
@@ -652,10 +668,10 @@ impl Minerve {
             let cancelled = self.cancel_notify.notified();
             tokio::pin!(cancelled);
             cancelled.as_mut().enable();
-            let chat_result = match self.endpoint_for(&model) {
+            let chat_result = match self.endpoint_for(&model).and_then(|endpoint| Ok((endpoint, request?))) {
                 Err(err) => Some(Err(err)),
                 Ok(_) if cancel_requested.load(Ordering::SeqCst) => None,
-                Ok((url, api_key)) => {
+                Ok(((url, api_key), request)) => {
                     tokio::select! {
                         result = post_request_with_token_count(
                             &self.client,
@@ -714,8 +730,9 @@ impl Minerve {
         Ok(())
     }
 
-    pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
-        self.start_turn(user_input, &ui);
+    /// Sends a prompt typed by the user, with the image files pasted into it.
+    pub fn chat_with_arc(self: Arc<Self>, user_input: String, images: Vec<PathBuf>, ui: UiSender, is_headless: bool) {
+        self.start_turn(ChatCompletionMessage::user_with_images(user_input, images), &ui);
         crate::get_global_runtime().spawn(async move {
             // A failed request is already shown in the chat.
             let _ = self.run_turn(&ui, is_headless).await;
@@ -727,7 +744,7 @@ impl Minerve {
     /// with Esc, the evaluator fails, or `MAX_GOAL_TURNS` turns ran. How it ended is sent as a notice.
     pub fn pursue_goal(self: Arc<Self>, goal: String, ui: UiSender) {
         let goal_start = self.messages.lock().unwrap().len();
-        self.start_turn(goal::start_prompt(&goal), &ui);
+        self.start_turn(ChatCompletionMessage::user(goal::start_prompt(&goal)), &ui);
         crate::get_global_runtime().spawn(async move {
             let provider = self.active_model().provider;
             let mut outcome = goal::GoalOutcome::NotReached;
@@ -791,5 +808,31 @@ impl Minerve {
             send_notice(&ui, outcome.notice());
             self.end_turn(&ui);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_prompt_drops_earlier_images_and_names_them() {
+        let mut messages = vec![
+            ChatCompletionMessage::user_with_images(String::from("look [Image #1]"), vec![PathBuf::from("/a.png")]),
+            ChatCompletionMessage {
+                images: vec![PathBuf::from("/b.png")],
+                ..ChatCompletionMessage::tool_result(String::from("1"), String::from("attached"))
+            },
+        ];
+        drop_tool_outputs_and_images_of_previous_prompts(&mut messages);
+        assert!(messages.iter().all(|m| m.images.is_empty()));
+        assert_eq!(
+            messages[0].content.as_deref(),
+            Some("look [Image #1]\n[image /a.png no longer attached; open it with view_image if needed]")
+        );
+        assert_eq!(
+            messages[1].content.as_deref(),
+            Some("[cleaned from history]\n[image /b.png no longer attached; open it with view_image if needed]")
+        );
     }
 }

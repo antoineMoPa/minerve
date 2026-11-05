@@ -7,6 +7,7 @@ const PRO_TIPS: &[&str] = &[
     "hold shift to select text here.",
     "Run headless by calling `minerve \"your prompt\"`.",
     "Add context in your AGENTS.md.",
+    "Use ctrl+v to paste an image.",
 ];
 
 /// Delay between each character while a tip is typing out.

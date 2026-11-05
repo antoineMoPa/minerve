@@ -143,7 +143,7 @@ async fn ask_evaluator(minerve: &Minerve, model: &ActiveModel, input: &str) -> R
     ];
     let request = ChatCompletionRequest {
         model: model.api_model.clone(),
-        messages: messages.iter().map(RequestMessage::from_message).collect(),
+        messages: messages.iter().map(RequestMessage::from_message).collect::<Result<_, _>>()?,
         tools: None,
         usage: (model.provider == Provider::OpenRouter).then_some(UsageAccountingRequest { include: true }),
     };

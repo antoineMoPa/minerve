@@ -16,7 +16,7 @@ use crate::chat::{
     ChatCompletionChoice, ChatCompletionMessage, ChatCompletionMessageRole,
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionToolCall,
     ChatCompletionToolDefinition, ChatCompletionFunctionCall, PromptTokensDetails,
-    RequestContent, Usage,
+    RequestContent, RequestPart, Usage,
 };
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -27,17 +27,45 @@ fn cache_control_json() -> Value {
     json!({ "type": "ephemeral" })
 }
 
-/// Text of a message and whether it carries a cache breakpoint.
-fn text_and_breakpoint(content: &Option<RequestContent>) -> Option<(&str, bool)> {
+/// Content blocks of a message and whether it carries a cache breakpoint. Empty text is left
+/// out: the API rejects empty text blocks.
+fn content_blocks(content: &Option<RequestContent>) -> (Vec<Value>, bool) {
     match content {
-        None => None,
-        Some(RequestContent::Text(text)) => Some((text.as_str(), false)),
-        Some(RequestContent::TextWithCacheBreakpoint([part])) => Some((part.text.as_str(), true)),
+        None => (Vec::new(), false),
+        Some(RequestContent::Text(text)) => (text_blocks(text), false),
+        Some(RequestContent::Parts(parts)) => {
+            let mut blocks = Vec::new();
+            let mut has_breakpoint = false;
+            for part in parts {
+                match part {
+                    RequestPart::Text { text, cache_control } => {
+                        blocks.extend(text_blocks(text));
+                        has_breakpoint |= cache_control.is_some();
+                    }
+                    RequestPart::ImageUrl { image_url, cache_control } => {
+                        blocks.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image_url.media_type,
+                                "data": image_url.base64_data,
+                            },
+                        }));
+                        has_breakpoint |= cache_control.is_some();
+                    }
+                }
+            }
+            (blocks, has_breakpoint)
+        }
     }
 }
 
-fn text_block(text: &str) -> Value {
-    json!({ "type": "text", "text": text })
+fn text_blocks(text: &str) -> Vec<Value> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({ "type": "text", "text": text })]
+    }
 }
 
 /// Adds a message with `role`, or appends `blocks` to the previous message when it has the same role.
@@ -77,32 +105,24 @@ pub fn to_messages_body(request: &ChatCompletionRequest) -> Result<Value, String
     let mut messages: Vec<Value> = Vec::new();
 
     for message in &request.messages {
-        let text = text_and_breakpoint(&message.content);
+        let (content_blocks, has_breakpoint) = content_blocks(&message.content);
         let mut blocks: Vec<Value> = Vec::new();
         let mut role = "user";
         match message.role {
             ChatCompletionMessageRole::System => {
-                if let Some((text, cache)) = text {
-                    let mut block = text_block(text);
-                    if cache {
-                        block["cache_control"] = cache_control_json();
+                let mut content_blocks = content_blocks;
+                if has_breakpoint {
+                    if let Some(last) = content_blocks.last_mut() {
+                        last["cache_control"] = cache_control_json();
                     }
-                    system_blocks.push(block);
                 }
+                system_blocks.extend(content_blocks);
                 continue;
             }
-            ChatCompletionMessageRole::User => {
-                if let Some((text, _)) = text {
-                    blocks.push(text_block(text));
-                }
-            }
+            ChatCompletionMessageRole::User => blocks.extend(content_blocks),
             ChatCompletionMessageRole::Assistant => {
                 role = "assistant";
-                if let Some((text, _)) = text {
-                    if !text.is_empty() {
-                        blocks.push(text_block(text));
-                    }
-                }
+                blocks.extend(content_blocks);
                 for tool_call in message.tool_calls.iter().flatten() {
                     blocks.push(json!({
                         "type": "tool_use",
@@ -117,7 +137,8 @@ pub fn to_messages_body(request: &ChatCompletionRequest) -> Result<Value, String
                     .tool_call_id
                     .as_ref()
                     .expect("tool message without tool_call_id");
-                let content = text.map(|(text, _)| text).unwrap_or("");
+                // Tool results only hold text; an empty result is sent as an empty string.
+                let content = if content_blocks.is_empty() { json!("") } else { Value::Array(content_blocks) };
                 blocks.push(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_call_id,
@@ -127,7 +148,7 @@ pub fn to_messages_body(request: &ChatCompletionRequest) -> Result<Value, String
         }
 
         // A cache breakpoint goes on the last block of the message.
-        if let Some((_, true)) = text {
+        if has_breakpoint {
             if let Some(last) = blocks.last_mut() {
                 last["cache_control"] = cache_control_json();
             }
@@ -214,6 +235,7 @@ pub fn parse_messages_response(body: &str) -> Result<ChatCompletionResponse, Str
         tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
         tool_call_id: None,
         prompt_author: None,
+        images: Vec::new(),
     };
     Ok(ChatCompletionResponse {
         choices: vec![ChatCompletionChoice { message }],
@@ -272,7 +294,7 @@ mod tests {
     }
 
     fn from(message: ChatCompletionMessage) -> RequestMessage {
-        RequestMessage::from_message(&message)
+        RequestMessage::from_message(&message).unwrap()
     }
 
     #[test]
@@ -291,6 +313,7 @@ mod tests {
             tool_calls: Some(vec![call.clone(), call]),
             tool_call_id: None,
             prompt_author: None,
+            images: Vec::new(),
         };
         let request = request_with(vec![
             from(ChatCompletionMessage::system(String::from("be brief"))),
@@ -309,15 +332,33 @@ mod tests {
         assert_eq!(messages[1]["content"][0]["input"]["path"], "a.txt");
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(messages[2]["content"].as_array().unwrap().len(), 2);
-        assert_eq!(messages[2]["content"][1]["content"], "two");
+        assert_eq!(messages[2]["content"][1]["content"][0]["text"], "two");
     }
 
     #[test]
     fn breakpoint_is_kept_on_last_block() {
-        let mut first = RequestMessage::from_message(&ChatCompletionMessage::user(String::from("hi")));
+        let mut first = from(ChatCompletionMessage::user(String::from("hi")));
         first.add_cache_breakpoint();
         let body = to_messages_body(&request_with(vec![first])).unwrap();
         assert_eq!(body["messages"][0]["content"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn image_becomes_a_base64_block_before_the_text_and_takes_no_breakpoint() {
+        let image = std::env::temp_dir().join(format!("minerve-test-{}.png", uuid::Uuid::new_v4()));
+        std::fs::write(&image, [1u8, 2, 3]).unwrap();
+        let mut message = from(ChatCompletionMessage::user_with_images(String::from("what is this?"), vec![image.clone()]));
+        message.add_cache_breakpoint();
+        let body = to_messages_body(&request_with(vec![message])).unwrap();
+        std::fs::remove_file(&image).unwrap();
+
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "AQID");
+        assert!(content[0].get("cache_control").is_none());
+        assert_eq!(content[1]["text"], "what is this?");
+        assert_eq!(content[1]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]

@@ -57,6 +57,12 @@ Add extra system prompts after the default one with `-s` (repeatable).
 minerve -s "Answer in French"
 ```
 
+## Images
+
+Paste an image into the prompt with Ctrl+V (macOS: minerve reads the clipboard with `osascript`), or drag an image file onto the terminal. It shows as `[Image #1]`; delete the token to drop the image. The agent can open image files itself with the `view_image` tool.
+
+Images wider or taller than 1568 px are sent as a downscaled copy saved in `~/.minerve/images`. An image is sent only with the prompt it came with; the next prompt replaces it with a note naming its path, so it stops costing tokens. Works with Anthropic, OpenAI and OpenRouter, as long as the model accepts images.
+
 ## MCP servers
 
 Minerve can use the tools of [MCP](https://modelcontextprotocol.io) servers. List them in

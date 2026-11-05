@@ -17,6 +17,7 @@ use super::run_cargo_check_tool::RunCargoCheckTool;
 use super::run_shell_command_tool::RunShellCommandTool;
 use super::search_for_path_pattern_tool::SearchForPathPatternTool;
 use super::search_for_string_tool::SearchForStringTool;
+use super::view_image_tool::ViewImageTool;
 use super::write_tool::WriteTool;
 
 /// Sorted by tool name: the tool definitions open every request, so their order must not
@@ -46,5 +47,6 @@ pub fn get_tool_registry() -> BTreeMap<&'static str, Arc<dyn Tool>> {
         Arc::new(CompileTypescriptProjectTool),
     );
     map.insert("get_url", Arc::new(GetUrlTool));
+    map.insert("view_image", Arc::new(ViewImageTool));
     map
 }

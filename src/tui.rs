@@ -83,6 +83,8 @@ struct App {
     last_yank: Option<YankState>,
     /// Output of `!command` runs, sent to the model with the next message and then cleared.
     pending_command_output: Vec<String>,
+    /// Images pasted into the prompt being typed, shown as `[Image #N]` tokens.
+    pasted_images: crate::images::PastedImages,
     /// True while the input holds pasted text. Pasted text never opens the slash menu or runs a command.
     input_pasted: bool,
     /// Results of local slash commands (e.g. `/about`), shown in the chat until the next message.
@@ -376,6 +378,7 @@ pub fn run(
         last_yank: None,
         pending_command_output: Vec::new(),
         input_pasted: false,
+        pasted_images: Default::default(),
         notices: Vec::new(),
         matrix: None,
         tetris: None,
@@ -601,14 +604,43 @@ impl App {
         }
     }
 
-    /// Inserts pasted text at the cursor without submitting, keeping its newlines.
+    /// Inserts pasted text at the cursor without submitting, keeping its newlines. A paste
+    /// without text (Cmd+V with an image on the clipboard) attaches the clipboard image, and
+    /// the path of an image file (a file dragged onto the terminal) attaches that file.
     fn handle_paste(&mut self, text: &str) {
         self.chat_focused = false;
         self.pro_tip.restart_idle_delay(Instant::now());
+        if text.trim().is_empty() {
+            self.paste_clipboard_image();
+            return;
+        }
+        if let Some(path) = crate::images::pasted_image_path(text) {
+            match crate::images::image_to_send(&path) {
+                Ok(to_send) => self.attach_image(to_send),
+                Err(err) => self.status = err,
+            }
+            return;
+        }
         for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
             self.insert_char(c);
         }
         self.input_pasted = true;
+    }
+
+    /// Ctrl+V: attaches the image on the clipboard. Terminals only paste text, so minerve reads the clipboard itself.
+    fn paste_clipboard_image(&mut self) {
+        match crate::images::paste_clipboard_image() {
+            Ok(Some(path)) => self.attach_image(path),
+            Ok(None) => self.status = String::from("no image on the clipboard"),
+            Err(err) => self.status = err,
+        }
+    }
+
+    fn attach_image(&mut self, path: std::path::PathBuf) {
+        let token = self.pasted_images.attach(path);
+        for c in token.chars() {
+            self.insert_char(c);
+        }
     }
 
     /// Slash commands whose name starts with the typed input. Empty unless the input is a
@@ -900,6 +932,7 @@ impl App {
             KeyCode::Char('k') if ctrl => self.kill_input(),
             KeyCode::Char('q') if ctrl => self.should_quit = true,
             KeyCode::Char('o') if ctrl => self.tools_expanded = !self.tools_expanded,
+            KeyCode::Char('v') if ctrl => self.paste_clipboard_image(),
             KeyCode::Tab => self.complete_slash_command(),
             KeyCode::Char(c) if !ctrl && !alt => self.insert_char(c),
             KeyCode::Backspace => self.delete_before_cursor(),
@@ -966,9 +999,10 @@ impl App {
             self.pending_command_output.clear();
             format!("Output of commands I ran in the shell:\n```\n{}\n```\n\n{}", context, content)
         };
+        let images = self.pasted_images.take_referenced(&content);
         self.minerve
             .clone()
-            .chat_with_arc(content, self.ui_tx.clone(), false);
+            .chat_with_arc(content, images, self.ui_tx.clone(), false);
 
         self.input.clear();
         self.cursor = 0;

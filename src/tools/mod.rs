@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub mod extract_structure_tool;
 pub mod get_general_context_tool;
@@ -19,6 +20,7 @@ pub mod run_shell_command_tool;
 pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
 pub mod utils;
+pub mod view_image_tool;
 pub mod write_tool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,6 +113,16 @@ pub trait Tool: Send + Sync {
 
     async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings)
         -> String;
+
+    /// The result text and the image files to show the model with it. Only tools that open
+    /// images (`view_image`) override this.
+    async fn run_with_images(
+        &self,
+        args: HashMap<String, String>,
+        settings: ExecuteCommandSettings,
+    ) -> (String, Vec<PathBuf>) {
+        (self.run(args, settings).await, Vec::new())
+    }
 
     fn function_definition(&self) -> Value {
         let mut properties = serde_json::Map::new();
