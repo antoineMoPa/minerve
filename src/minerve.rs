@@ -68,8 +68,10 @@ use crate::anthropic;
 use crate::openrouter::OpenRouterConnection;
 use crate::provider::{ActiveModel, ApiKeys, Provider};
 use crate::session::{self, SessionFile, SessionStart};
+use crate::mcp::McpServers;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::utils::cap_tool_output;
+use crate::control_socket::{AgentState, ControlSocket, MinerveEvent};
 use crate::ui::{send_status, update_chat_ui, UiSender};
 use crate::{
     ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole,
@@ -96,22 +98,28 @@ pub struct Minerve {
     /// Wakes a request that is waiting for the API when the turn is cancelled.
     pub cancel_notify: Arc<Notify>,
     pub token_counter: Arc<TokenCounter>,
+    /// Socket of the program that started minerve, told about the conversation as it goes.
+    /// See `control_socket`.
+    control: Option<Arc<ControlSocket>>,
 }
 
 pub fn get_system_prompt() -> String {
     return String::from(include_str!("../prompts/MAIN_SYSTEM_PROMPT.txt"));
 }
 
-fn get_tool_definitions(uses_cache_breakpoints: bool) -> Option<Vec<ChatCompletionToolDefinition>> {
-    let mut tools: Vec<ChatCompletionToolDefinition> = get_tool_registry()
-        .values()
-        .map(|tool| ChatCompletionToolDefinition {
+/// Built-in tools first, then MCP server tools.
+fn get_tool_definitions(uses_cache_breakpoints: bool, mcp: &McpServers) -> Option<Vec<ChatCompletionToolDefinition>> {
+    let registry = get_tool_registry();
+    let builtin_functions = registry.values().map(|tool| ChatCompletionFunctionDefinition {
+        name: tool.name().to_string(),
+        description: Some(tool.description().to_string()),
+        parameters: Some(tool.function_definition()),
+    });
+    let mut tools: Vec<ChatCompletionToolDefinition> = builtin_functions
+        .chain(mcp.function_definitions())
+        .map(|function| ChatCompletionToolDefinition {
             tool_type: "function",
-            function: ChatCompletionFunctionDefinition {
-                name: tool.name().to_string(),
-                description: Some(tool.description().to_string()),
-                parameters: Some(tool.function_definition()),
-            },
+            function,
             cache_control: None,
         })
         .collect();
@@ -190,6 +198,7 @@ fn format_tool_call_group(name: &str, count: usize) -> String {
 /// Returns whether the conversation should continue with another request.
 async fn run_tool_calls(
     tool_calls: &[ChatCompletionToolCall],
+    mcp: &McpServers,
     ui: Option<UiSender>,
     is_headless: bool,
     cancel_requested: &AtomicBool,
@@ -214,7 +223,7 @@ async fn run_tool_calls(
             ));
             continue;
         }
-        match handle_tool_call(tool_call, ui.clone(), is_headless).await {
+        match handle_tool_call(tool_call, mcp, ui.clone(), is_headless).await {
             ToolCallResult::Success(mut msg) => {
                 msg.content = msg.content.map(cap_tool_output);
                 on_tool_message(msg)
@@ -234,6 +243,7 @@ async fn run_tool_calls(
 
 pub async fn handle_tool_call(
     tool_call: &ChatCompletionToolCall,
+    mcp: &McpServers,
     ui: Option<UiSender>,
     is_headless: bool,
 ) -> ToolCallResult {
@@ -241,6 +251,16 @@ pub async fn handle_tool_call(
     let registry = get_tool_registry();
     let tool_name = &tool_call.function.name;
     let args_str = &tool_call.function.arguments;
+
+    if let Some(ui) = &ui {
+        send_status(ui, format!("Running tool: {}", tool_name));
+    }
+    if let Some(mcp_result) = mcp.call(tool_name, args_str).await {
+        return match mcp_result {
+            Ok(output) => ToolCallResult::Success(ChatCompletionMessage::tool_result(tool_call.id.clone(), output)),
+            Err(err) => ToolCallResult::Error(format!("MCP tool '{}': {}", tool_name, err)),
+        };
+    }
 
     if let Some(tool) = registry.get(tool_name.as_str()) {
         // Parse as generic JSON value first, then convert all values to strings
@@ -260,10 +280,6 @@ pub async fn handle_tool_call(
                     .collect(),
                 _ => HashMap::new(),
             };
-
-        if let Some(ui) = &ui {
-            send_status(ui, format!("Running tool: {}", tool_name));
-        }
 
         let result = tool.run(args, settings).await;
 
@@ -321,11 +337,11 @@ impl Minerve {
         }
     }
 
-    fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage]) -> ChatCompletionRequest {
+    fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage], mcp: &McpServers) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: model.api_model.clone(),
             messages: build_request_messages(history, model.uses_cache_breakpoints),
-            tools: get_tool_definitions(model.uses_cache_breakpoints),
+            tools: get_tool_definitions(model.uses_cache_breakpoints, mcp),
             usage: (model.provider == Provider::OpenRouter)
                 .then_some(UsageAccountingRequest { include: true }),
         }
@@ -385,6 +401,7 @@ impl Minerve {
 
         while should_continue {
             should_continue = false;
+            let mcp = crate::mcp::connected_servers().await;
 
             let chat_result = match self.endpoint_for(&model) {
                 Ok((url, api_key)) => {
@@ -393,7 +410,7 @@ impl Minerve {
                         model.provider,
                         &url,
                         &api_key,
-                        self.build_request(&model, &history),
+                        self.build_request(&model, &history, &mcp),
                         self.token_counter.clone(),
                     )
                     .await
@@ -423,6 +440,7 @@ impl Minerve {
                         }
                         should_continue = run_tool_calls(
                             &tool_calls,
+                            &mcp,
                             None,
                             is_headless,
                             &AtomicBool::new(false),
@@ -448,15 +466,31 @@ impl Minerve {
         get_ui_messages(&self.messages.lock().unwrap())
     }
 
-    fn add_assistant_message_with_update_ui(
-        &self,
-        messages: &Arc<Mutex<Vec<ChatCompletionMessage>>>,
-        message_content: String,
-        ui: &UiSender,
-    ) {
-        let mut msgs = messages.lock().unwrap();
-        msgs.push(ChatCompletionMessage::assistant(message_content));
-        update_chat_ui(ui, get_ui_messages(&msgs));
+    fn add_assistant_message_with_update_ui(&self, message_content: String, ui: &UiSender) {
+        self.push_message(ChatCompletionMessage::assistant(message_content));
+        update_chat_ui(ui, get_ui_messages(&self.messages.lock().unwrap()));
+    }
+
+    /// Adds a message to the conversation and tells the control socket about it.
+    /// Sent under the messages lock, like `send_history_to_control`, so a `history` answer
+    /// either holds the message or comes before its `message` event.
+    fn push_message(&self, message: ChatCompletionMessage) {
+        let mut messages = self.messages.lock().unwrap();
+        self.send_control_event(&MinerveEvent::Message { message: &message });
+        messages.push(message);
+    }
+
+    pub fn send_control_event(&self, event: &MinerveEvent) {
+        if let Some(control) = &self.control {
+            control.send(event);
+        }
+    }
+
+    /// Answers the control socket's `get_history` with the whole conversation.
+    pub fn send_history_to_control(&self) {
+        let session_id = self.current_session_id();
+        let messages = self.messages.lock().unwrap();
+        self.send_control_event(&MinerveEvent::History { session_id: &session_id, messages: &messages });
     }
 
     /// Starts a new session, or continues a saved one.
@@ -465,6 +499,7 @@ impl Minerve {
         openrouter_connection: OpenRouterConnection,
         start: SessionStart,
         extra_system_prompts: &[String],
+        control: Option<Arc<ControlSocket>>,
     ) -> Self {
         let token_counter = Arc::new(TokenCounter::new());
         let save_now = matches!(start, SessionStart::NewWithId(_));
@@ -490,10 +525,13 @@ impl Minerve {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
             token_counter,
+            control,
         };
         if save_now {
             minerve.save_session();
         }
+        minerve.send_control_event(&MinerveEvent::Session { session_id: &minerve.current_session_id() });
+        minerve.send_control_event(&MinerveEvent::State { state: AgentState::WaitingForInput });
         minerve
     }
 
@@ -545,18 +583,17 @@ impl Minerve {
         self.token_counter.restore(&file.usage);
         *self.messages.lock().unwrap() = file.messages;
         *self.session_id.lock().unwrap() = file.id;
+        self.send_control_event(&MinerveEvent::Session { session_id: &self.current_session_id() });
     }
 
     pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
         self.request_in_flight.store(true, Ordering::SeqCst);
         self.cancel_requested.store(false, Ordering::SeqCst);
+        self.send_control_event(&MinerveEvent::State { state: AgentState::Working });
 
-        {
-            let mut msgs = self.messages.lock().unwrap();
-            clean_tool_outputs_of_previous_prompts(&mut msgs);
-            msgs.push(ChatCompletionMessage::user(user_input));
-            update_chat_ui(&ui, get_ui_messages(&msgs));
-        }
+        clean_tool_outputs_of_previous_prompts(&mut self.messages.lock().unwrap());
+        self.push_message(ChatCompletionMessage::user(user_input));
+        update_chat_ui(&ui, get_ui_messages(&self.messages.lock().unwrap()));
 
         send_status(&ui, "working...");
 
@@ -572,12 +609,18 @@ impl Minerve {
                 while should_continue {
                     should_continue = false;
 
+                    // Servers still connecting (at launch, or from `/mcp`) are waited for.
+                    if crate::mcp::is_any_connecting() {
+                        send_status(&ui, "connecting to MCP servers...");
+                    }
+                    let mcp = crate::mcp::connected_servers().await;
+
                     // Show working indicator at start of each loop iteration
                     send_status(&ui, "working...");
 
                     let request = {
                         let msgs = messages.lock().unwrap();
-                        self_clone.build_request(&model, &msgs)
+                        self_clone.build_request(&model, &msgs, &mcp)
                     };
 
                     // Register for the cancel signal before checking the flag, so a cancel
@@ -616,23 +659,22 @@ impl Minerve {
                                 .message;
 
                             let tool_calls = assistant_message.tool_calls.clone();
-                            messages.lock().unwrap().push(assistant_message);
+                            self_clone.push_message(assistant_message);
 
                             if let Some(tool_calls) = tool_calls {
                                 let mut errors = Vec::new();
                                 should_continue = run_tool_calls(
                                     &tool_calls,
+                                    &mcp,
                                     Some(ui.clone()),
                                     is_headless,
                                     &cancel_requested,
-                                    &mut |msg| messages.lock().unwrap().push(msg),
+                                    &mut |msg| self_clone.push_message(msg),
                                     &mut |err| errors.push(err),
                                 )
                                 .await;
                                 for err in errors {
-                                    self_clone.add_assistant_message_with_update_ui(
-                                        &messages, err, &ui,
-                                    );
+                                    self_clone.add_assistant_message_with_update_ui(err, &ui);
                                 }
                             }
 
@@ -640,15 +682,14 @@ impl Minerve {
                         }
                         Some(Err(req_err)) => {
                             let error_msg = format!("Request Error: {}", req_err);
-                            self_clone.add_assistant_message_with_update_ui(
-                                &messages, error_msg, &ui,
-                            );
+                            self_clone.add_assistant_message_with_update_ui(error_msg, &ui);
                         }
                     }
                 }
 
                 self_clone.save_session();
                 self_clone.request_in_flight.store(false, Ordering::SeqCst);
+                self_clone.send_control_event(&MinerveEvent::State { state: AgentState::WaitingForInput });
                 send_status(&ui, "");
             }
         });

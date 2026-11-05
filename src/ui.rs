@@ -12,6 +12,8 @@ pub enum UiEvent {
     Status(String),
     /// Result of one provider's model list fetch started by `/model`. Ids carry the provider prefix.
     ModelList(crate::provider::Provider, Result<Vec<String>, String>),
+    /// A command from the program that started minerve, read off the control socket.
+    ParentCommand(crate::control_socket::ParentCommand),
 }
 
 pub type UiSender = Sender<UiEvent>;

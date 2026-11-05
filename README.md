@@ -57,6 +57,25 @@ Add extra system prompts after the default one with `-s` (repeatable).
 minerve -s "Answer in French"
 ```
 
+## MCP servers
+
+Minerve can use the tools of [MCP](https://modelcontextprotocol.io) servers. List them in
+`~/.minerve/mcp.json` or in a project's `./.mcp.json` (same shape as Claude Code's; the project file wins for a server named in both):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "remote": { "type": "http", "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ..." } }
+  }
+}
+```
+
+Servers without `type` run as a child process (stdio). `"type": "http"` uses Streamable HTTP.
+Their tools reach the model as `mcp__<server>__<tool>`.
+
+Type `/mcp` to manage servers: see each one's state and tools, connect or disconnect it for the session, remove it from its config file, or add a new one (saved to `~/.minerve/mcp.json`). In the add form, a URL makes an HTTP server and anything else is a command line. The optional third field takes `KEY=value` pairs separated by commas, used as env vars for a command or headers for a URL.
+
 ## Credits
 
 Minerva boot screen is based on an image by wikipedia user JackyM59. [[source]](https://ast.wikipedia.org/wiki/Minerva#/media/Ficheru:Statue_de_la_d%C3%A9esse_Minerve_-_Mus%C3%A9e_du_Louvre_(Ma_332).jpg)

@@ -9,11 +9,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::chat_selection::{self, ChatSelection};
+use crate::control_socket::{ControlSocket, ParentCommand, ScrollTarget};
 use crate::input_layout::layout_input;
 use crate::model_picker::ModelPicker;
 use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
 use crate::setup::{self, SetupModal, SetupStep};
 use crate::recent_models::RecentModels;
+use crate::mcp_manager::{McpManager, McpManagerStep};
 use crate::session_picker::SessionPicker;
 
 use ratatui::crossterm::event::{
@@ -50,6 +52,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "switch the OpenRouter model"),
     ("/resume", "continue a saved session"),
     ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
+    ("/mcp", "manage MCP servers: add, connect, disconnect, remove"),
+    ("/bootscreen", "replay the boot screen"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
 ];
@@ -92,6 +96,8 @@ struct App {
     setup_modal: Option<SetupModal>,
     /// Saved sessions from `/resume`. While set it replaces the whole UI; Esc closes it.
     session_picker: Option<SessionPicker>,
+    /// MCP server manager from `/mcp`, drawn over the chat. While set it takes every key and paste.
+    mcp_manager: Option<McpManager>,
     /// Least recently used models, shown at the top of the picker.
     recent_models: RecentModels,
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
@@ -326,8 +332,16 @@ pub fn run(
     start: SessionStart,
     extra_system_prompts: &[String],
     force_setup: bool,
+    control: Option<ControlSocket>,
 ) -> io::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel();
+    let control = control.map(Arc::new);
+    if let Some(control) = &control {
+        let commands_tx = ui_tx.clone();
+        control.read_commands_in_background(move |command| {
+            let _ = commands_tx.send(UiEvent::ParentCommand(command));
+        });
+    }
     // The boot clip is for fresh sessions only; resuming one goes straight to the chat.
     let boot = match start {
         SessionStart::Resume(_) => None,
@@ -340,6 +354,7 @@ pub fn run(
         openrouter_connection,
         start,
         extra_system_prompts,
+        control,
     ));
     minerve.fetch_context_window_in_background();
     let transcript = minerve.ui_messages();
@@ -366,6 +381,7 @@ pub fn run(
         model_picker: None,
         setup_modal: needs_setup.then(|| SetupModal::new(stored_keys.clone())),
         session_picker: None,
+        mcp_manager: None,
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
@@ -448,6 +464,14 @@ impl App {
                                 continue;
                             }
                         }
+                        if !quit_key {
+                            if let Some(manager) = self.mcp_manager.as_mut() {
+                                if let McpManagerStep::Close = manager.handle_key(key) {
+                                    self.mcp_manager = None;
+                                }
+                                continue;
+                            }
+                        }
                         if !quit_key && self.session_picker.is_some() {
                             self.handle_session_picker_key(key);
                             continue;
@@ -481,6 +505,10 @@ impl App {
                             modal.paste(&text);
                             continue;
                         }
+                        if let Some(manager) = self.mcp_manager.as_mut() {
+                            manager.paste(&text);
+                            continue;
+                        }
                         // Pasted text goes into the picker filter; newlines would not match any model id.
                         if let Some(picker) = self.model_picker.as_mut() {
                             picker.filter.extend(text.chars().filter(|c| !c.is_control()));
@@ -494,7 +522,7 @@ impl App {
                         self.stop_boot();
                         self.handle_paste(&text);
                     }
-                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() => self.handle_mouse(mouse),
+                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() && self.mcp_manager.is_none() => self.handle_mouse(mouse),
                     // Back in the terminal after another app had the screen, or resized: repaint every cell.
                     Event::FocusGained => terminal.clear()?,
                     // The chat rewraps, so a selection's cells no longer hold its text.
@@ -610,6 +638,8 @@ impl App {
             "/model" => self.open_model_picker(),
             "/resume" => self.open_session_picker(),
             "/apikeys" => self.setup_modal = Some(SetupModal::new(self.minerve.api_keys_snapshot())),
+            "/mcp" => self.mcp_manager = Some(McpManager::new()),
+            "/bootscreen" => self.boot = BootAnimation::start(),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
                 let first_line = include_str!("../README.md")
@@ -637,6 +667,38 @@ impl App {
                     picker.lists.push((provider, result));
                 }
             }
+            UiEvent::ParentCommand(command) => self.handle_parent_command(command),
+        }
+    }
+
+    /// A command of the program that started minerve - see `control_socket`.
+    fn handle_parent_command(&mut self, command: ParentCommand) {
+        match command {
+            ParentCommand::Scroll { to: ScrollTarget::Bottom } => self.scroll_up = 0,
+            // `draw_chat` clamps this to the top of the chat.
+            ParentCommand::Scroll { to: ScrollTarget::Top } => self.scroll_up = usize::MAX,
+            ParentCommand::ScrollBy { lines } => {
+                self.scroll_up = if lines < 0 {
+                    self.scroll_up.saturating_add(lines.unsigned_abs() as usize)
+                } else {
+                    self.scroll_up.saturating_sub(lines as usize)
+                };
+            }
+            ParentCommand::InsertText { text } => self.insert_str_at_cursor(&text),
+            ParentCommand::Submit { text } => {
+                if self.minerve.request_in_flight.load(Ordering::SeqCst) {
+                    self.status = String::from("a prompt from the parent program was refused: a turn is running");
+                    return;
+                }
+                // Whatever was being typed in the box stays there, under the parent's prompt.
+                let draft = std::mem::take(&mut self.input);
+                let cursor = self.cursor;
+                self.set_input(text);
+                self.submit();
+                self.input = draft;
+                self.cursor = cursor;
+            }
+            ParentCommand::GetHistory {} => self.minerve.send_history_to_control(),
         }
     }
 
@@ -1198,6 +1260,9 @@ impl App {
         if let (Some(modal), None) = (self.setup_modal.as_ref(), self.boot.as_ref()) {
             modal.draw(frame, frame.area());
         }
+        if let Some(manager) = self.mcp_manager.as_ref() {
+            manager.draw(frame, frame.area());
+        }
 
         frame.render_widget(
             Paragraph::new(
@@ -1399,7 +1464,7 @@ impl App {
         // Rows are pre-wrapped by display width (no Paragraph wrap) so they match the cursor position.
         let text = if self.input.is_empty() {
             // Indented so the tip reads as a hint, apart from where typed text starts.
-            let tip = format!("   {}", self.pro_tip.visible_text(Instant::now()));
+            let tip = format!(" {}", self.pro_tip.visible_text(Instant::now()));
             Text::from(Span::styled(tip, Style::default().fg(Color::DarkGray)))
         } else {
             Text::from(layout.rows.join("\n"))

@@ -12,12 +12,15 @@ mod agents_md;
 mod boot;
 mod chat;
 mod chat_selection;
+mod control_socket;
 mod history;
 mod input_layout;
 mod keys_file;
 mod model_lists;
 mod model_picker;
 mod markdown;
+mod mcp;
+mod mcp_manager;
 mod pro_tips;
 mod recent_models;
 mod session_picker;
@@ -63,7 +66,7 @@ pub fn run_headless(
     start: session::SessionStart,
     extra_system_prompts: &[String],
 ) {
-    let minerve = Minerve::new(openrouter_connection, start, extra_system_prompts);
+    let minerve = Minerve::new(openrouter_connection, start, extra_system_prompts, None);
     minerve
         .messages
         .lock()
@@ -81,8 +84,9 @@ fn launch_tui(
     start: session::SessionStart,
     extra_system_prompts: &[String],
     force_setup: bool,
+    control: Option<control_socket::ControlSocket>,
 ) {
-    if let Err(err) = tui::run(openrouter_connection, start, extra_system_prompts, force_setup) {
+    if let Err(err) = tui::run(openrouter_connection, start, extra_system_prompts, force_setup, control) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
 }
@@ -162,10 +166,27 @@ fn main() {
         }
     };
 
+    // Read before the TUI takes over, so a bad config file is reported on stderr.
+    match mcp::config::load_mcp_servers() {
+        Ok(configs) => mcp::start_connecting(configs),
+        Err(err) => {
+            eprintln!("minerve: MCP config: {}", err);
+            std::process::exit(1);
+        }
+    }
+
     if let Some(prompt) = cli.prompt {
         run_headless(prompt, openrouter_connection, start, &cli.system_prompt);
         return;
     }
 
-    launch_tui(openrouter_connection, start, &cli.system_prompt, cli.setup);
+    // Connected before the TUI takes over, so a parent that named a dead socket is reported on stderr.
+    let control = match control_socket::ControlSocket::connect_from_env() {
+        Ok(control) => control,
+        Err(err) => {
+            eprintln!("minerve: {}", err);
+            std::process::exit(1);
+        }
+    };
+    launch_tui(openrouter_connection, start, &cli.system_prompt, cli.setup, control);
 }
