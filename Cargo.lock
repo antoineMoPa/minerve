@@ -2771,6 +2771,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "minerve-gateway"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
