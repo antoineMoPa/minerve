@@ -23,6 +23,8 @@ mod model_picker;
 mod markdown;
 mod mcp;
 mod mcp_manager;
+mod message_apps;
+mod message_apps_runner;
 mod pro_tips;
 mod recent_models;
 mod session_picker;
@@ -88,9 +90,12 @@ fn launch_tui(
     force_setup: bool,
     control: Option<control_socket::ControlSocket>,
 ) {
+    // Slack and the other message apps are served only while this TUI is open.
+    message_apps_runner::start_if_configured();
     if let Err(err) = tui::run(openrouter_connection, start, extra_system_prompts, force_setup, control) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
+    message_apps_runner::stop();
 }
 
 fn main() {

@@ -16,6 +16,7 @@ use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
 use crate::setup::{self, SetupModal, SetupStep};
 use crate::recent_models::RecentModels;
 use crate::mcp_manager::{McpManager, McpManagerStep};
+use crate::message_apps::{MessageApps, MessageAppsStep};
 use crate::session_picker::SessionPicker;
 
 use ratatui::crossterm::event::{
@@ -40,6 +41,13 @@ use crate::session::SessionStart;
 use crate::tetris::Tetris;
 use crate::ui::{UiEvent, UiSender};
 
+mod draw;
+mod editing;
+mod matrix;
+mod pickers;
+
+use matrix::MatrixRain;
+
 /// Tool results longer than this are cut short in the chat view (the model still gets them all).
 const MAX_OUTPUT_LEN: usize = 500;
 /// Lines scrolled per PageUp/PageDown.
@@ -54,6 +62,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/resume", "continue a saved session"),
     ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
     ("/mcp", "manage MCP servers: add, connect, disconnect, remove"),
+    ("/message-apps", "talk to minerve from Slack: set up, status, link your account"),
     ("/bootscreen", "replay the boot screen"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
@@ -101,6 +110,7 @@ struct App {
     session_picker: Option<SessionPicker>,
     /// MCP server manager from `/mcp`, drawn over the chat. While set it takes every key and paste.
     mcp_manager: Option<McpManager>,
+    message_apps: Option<MessageApps>,
     /// Least recently used models, shown at the top of the picker.
     recent_models: RecentModels,
     /// Input box as last drawn, and how many wrapped rows it was scrolled. Maps mouse clicks to the cursor.
@@ -134,201 +144,24 @@ struct YankState {
 /// Maximum number of killed texts kept for yanking.
 const KILL_RING_MAX: usize = 60;
 
-/// Characters the falling streams are made of (same set as the Emacs `matrix-mode` it follows).
-const MATRIX_GLYPHS: &str = "123456789abcdefghijklmnopqrstuvwxyzαβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
-
 /// True when the terminal cell at (column, row) is inside `area`.
 fn contains_cell(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
-/// Xorshift64 step, returning a float in [0, 1). Good enough for falling letters; avoids a crate.
-fn next_unit(state: &mut u64) -> f32 {
-    *state ^= *state << 13;
-    *state ^= *state >> 7;
-    *state ^= *state << 17;
-    (*state >> 40) as f32 / (1u64 << 24) as f32
-}
-
-/// One falling column of letters.
-#[derive(Clone, Copy)]
-struct MatrixStream {
-    /// Row of the leading (brightest) letter. Negative while the stream is still above the screen.
-    head: f32,
-    /// Rows per second.
-    speed: f32,
-    /// Trail length in rows, head included.
-    length: u16,
-}
-
-impl MatrixStream {
-    /// A new stream. `scattered` streams start somewhere on screen; the others start above it,
-    /// so the screen fills in gradually.
-    fn random(rng: &mut u64, height: u16, scattered: bool) -> Self {
-        let height = height.max(1) as f32;
-        let head = if scattered {
-            next_unit(rng) * height
-        } else {
-            -next_unit(rng) * height
-        };
-        Self {
-            head,
-            speed: 8.0 + next_unit(rng) * 20.0,
-            length: 4 + (next_unit(rng) * height * 0.6) as u16,
-        }
+/// Turns mouse reporting on or off. Off, the terminal selects text with a plain drag.
+/// Mode 1003 reports moves without a button held, so hovering the chat gives it focus;
+/// crossterm's EnableMouseCapture does not turn it on.
+pub(crate) fn set_mouse_capture(on: bool) {
+    if on {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+        let _ = io::stdout().write_all(b"\x1b[?1003h");
+    } else {
+        let _ = io::stdout().write_all(b"\x1b[?1003l");
+        let _ = execute!(io::stdout(), DisableMouseCapture);
     }
 }
 
-/// Length of the fade-in when `/matrix` starts and the fade-out when it is stopped.
-const MATRIX_FADE: Duration = Duration::from_millis(500);
-
-/// Where the `/matrix` screen is in its life cycle.
-#[derive(Clone, Copy, PartialEq)]
-enum MatrixPhase {
-    /// Letters start falling from the top edge while the screen brightens.
-    FadingIn,
-    /// Full rain.
-    Running,
-    /// No new streams spawn; the existing ones fall off the bottom while the screen dims.
-    FadingOut,
-}
-
-/// State of the `/matrix` screen: one stream per column, advanced in real time.
-struct MatrixRain {
-    width: u16,
-    height: u16,
-    streams: Vec<MatrixStream>,
-    glyphs: Vec<char>,
-    rng: u64,
-    last_tick: Instant,
-    phase: MatrixPhase,
-    phase_started: Instant,
-    /// Brightness when `stop` was called, so a stop during the fade-in continues from there.
-    stop_level: f32,
-}
-
-impl MatrixRain {
-    fn new(width: u16, height: u16) -> Self {
-        let rng = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(1)
-            | 1;
-        let mut rain = Self {
-            width: 0,
-            height: 0,
-            streams: Vec::new(),
-            glyphs: MATRIX_GLYPHS.chars().collect(),
-            rng,
-            last_tick: Instant::now(),
-            phase: MatrixPhase::FadingIn,
-            phase_started: Instant::now(),
-            stop_level: 1.0,
-        };
-        rain.resize(width, height);
-        rain
-    }
-
-    /// Rebuilds the streams for a new size. Every stream starts above the top edge, so the
-    /// letters fall in from the top.
-    fn resize(&mut self, width: u16, height: u16) {
-        self.width = width;
-        self.height = height;
-        self.streams = (0..width)
-            .map(|_| MatrixStream::random(&mut self.rng, height, false))
-            .collect();
-    }
-
-    /// Starts the fade-out. Ignored once it has begun.
-    fn stop(&mut self) {
-        if self.phase != MatrixPhase::FadingOut {
-            self.stop_level = self.level();
-            self.phase = MatrixPhase::FadingOut;
-            self.phase_started = Instant::now();
-        }
-    }
-
-    /// Brightness in [0, 1] that scales every colour.
-    fn level(&self) -> f32 {
-        let t = (self.phase_started.elapsed().as_secs_f32() / MATRIX_FADE.as_secs_f32()).min(1.0);
-        match self.phase {
-            MatrixPhase::FadingIn => t,
-            MatrixPhase::Running => 1.0,
-            MatrixPhase::FadingOut => self.stop_level * (1.0 - t),
-        }
-    }
-
-    /// Moves the phase on when its fade has finished.
-    fn update_phase(&mut self) {
-        if self.phase == MatrixPhase::FadingIn && self.phase_started.elapsed() >= MATRIX_FADE {
-            self.phase = MatrixPhase::Running;
-        }
-    }
-
-    /// Moves every stream down by the time since the last draw. A stream that has left the
-    /// bottom starts again above the top, unless the screen is fading out.
-    fn advance(&mut self) {
-        let now = Instant::now();
-        // Capped so a long pause (e.g. a suspended terminal) does not jump the streams.
-        let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.2);
-        self.last_tick = now;
-        let height = self.height as f32;
-        let stopping = self.phase == MatrixPhase::FadingOut;
-        for stream in &mut self.streams {
-            stream.head += stream.speed * dt;
-            if stream.head - stream.length as f32 > height {
-                if stopping {
-                    // Length 0 draws nothing, so the stream is gone for good.
-                    stream.length = 0;
-                } else {
-                    *stream = MatrixStream::random(&mut self.rng, self.height, false);
-                }
-            }
-        }
-    }
-
-    /// Paints the rain over `area`. Returns false once the fade-out is over and the normal
-    /// UI should come back.
-    fn draw(&mut self, frame: &mut Frame, area: Rect) -> bool {
-        self.update_phase();
-        if self.phase == MatrixPhase::FadingOut && self.level() <= 0.0 {
-            return false;
-        }
-        if self.width != area.width || self.height != area.height {
-            self.resize(area.width, area.height);
-        }
-        self.advance();
-
-        let level = self.level();
-        let scale = |value: f32| (value * level) as u8;
-        let buf = frame.buffer_mut();
-        for (col, stream) in self.streams.iter().enumerate() {
-            let x = area.x + col as u16;
-            for row in 0..area.height {
-                // Rows above the leading letter; the trail is the first `length` of them.
-                let distance = stream.head.floor() - row as f32;
-                let lit = distance >= 0.0 && distance < stream.length as f32;
-                let cell = &mut buf[(x, area.y + row)];
-                cell.set_bg(Color::Black);
-                if !lit {
-                    cell.set_char(' ');
-                    continue;
-                }
-                // Letters flicker: each drawn cell picks a new glyph.
-                let index = (next_unit(&mut self.rng) * self.glyphs.len() as f32) as usize;
-                let color = if distance < 1.0 {
-                    let white = scale(255.0);
-                    Color::Rgb(white, white, white)
-                } else {
-                    let fade = 1.0 - distance / stream.length as f32;
-                    Color::Rgb(0, scale(60.0 + 195.0 * fade), 0)
-                };
-                cell.set_char(self.glyphs[index % self.glyphs.len()]).set_fg(color);
-            }
-        }
-        true
-    }
-}
 /// Runs the interactive UI until the user quits.
 pub fn run(
     openrouter_connection: OpenRouterConnection,
@@ -386,6 +219,7 @@ pub fn run(
         setup_modal: needs_setup.then(|| SetupModal::new(stored_keys.clone())),
         session_picker: None,
         mcp_manager: None,
+        message_apps: None,
         recent_models: RecentModels::load(),
         input_area: Rect::default(),
         input_scroll_row: 0,
@@ -405,10 +239,7 @@ pub fn run(
     let _ = execute!(io::stdout(), EnableFocusChange);
     // Clicks move the cursor in the input box and the wheel scrolls the chat.
     // Terminals then select text only with a modifier held (Shift in most, Option in iTerm2).
-    let _ = execute!(io::stdout(), EnableMouseCapture);
-    // Mode 1003 reports moves without a button held, so hovering the chat gives it focus.
-    // Crossterm's EnableMouseCapture does not turn it on.
-    let _ = io::stdout().write_all(b"\x1b[?1003h");
+    set_mouse_capture(true);
     // Lets Shift+Enter arrive as its own key where the terminal supports it.
     let keyboard_enhanced = supports_keyboard_enhancement().unwrap_or(false);
     if keyboard_enhanced {
@@ -422,8 +253,8 @@ pub fn run(
     if keyboard_enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
-    let _ = io::stdout().write_all(b"\x1b[?1003l");
-    let _ = execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste, DisableMouseCapture);
+    set_mouse_capture(false);
+    let _ = execute!(io::stdout(), DisableFocusChange, DisableBracketedPaste);
     ratatui::restore();
     // Printed after the restore so it lands on the normal screen, not the alternate one.
     println!("{}", app.minerve.current_session_id());
@@ -475,6 +306,12 @@ impl App {
                                 }
                                 continue;
                             }
+                            if let Some(apps) = self.message_apps.as_mut() {
+                                if let MessageAppsStep::Close = apps.handle_key(key) {
+                                    self.message_apps = None;
+                                }
+                                continue;
+                            }
                         }
                         if !quit_key && self.session_picker.is_some() {
                             self.handle_session_picker_key(key);
@@ -513,6 +350,10 @@ impl App {
                             manager.paste(&text);
                             continue;
                         }
+                        if let Some(apps) = self.message_apps.as_mut() {
+                            apps.paste(&text);
+                            continue;
+                        }
                         // Pasted text goes into the picker filter; newlines would not match any model id.
                         if let Some(picker) = self.model_picker.as_mut() {
                             picker.filter.extend(text.chars().filter(|c| !c.is_control()));
@@ -526,7 +367,7 @@ impl App {
                         self.stop_boot();
                         self.handle_paste(&text);
                     }
-                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() && self.mcp_manager.is_none() => self.handle_mouse(mouse),
+                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() && self.mcp_manager.is_none() && self.message_apps.is_none() => self.handle_mouse(mouse),
                     // Back in the terminal after another app had the screen, or resized: repaint every cell.
                     Event::FocusGained => terminal.clear()?,
                     // The chat rewraps, so a selection's cells no longer hold its text.
@@ -672,6 +513,7 @@ impl App {
             "/resume" => self.open_session_picker(),
             "/apikeys" => self.setup_modal = Some(SetupModal::new(self.minerve.api_keys_snapshot())),
             "/mcp" => self.mcp_manager = Some(McpManager::new()),
+            "/message-apps" => self.message_apps = Some(MessageApps::new()),
             "/bootscreen" => self.boot = BootAnimation::start(),
             // Without a goal after it: `submit` handles `/goal <goal>`.
             "/goal" => self.notices.push(String::from(
@@ -737,151 +579,6 @@ impl App {
                 self.cursor = cursor;
             }
             ParentCommand::GetHistory {} => self.minerve.send_history_to_control(),
-        }
-    }
-
-    /// Opens the `/model` picker and fetches, in the background, the model list of every provider
-    /// that has a key. Providers without a key are not listed.
-    fn open_model_picker(&mut self) {
-        let current_model = self.minerve.active_model().id;
-        let keys = self.minerve.api_keys_snapshot();
-        let keyed_providers: Vec<Provider> = PROVIDERS_BY_DEFAULT_PRIORITY
-            .into_iter()
-            .filter(|provider| keys.get(*provider).is_some())
-            .collect();
-        for provider in keyed_providers.iter().copied() {
-            let api_key = keys.get(provider).expect("filtered on key presence").to_string();
-            let minerve = self.minerve.clone();
-            let ui = self.ui_tx.clone();
-            crate::get_global_runtime().spawn(async move {
-                let result = crate::model_lists::fetch_model_ids(
-                    &minerve.client,
-                    provider,
-                    &api_key,
-                    &minerve.base_url,
-                )
-                .await;
-                let _ = ui.send(UiEvent::ModelList(provider, result));
-            });
-        }
-        self.model_picker = Some(ModelPicker::new(current_model, keyed_providers));
-    }
-
-    /// Opens the `/resume` picker over the saved sessions, most recent first.
-    fn open_session_picker(&mut self) {
-        if self.minerve.request_in_flight.load(Ordering::SeqCst) {
-            self.status = String::from("wait for the running answer before resuming another session");
-            return;
-        }
-        self.session_picker = Some(SessionPicker::new(crate::session::list_sessions()));
-    }
-
-    /// Keys while the `/resume` picker is open. Enter continues the selected session.
-    fn handle_session_picker_key(&mut self, key: KeyEvent) {
-        let Some(picker) = self.session_picker.as_mut() else {
-            return;
-        };
-        match key.code {
-            KeyCode::Esc => self.session_picker = None,
-            KeyCode::Up => picker.move_selection(-1),
-            KeyCode::Down => picker.move_selection(1),
-            KeyCode::Enter => {
-                let Some(session) = picker.sessions.get(picker.selected) else {
-                    return;
-                };
-                let id = session.id.clone();
-                self.resume_session(&id);
-            }
-            _ => {}
-        }
-    }
-
-    /// Loads the saved session `id` and shows its chat. A file that cannot be read keeps the
-    /// current session and reports why on the status line.
-    fn resume_session(&mut self, id: &str) {
-        match crate::session::load_for_resume(id) {
-            Ok(file) => {
-                self.minerve.replace_session(file);
-                self.transcript = self.minerve.ui_messages();
-                self.scroll_up = 0;
-                self.notices.clear();
-                self.pending_command_output.clear();
-                self.status = format!("resumed session {}", id);
-                self.session_picker = None;
-            }
-            Err(err) => self.status = err,
-        }
-    }
-
-    /// Keys while the setup modal is open. Enter on the last field saves the keys and applies them.
-    fn handle_setup_key(&mut self, key: KeyEvent) {
-        let Some(modal) = self.setup_modal.as_mut() else {
-            return;
-        };
-        match modal.handle_key(key) {
-            SetupStep::Stay => {}
-            SetupStep::Cancelled => self.setup_modal = None,
-            SetupStep::Completed(settings) => match setup::save(&settings) {
-                Ok(path) => {
-                    self.minerve.set_api_keys(
-                        settings.openrouter_key,
-                        settings.openai_key,
-                        settings.anthropic_key,
-                    );
-                    // Keep the active model if its provider has a key, else move to the most
-                    // recent model with a key, else a keyed provider's default.
-                    let keys = self.minerve.api_keys_snapshot();
-                    let active = self.minerve.active_model();
-                    let candidates = std::iter::once(active.id.clone())
-                        .chain(self.recent_models.ids().iter().cloned());
-                    let picked = crate::openrouter::pick_model_with_key(candidates, &keys);
-                    let model = (picked != active.id).then_some(picked);
-                    if let Some(model) = model {
-                        self.minerve.set_model(model);
-                        self.minerve.fetch_context_window_in_background();
-                    }
-                    self.status = format!("saved to {}", path.display());
-                    self.setup_modal = None;
-                }
-                Err(err) => modal.set_error(format!("could not save ~/.minerve/keys.json: {}", err)),
-            },
-        }
-    }
-
-    /// Keys while the model picker is open. Enter switches model, Esc closes.
-    fn handle_model_picker_key(&mut self, key: KeyEvent) {
-        let Some(picker) = self.model_picker.as_mut() else {
-            return;
-        };
-        let rows = picker.visible_rows(&self.recent_models);
-        match key.code {
-            KeyCode::Esc => self.model_picker = None,
-            KeyCode::Up => picker.move_selection(-1, rows.len()),
-            KeyCode::Down => picker.move_selection(1, rows.len()),
-            KeyCode::Tab => {
-                picker.cycle_provider_filter();
-                picker.selected = 0;
-            }
-            KeyCode::Enter => {
-                let Some(row) = rows.get(picker.selected) else {
-                    return;
-                };
-                let model_id = row.model_id.clone();
-                self.minerve.set_model(model_id.clone());
-                self.minerve.fetch_context_window_in_background();
-                self.recent_models.mark_used(&model_id);
-                self.status = format!("model: {}", model_id);
-                self.model_picker = None;
-            }
-            KeyCode::Backspace => {
-                picker.filter.pop();
-                picker.clamp_selection(picker.visible_rows(&self.recent_models).len());
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                picker.filter.push(c);
-                picker.selected = 0;
-            }
-            _ => {}
         }
     }
 
@@ -1025,108 +722,6 @@ impl App {
         self.notices.clear();
     }
 
-    fn set_input(&mut self, text: String) {
-        self.cursor = text.chars().count();
-        self.input = text;
-        // History and completion text is typed, not pasted.
-        self.input_pasted = false;
-    }
-
-    fn input_len(&self) -> usize {
-        self.input.chars().count()
-    }
-
-    /// Byte index of the char at `char_idx`, or the end of the input.
-    fn byte_index(&self, char_idx: usize) -> usize {
-        self.input
-            .char_indices()
-            .nth(char_idx)
-            .map(|(i, _)| i)
-            .unwrap_or(self.input.len())
-    }
-
-    fn insert_char(&mut self, c: char) {
-        let idx = self.byte_index(self.cursor);
-        self.input.insert(idx, c);
-        self.cursor += 1;
-    }
-
-    fn delete_before_cursor(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let idx = self.byte_index(self.cursor - 1);
-        self.input.remove(idx);
-        self.cursor -= 1;
-    }
-
-    fn delete_at_cursor(&mut self) {
-        if self.cursor >= self.input_len() {
-            return;
-        }
-        let idx = self.byte_index(self.cursor);
-        self.input.remove(idx);
-    }
-
-    /// Ctrl+K: removes the whole input and keeps it in the kill ring.
-    fn kill_input(&mut self) {
-        if self.input.is_empty() {
-            return;
-        }
-        let killed = std::mem::take(&mut self.input);
-        self.cursor = 0;
-        self.kill_ring.push(killed);
-        if self.kill_ring.len() > KILL_RING_MAX {
-            self.kill_ring.remove(0);
-        }
-    }
-
-    /// Ctrl+Y: inserts the newest kill at the cursor.
-    fn yank(&mut self) {
-        let Some(text) = self.kill_ring.last().cloned() else {
-            return;
-        };
-        let start = self.cursor;
-        self.insert_str_at_cursor(&text);
-        self.last_yank = Some(YankState {
-            start,
-            len: text.chars().count(),
-            ring_offset: 0,
-        });
-    }
-
-    /// Alt+Y: right after a yank, replaces the yanked text with the next older kill (wrapping).
-    /// Does nothing if the previous key was not a yank.
-    fn yank_pop(&mut self, previous: Option<YankState>) {
-        let Some(state) = previous else {
-            return;
-        };
-        let ring_len = self.kill_ring.len();
-        if ring_len == 0 {
-            return;
-        }
-        let ring_offset = (state.ring_offset + 1) % ring_len;
-        let text = self.kill_ring[ring_len - 1 - ring_offset].clone();
-
-        // Remove the previously yanked text, then insert the replacement at the same spot.
-        let start_byte = self.byte_index(state.start);
-        let end_byte = self.byte_index(state.start + state.len);
-        self.input.replace_range(start_byte..end_byte, &text);
-        self.cursor = state.start + text.chars().count();
-        self.last_yank = Some(YankState {
-            start: state.start,
-            len: text.chars().count(),
-            ring_offset,
-        });
-    }
-
-    /// Inserts `text` at the cursor and moves the cursor past it.
-    fn insert_str_at_cursor(&mut self, text: &str) {
-        let idx = self.byte_index(self.cursor);
-        self.input.insert_str(idx, text);
-        self.cursor += text.chars().count();
-    }
-
     /// Stops the video now (key press). The dotted ring then erodes away; the boot state is
     /// dropped and the screen cleared once the erosion finishes (see `draw_boot_overlay`).
     fn stop_boot(&mut self) {
@@ -1140,414 +735,4 @@ impl App {
         }
     }
 
-    /// Draws the boot overlay in `area`: a dotted ring around the centered video, and the
-    /// current video frame. Only non-blank video characters are written, so the rest of the UI
-    /// shows through the transparent background. Once the ring has eroded away, drops the boot
-    /// state and schedules a screen clear.
-    fn draw_boot_overlay(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(boot) = self.boot.as_ref() else {
-            return;
-        };
-        let erosion = boot.erosion();
-        let sweep = boot.sweep_progress();
-        let finished = boot.is_finished();
-        let (width, height) = boot.size();
-        let text = boot.current_frame();
-        if finished {
-            self.boot = None;
-            return;
-        }
-
-        // Fit the video into the area, keeping its aspect ratio. Reserve 2 columns on each side
-        // for the ring, and 4 rows for the ring (1 above and below) plus the caption block
-        // (1 blank row, then the caption). Work in i32 so the ring can extend past the area.
-        let (ax, ay) = (area.x as i32, area.y as i32);
-        let (aw, ah) = (area.width as i32, area.height as i32);
-        let (sw, sh) = (width as i32, height as i32);
-        // 0.8 shrinks the fitted video by 20%, leaving more of the dot pattern visible around it.
-        let scale = 0.8 * ((aw - 4).max(1) as f32 / sw as f32).min((ah - 4).max(1) as f32 / sh as f32);
-        let w = ((sw as f32 * scale) as i32).max(1);
-        let h = ((sh as f32 * scale) as i32).max(1);
-        let vx = ax + (aw - w) / 2;
-        let vy = ay + ((ah - h - 4).max(0)) / 2 + 1;
-        let in_area = |x: i32, y: i32| x >= ax && x < ax + aw && y >= ay && y < ay + ah;
-        let buf = frame.buffer_mut();
-
-        // Dot pattern filling the whole chat area, except the video's own cells (drawn over it
-        // below). Dots sit on every other cell. Erosion hides cells whose hashed threshold is
-        // below the progress, so the pattern disappears unevenly.
-        // Distance from the video border, in cells. Vertical distance is doubled because a
-        // terminal cell is about twice as tall as it is wide. Cells closer than EDGE_BLEND to the
-        // border are the blend band.
-        const EDGE_BLEND: i32 = 7;
-        let edge_distance = |c: i32, r: i32| (c.min(w - 1 - c)).min(2 * r.min(h - 1 - r));
-        // Stable pseudo-random value in [0, 1) per cell.
-        let cell_hash = |x: i32, y: i32| {
-            let h = ((x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663)) % 1000;
-            h as f32 / 1000.0
-        };
-
-        // Sparse dot grid: one dot every 3 columns and every 2 rows, across the whole area, including
-        // behind the video. The video's blank cells show these dots, so the pattern runs seamlessly
-        // into the video. Erosion hides dots unevenly.
-        let dot_grid = |x: i32, y: i32| x % 3 == 0 && y % 2 == 0;
-        for y in ay..ay + ah {
-            for x in ax..ax + aw {
-                if !dot_grid(x, y) {
-                    continue;
-                }
-                let visible = erosion.map_or(true, |e| cell_hash(x, y) >= e);
-                if visible {
-                    buf[(x as u16, y as u16)].set_char('·').set_fg(ratatui::style::Color::DarkGray);
-                }
-            }
-        }
-
-        // Video frame, centered inside the ring. Blank characters are transparent.
-        if let Some(text) = text {
-            // Nearest-neighbour resample of the source characters to the fitted size.
-            let src: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
-            for r in 0..h {
-                let sr = (r * sh / h) as usize;
-                for c in 0..w {
-                    let sc = (c * sw / w) as usize;
-                    let ch = src.get(sr).and_then(|row| row.get(sc)).copied().unwrap_or(' ');
-                    let (x, y) = (vx + c, vy + r);
-                    // Video cells in the blend band show with a chance rising from the border
-                    // inward, so the edge dissolves into the dots.
-                    let d = edge_distance(c, r);
-                    let show = d >= EDGE_BLEND || cell_hash(x, y) < (d as f32 + 0.5) / EDGE_BLEND as f32;
-                    if show && ch != ' ' && in_area(x, y) {
-                        buf[(x as u16, y as u16)].set_char(ch);
-                    }
-                }
-            }
-
-        }
-
-        // Caption centered under the video, one blank line below the ring. It stays for the
-        // whole boot screen (also after the video stops) until the dash sweep erases it.
-        const CAPTION: &str = "loading ancient knowledge";
-        let caption_y = vy + h + 2;
-        let caption_len = CAPTION.chars().count() as i32;
-        let cap_l = vx + (w - caption_len) / 2;
-        let cap_r = cap_l + caption_len - 1;
-        for (col, ch) in CAPTION.chars().enumerate() {
-            let x = cap_l + col as i32;
-            if in_area(x, caption_y) {
-                buf[(x as u16, caption_y as u16)].set_char(ch).set_fg(ratatui::style::Color::Gray);
-            }
-        }
-
-        // Dashes frame the caption from the start. After the dots erode, they move in along the
-        // caption row toward its center. Every caption cell they pass is blanked; they vanish at
-        // the center.
-        let dash_l = cap_l - 2;
-        let dash_r = cap_r + 2;
-        let mid = (cap_l + cap_r) / 2;
-        let p = sweep.unwrap_or(0.0);
-        let lf = dash_l + ((mid - dash_l) as f32 * p) as i32;
-        let rf = dash_r - ((dash_r - mid) as f32 * p) as i32;
-        if sweep.is_some() {
-            for x in (dash_l..lf).chain(rf + 1..=dash_r) {
-                if in_area(x, caption_y) {
-                    buf[(x as u16, caption_y as u16)].set_char(' ');
-                }
-            }
-        }
-        for x in [lf, rf] {
-            if in_area(x, caption_y) {
-                buf[(x as u16, caption_y as u16)].set_char('-').set_fg(ratatui::style::Color::White);
-            }
-        }
-    }
-
-    fn draw(&mut self, frame: &mut Frame) {
-        if let Some(game) = self.tetris.as_ref() {
-            game.draw(frame, frame.area());
-            return;
-        }
-
-        if let Some(picker) = self.model_picker.as_ref() {
-            let rows = picker.visible_rows(&self.recent_models);
-            picker.draw(frame, frame.area(), &rows);
-            return;
-        }
-
-        if let Some(picker) = self.session_picker.as_mut() {
-            picker.draw(frame, frame.area(), SystemTime::now());
-            return;
-        }
-
-        // Like the pickers, `/mcp` replaces the whole UI: no message box or input cursor behind it.
-        if let Some(manager) = self.mcp_manager.as_ref() {
-            manager.draw(frame, frame.area());
-            return;
-        }
-
-        // The rain replaces the whole UI until a key or paste ends it.
-        if let Some(matrix) = self.matrix.as_mut() {
-            if matrix.draw(frame, frame.area()) {
-                return;
-            }
-            // The fade-out finished: fall through to the normal UI.
-            self.matrix = None;
-        }
-
-        // Input grows with its wrapped text: 1 line minimum, at most 8 lines of text.
-        let inner_width = frame.area().width.saturating_sub(2);
-        let row_count = layout_input(&self.input, inner_width).rows.len() as u16;
-        let input_height = (row_count + 2).clamp(3, 10);
-
-        let [chat_area, token_area, status_area, input_area, hint_area] = Layout::vertical([
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-        ])
-        .areas(frame.area());
-
-        self.draw_chat(frame, chat_area);
-
-        frame.render_widget(
-            Paragraph::new(self.minerve.token_counter.format_usage_summary())
-                .style(Style::default().fg(Color::Gray)),
-            token_area,
-        );
-        frame.render_widget(
-            Paragraph::new(self.status.as_str())
-                .style(Style::default().fg(Color::Magenta)),
-            status_area,
-        );
-
-        self.draw_input(frame, input_area);
-        self.draw_slash_menu(frame, input_area);
-        if let (Some(modal), None) = (self.setup_modal.as_ref(), self.boot.as_ref()) {
-            modal.draw(frame, frame.area());
-        }
-
-        frame.render_widget(
-            Paragraph::new(
-                "Enter send | Esc clear selection / cancel turn | Shift+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
-            )
-            .style(Style::default().fg(Color::DarkGray)),
-            hint_area,
-        );
-
-        if self.boot.is_some() {
-            self.draw_boot_overlay(frame, chat_area);
-        }
-    }
-
-    fn draw_chat(&mut self, frame: &mut Frame, area: Rect) {
-        self.chat_area = area;
-        let mut lines = self.chat_lines();
-        let width = area.width.max(1) as usize;
-        let rows_per_line: Vec<usize> = lines
-            .iter()
-            .map(|line| line.width().div_ceil(width).max(1))
-            .collect();
-        let total: usize = rows_per_line.iter().sum();
-
-        let max_scroll = total.saturating_sub(area.height as usize);
-        self.scroll_up = self.scroll_up.min(max_scroll);
-        let top = max_scroll - self.scroll_up;
-
-        // Paragraph::scroll takes a u16 row offset, which long chats overflow. Drop the whole
-        // lines above the offset first, then scroll the rest by what is left.
-        let mut first_line = 0;
-        let mut rows_before = 0;
-        while first_line < rows_per_line.len() && rows_before + rows_per_line[first_line] <= top {
-            rows_before += rows_per_line[first_line];
-            first_line += 1;
-        }
-        lines.drain(..first_line);
-        let offset_in_first_line = u16::try_from(top - rows_before)
-            .expect("one chat line taller than u16::MAX rows");
-
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((offset_in_first_line, 0));
-        frame.render_widget(paragraph, area);
-        self.chat_top = top;
-        self.draw_chat_selection(frame, area);
-    }
-
-    /// Highlights the chat selection, and copies it right after the drag ends. A selection made
-    /// while another row was at the top is dropped: its cells now hold other text.
-    fn draw_chat_selection(&mut self, frame: &mut Frame, area: Rect) {
-        let copy = std::mem::take(&mut self.copy_selection_on_draw);
-        let Some(selection) = self.chat_selection else {
-            return;
-        };
-        if selection.chat_top != self.chat_top || !contains_cell(area, selection.anchor.0, selection.anchor.1) {
-            self.chat_selection = None;
-            return;
-        }
-        if copy {
-            let text = chat_selection::selected_text(frame.buffer_mut(), area, &selection);
-            // Written before ratatui flushes this frame; terminals act on OSC 52 wherever it lands.
-            let _ = io::stdout().write_all(chat_selection::osc52_copy(&text).as_bytes());
-            self.status = format!("Copied {} chars", text.chars().count());
-        }
-        chat_selection::highlight(frame.buffer_mut(), area, &selection);
-    }
-
-    fn chat_lines(&self) -> Vec<Line<'static>> {
-        let shown: Vec<&(String, String)> = self
-            .transcript
-            .iter()
-            .filter(|(role, _)| role != "system")
-            .collect();
-        let mut lines = Vec::new();
-        for (role, content) in &shown {
-            let (label, style) = match role.as_str() {
-                "user" => (
-                    "You",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                "minerve" => (
-                    "Minerve",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                GOAL_EVALUATOR_UI_ROLE => (
-                    "Goal evaluator",
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                other => (other, Style::default().add_modifier(Modifier::BOLD)),
-            };
-            lines.push(Line::styled(format!("{}:", label), style));
-
-            // Tool results are labeled with the function name; collapse them by default.
-            let is_tool = !matches!(role.as_str(), "user" | "minerve" | "system" | GOAL_EVALUATOR_UI_ROLE);
-            if is_tool && !self.tools_expanded {
-                let first = content.lines().next().unwrap_or_default();
-                let lines_count = content.lines().count();
-                let summary = format!("  [{} line(s)] {}", lines_count, first);
-                lines.push(Line::styled(
-                    format!("{} ▸ collapsed (Ctrl+O to expand)", summary.trim_end()),
-                    Style::default().fg(Color::DarkGray),
-                ));
-                lines.push(Line::default());
-                continue;
-            }
-
-            let text = if content.chars().count() > MAX_OUTPUT_LEN {
-                if role.as_str() == "minerve" {
-                    content.trim().to_string()
-                } else {
-                    let head: String = content.chars().take(MAX_OUTPUT_LEN).collect();
-                    format!("{}\n...[truncated]", head)
-                }
-            } else {
-                content.clone()
-            };
-            lines.extend(crate::markdown::render(&text));
-            lines.push(Line::default());
-        }
-
-        // Results of local slash commands. Not sent to the model.
-        for notice in &self.notices {
-            lines.push(Line::styled(
-                "Command:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            lines.push(Line::styled(notice.clone(), Style::default().fg(Color::Gray)));
-            lines.push(Line::default());
-        }
-
-        // Shell output queued with `!command`: shown here, sent to the model with the next message.
-        for output in &self.pending_command_output {
-            lines.push(Line::styled(
-                "Shell (queued, sent with your next message):",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            lines.extend(crate::markdown::render(output));
-            lines.push(Line::default());
-        }
-        lines
-    }
-
-    /// Popup listing the slash commands that match the input, just above the input box.
-    fn draw_slash_menu(&self, frame: &mut Frame, input_area: Rect) {
-        let matches = self.slash_matches();
-        if matches.is_empty() {
-            return;
-        }
-        let height = (matches.len() as u16 + 2).min(input_area.y);
-        let area = Rect {
-            x: input_area.x,
-            y: input_area.y.saturating_sub(height),
-            width: input_area.width,
-            height,
-        };
-        let lines: Vec<Line> = matches
-            .iter()
-            .map(|(name, description)| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("{:<12}", name),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(description.to_string(), Style::default().fg(Color::Gray)),
-                ])
-            })
-            .collect();
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Commands (Tab complete, Enter run) ")
-                    .border_style(Style::default().fg(Color::Cyan)),
-            ),
-            area,
-        );
-    }
-
-    fn draw_input(&mut self, frame: &mut Frame, area: Rect) {
-        let title = " Message ";
-        let border_color = Color::Cyan;
-
-        // Inside the borders.
-        let inner_width = area.width.saturating_sub(2);
-        let inner_height = area.height.saturating_sub(2);
-        let layout = layout_input(&self.input, inner_width);
-        let (col, row) = layout.cursor_cell(self.cursor);
-        // Keep the cursor row visible once the wrapped input is taller than the box.
-        let scroll_row = row.saturating_add(1).saturating_sub(inner_height);
-        self.input_area = area;
-        self.input_scroll_row = scroll_row;
-
-        // Rows are pre-wrapped by display width (no Paragraph wrap) so they match the cursor position.
-        let text = if self.input.is_empty() {
-            // Indented so the tip reads as a hint, apart from where typed text starts.
-            let tip = format!(" {}", self.pro_tip.visible_text(Instant::now()));
-            Text::from(Span::styled(tip, Style::default().fg(Color::DarkGray)))
-        } else {
-            Text::from(layout.rows.join("\n"))
-        };
-        let input = Paragraph::new(text)
-            .scroll((scroll_row, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(border_color)),
-            );
-        frame.render_widget(input, area);
-
-        frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
-    }
 }

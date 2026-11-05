@@ -28,3 +28,4 @@ rmcp = { version = "3.8", default-features = false, features = ["client", "trans
 # rmcp's HTTP transport and OAuth take a reqwest 0.13 client; the rest of minerve is still on 0.11.
 reqwest_rmcp = { package = "reqwest", version = "0.13", default-features = false }
 http = "1"
+minerve-gateway = { path = "gateway" }

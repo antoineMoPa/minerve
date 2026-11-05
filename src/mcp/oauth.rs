@@ -85,7 +85,7 @@ pub fn forget_login(server_url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn open_in_browser(url: &str) {
+pub(crate) fn open_in_browser(url: &str) {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     // The URL is also shown in `/mcp`, so a missing opener only costs a copy-paste.
     let _ = std::process::Command::new(opener)

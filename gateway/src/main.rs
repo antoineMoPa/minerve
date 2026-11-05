@@ -1,47 +1,43 @@
-mod core;
-mod transport;
+//! `minerve-gateway`: runs the gateway without minerve's TUI.
+//!
+//! `minerve-gateway manifest <bot name>` prints the Slack app manifest.
+//! `minerve-gateway [--link] [--console]` reads `~/.minerve/message-apps.toml` and the Slack
+//! tokens, then serves until killed. `--link` prints a one-time code to link your account.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use tokio::sync::mpsc;
-
-use crate::core::agent::Agent;
-use crate::core::auth::Allowlist;
-use crate::core::router::Router;
-use crate::core::sessions::SessionStore;
-use crate::transport::console::Console;
-use crate::transport::Transport;
+use minerve_gateway::engine::config;
+use minerve_gateway::engine::log::log_path;
+use minerve_gateway::service::{Gateway, GatewayOptions};
+use minerve_gateway::transport::slack;
 
 #[tokio::main]
 async fn main() {
-    let allowlist = Allowlist::from_csv(&std::env::var("GATEWAY_ALLOWED_USERS").unwrap_or_default());
-    if allowlist.is_empty() {
-        eprintln!("gateway: GATEWAY_ALLOWED_USERS is empty, every message will be ignored (the console user is `me`)");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("manifest") {
+        let Some(name) = args.get(1) else {
+            eprintln!("usage: minerve-gateway manifest <bot name>");
+            std::process::exit(2);
+        };
+        print!("{}", slack::manifest(name));
+        return;
     }
-    let router = Arc::new(Router {
-        allowlist,
-        sessions: SessionStore::open(SessionStore::default_path()),
-        agent: Agent {
-            minerve_bin: std::env::var_os("MINERVE_BIN").map(PathBuf::from).unwrap_or_else(|| "minerve".into()),
-            workdir: std::env::var_os("GATEWAY_WORKDIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| std::env::current_dir().expect("no working directory")),
-        },
+    let config = config::load().unwrap_or_else(|err| {
+        eprintln!("minerve-gateway: {}", err);
+        std::process::exit(1);
     });
-
-    let transports: Vec<Arc<dyn Transport>> = vec![Arc::new(Console)];
-    let (tx, rx) = mpsc::channel(64);
-    for transport in &transports {
-        let (transport, tx) = (transport.clone(), tx.clone());
-        tokio::spawn(async move {
-            if let Err(err) = transport.run(tx).await {
-                eprintln!("gateway: {} stopped: {}", transport.name(), err);
-            }
-        });
+    let options = GatewayOptions {
+        config,
+        slack_tokens: config::load_slack_tokens(),
+        minerve_bin: std::env::var_os("MINERVE_BIN").map(Into::into).unwrap_or_else(|| "minerve".into()),
+        console: args.iter().any(|arg| arg == "--console"),
+    };
+    let gateway = Gateway::start(&tokio::runtime::Handle::current(), options).unwrap_or_else(|err| {
+        eprintln!("minerve-gateway: {}", err);
+        std::process::exit(1);
+    });
+    if args.iter().any(|arg| arg == "--link") {
+        let link = gateway.start_link();
+        eprintln!("Send this to the bot in a DM within 5 minutes: {}", link.code);
     }
-    drop(tx);
-    let by_name = transports.into_iter().map(|t| (t.name(), t)).collect::<HashMap<_, _>>();
-    router.serve(by_name, rx).await;
+    eprintln!("minerve-gateway: running, log in {}", log_path().display());
+    std::future::pending::<()>().await;
 }

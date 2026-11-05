@@ -106,6 +106,21 @@ pub fn osc52_copy(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
 }
 
+/// Puts `text` on the system clipboard with the OS's own tool (`pbcopy`, else `wl-copy`, else
+/// `xclip`). False when none worked: then only OSC 52 is left, which some terminals ignore.
+pub fn copy_with_system_tool(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let tools: &[(&str, &[&str])] = &[("pbcopy", &[]), ("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+    tools.iter().any(|(tool, args)| {
+        let Ok(mut child) = Command::new(tool).args(*args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+            return false;
+        };
+        let written = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        child.wait().is_ok_and(|status| status.success()) && written
+    })
+}
+
 fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

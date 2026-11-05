@@ -244,6 +244,7 @@ fn keys_to_store(settings: &Settings, stored: keys_file::SavedKeys) -> keys_file
         openrouter_api_key: settings.openrouter_key.clone().or(stored.openrouter_api_key),
         openai_api_key: settings.openai_key.clone().or(stored.openai_api_key),
         anthropic_api_key: settings.anthropic_key.clone().or(stored.anthropic_api_key),
+        other: stored.other,
     }
 }
 
@@ -326,6 +327,7 @@ mod tests {
             openrouter_api_key: Some(String::from("sk-or-old")),
             openai_api_key: Some(String::from("sk-openai-old")),
             anthropic_api_key: None,
+            other: [(String::from("slack_bot_token"), serde_json::json!("xoxb-1"))].into(),
         };
         let settings = Settings {
             openai_key: Some(String::from("sk-openai-new")),
@@ -337,6 +339,7 @@ mod tests {
                 openrouter_api_key: Some(String::from("sk-or-old")),
                 openai_api_key: Some(String::from("sk-openai-new")),
                 anthropic_api_key: None,
+                other: [(String::from("slack_bot_token"), serde_json::json!("xoxb-1"))].into(),
             }
         );
     }

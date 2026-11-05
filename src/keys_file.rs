@@ -18,6 +18,9 @@ pub struct SavedKeys {
     pub openai_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_api_key: Option<String>,
+    /// Keys other features keep here (the Slack tokens of `/message-apps`), written back as they were.
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn keys_file() -> PathBuf {

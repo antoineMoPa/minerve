@@ -238,7 +238,7 @@ impl McpManager {
 
 /// Draws the border and returns the inside. The modal is as tall as `lines` once wrapped,
 /// plus a blank row and the hint row.
-fn draw_modal_frame(frame: &mut Frame, area: Rect, title: &str, lines: &[Line]) -> Rect {
+pub(crate) fn draw_modal_frame(frame: &mut Frame, area: Rect, title: &str, lines: &[Line]) -> Rect {
     let inner_width = MODAL_WIDTH.min(area.width).saturating_sub(2).max(1) as usize;
     let wrapped_rows: usize = lines.iter().map(|line| line.width().max(1).div_ceil(inner_width)).sum();
     let height = (wrapped_rows as u16 + 4).min(MAX_MODAL_HEIGHT);
