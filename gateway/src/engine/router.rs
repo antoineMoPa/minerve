@@ -117,7 +117,10 @@ impl Router {
             // Given once, when the session starts: where the agent runs, and any length limit.
             let mut system_prompts = vec![format!("You are running in {}.", transport.display_name())];
             system_prompts.extend(length_instruction(capabilities));
-            let reply = match self.agent.run_turn(&session_id, &system_prompts, &prompt).await {
+            self.status.lock().unwrap().working += 1;
+            let result = self.agent.run_turn(&session_id, &system_prompts, &prompt).await;
+            self.status.lock().unwrap().working -= 1;
+            let reply = match result {
                 Ok(reply) => reply,
                 Err(err) => format!("Error: {}", err),
             };

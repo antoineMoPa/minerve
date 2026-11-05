@@ -22,6 +22,8 @@ pub struct Status {
     /// By transport name.
     pub connections: BTreeMap<String, Connection>,
     pub conversations: usize,
+    /// Turns running now.
+    pub working: usize,
     pub link: Option<LinkState>,
 }
 

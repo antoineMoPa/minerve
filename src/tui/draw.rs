@@ -161,8 +161,16 @@ impl App {
             self.matrix = None;
         }
 
+        // The minerve answering Slack says so on a line of its own, above everything else.
+        let mut area = frame.area();
+        if let Some(bar) = crate::message_apps_runner::top_bar() {
+            let [bar_area, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+            draw_message_apps_bar(frame, bar_area, &bar);
+            area = rest;
+        }
+
         // Input grows with its wrapped text: 1 line minimum, at most 8 lines of text.
-        let inner_width = frame.area().width.saturating_sub(2);
+        let inner_width = area.width.saturating_sub(2);
         let row_count = layout_input(&self.input, inner_width).rows.len() as u16;
         let input_height = (row_count + 2).clamp(3, 10);
 
@@ -173,7 +181,7 @@ impl App {
             Constraint::Length(input_height),
             Constraint::Length(1),
         ])
-        .areas(frame.area());
+        .areas(area);
 
         self.draw_chat(frame, chat_area);
 
@@ -418,5 +426,48 @@ impl App {
         frame.render_widget(input, area);
 
         frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
+    }
+}
+
+/// `minerve · ~/dir` on the left, `● slack · @bot` (and how many turns run) on the right, on a tinted line.
+fn draw_message_apps_bar(frame: &mut Frame, area: Rect, bar: &crate::message_apps_runner::TopBar) {
+    let background = Style::default().bg(Color::Rgb(31, 42, 48));
+    let dim = Style::default().fg(Color::DarkGray);
+    let dir = std::env::current_dir().map(|dir| crate::message_apps::tilde_path(&dir)).unwrap_or_default();
+    let mut right = vec![
+        Span::styled("● ", Style::default().fg(Color::Green)),
+        Span::raw(format!("slack · @{}", bar.bot)),
+    ];
+    if bar.working > 0 {
+        right.push(Span::styled(format!(" · {} working", bar.working), dim));
+    }
+    right.push(Span::raw(" "));
+    frame.render_widget(Paragraph::new("").style(background), area);
+    frame.render_widget(Paragraph::new(Line::styled(format!(" minerve · {}", dir), dim)).style(background), area);
+    frame.render_widget(Paragraph::new(Line::from(right)).alignment(ratatui::layout::Alignment::Right).style(background), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message_apps_runner::TopBar;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn bar_text(working: usize) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(70, 1)).unwrap();
+        let bar = TopBar { bot: "antoine-bot".into(), working };
+        terminal.draw(|frame| draw_message_apps_bar(frame, frame.area(), &bar)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..70).map(|x| buffer[(x, 0)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn bar_shows_the_dir_left_and_the_bot_right() {
+        let text = bar_text(0);
+        println!("[{}]", text);
+        assert!(text.starts_with(" minerve · "), "{text}");
+        assert!(text.ends_with("● slack · @antoine-bot "), "{text}");
+        assert!(bar_text(2).ends_with("● slack · @antoine-bot · 2 working "));
     }
 }

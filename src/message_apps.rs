@@ -562,7 +562,7 @@ fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
-fn tilde_path(path: &std::path::Path) -> String {
+pub(crate) fn tilde_path(path: &std::path::Path) -> String {
     match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(PathBuf::from)) {
         Some(rest) if rest.as_os_str().is_empty() => String::from("~"),
         Some(rest) => format!("~/{}", rest.display()),

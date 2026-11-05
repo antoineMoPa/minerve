@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use minerve_gateway::engine::config::{self, MessageAppsConfig};
 use minerve_gateway::engine::link::PendingLink;
-use minerve_gateway::engine::status::Status;
+use minerve_gateway::engine::status::{Connection, Status};
 use minerve_gateway::service::{Gateway, GatewayOptions};
 
 use crate::get_global_runtime;
@@ -67,6 +67,21 @@ pub fn view() -> RunnerView {
         Runner::Stopped => RunnerView::Stopped,
         Runner::Running(gateway) => RunnerView::Running { status: gateway.status(), allowed: gateway.allowed() },
         Runner::Blocked(err) => RunnerView::Blocked(err.clone()),
+    }
+}
+
+/// What the top bar shows. Only the minerve connected to Slack has one.
+pub struct TopBar {
+    pub bot: String,
+    pub working: usize,
+}
+
+pub fn top_bar() -> Option<TopBar> {
+    let Runner::Running(gateway) = &*RUNNER.lock().unwrap() else { return None };
+    let status = gateway.status();
+    match status.connections.get("slack") {
+        Some(Connection::Connected { bot, .. }) => Some(TopBar { bot: bot.clone(), working: status.working }),
+        _ => None,
     }
 }
 
