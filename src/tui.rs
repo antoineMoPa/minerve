@@ -1219,6 +1219,12 @@ impl App {
             return;
         }
 
+        // Like the pickers, `/mcp` replaces the whole UI: no message box or input cursor behind it.
+        if let Some(manager) = self.mcp_manager.as_ref() {
+            manager.draw(frame, frame.area());
+            return;
+        }
+
         // The rain replaces the whole UI until a key or paste ends it.
         if let Some(matrix) = self.matrix.as_mut() {
             if matrix.draw(frame, frame.area()) {
@@ -1259,9 +1265,6 @@ impl App {
         self.draw_slash_menu(frame, input_area);
         if let (Some(modal), None) = (self.setup_modal.as_ref(), self.boot.as_ref()) {
             modal.draw(frame, frame.area());
-        }
-        if let Some(manager) = self.mcp_manager.as_ref() {
-            manager.draw(frame, frame.area());
         }
 
         frame.render_widget(

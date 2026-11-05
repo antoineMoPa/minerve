@@ -107,9 +107,13 @@ impl McpManager {
             KeyCode::Enter | KeyCode::Char(' ') => match selected_row {
                 None => self.open_form(),
                 Some(row) => match row.connection {
-                    McpConnection::Connected(_) | McpConnection::Connecting => {
+                    McpConnection::Connected(_) | McpConnection::Connecting | McpConnection::LoggingIn { .. } => {
                         mcp::disconnect(&row.name);
                         self.message = Some(Message::Info(format!("Disconnected '{}'.", row.name)));
+                    }
+                    McpConnection::NeedsLogin { .. } => {
+                        mcp::log_in(&row.name);
+                        self.message = None;
                     }
                     McpConnection::Failed(_) | McpConnection::Disconnected => {
                         mcp::connect(&row.name);
@@ -257,6 +261,8 @@ fn connection_label(name: &str, connection: &McpConnection) -> (String, Color) {
             (format!("connected, {} tools", tool_count), Color::Green)
         }
         McpConnection::Failed(_) => (String::from("failed"), Color::Red),
+        McpConnection::NeedsLogin { .. } => (String::from("needs login"), Color::Yellow),
+        McpConnection::LoggingIn { .. } => (String::from("logging in..."), Color::Yellow),
         McpConnection::Disconnected => (String::from("disconnected"), Color::DarkGray),
     }
 }
@@ -273,7 +279,7 @@ fn server_line(row: &McpServerRow, is_selected: bool) -> Line<'static> {
     ])
 }
 
-/// What the server runs or calls, then its tools or its connection error.
+/// What the server runs or calls, then its connection error or tools left out of requests.
 fn server_details(row: &McpServerRow) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let target = match &row.config {
@@ -285,8 +291,6 @@ fn server_details(row: &McpServerRow) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(target, bold)];
     match &row.connection {
         McpConnection::Connected(server) => {
-            let tool_names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_str()).collect();
-            lines.push(Line::from(format!("Tools: {}", tool_names.join(", "))));
             let skipped = mcp::skipped_tool_names(&row.name, server);
             if !skipped.is_empty() {
                 lines.push(Line::styled(
@@ -296,6 +300,14 @@ fn server_details(row: &McpServerRow) -> Vec<Line<'static>> {
             }
         }
         McpConnection::Failed(err) => lines.push(Line::styled(err.clone(), Style::default().fg(Color::Red))),
+        McpConnection::NeedsLogin { .. } => {
+            lines.push(Line::styled("Press Enter to log in with your browser.", Style::default().fg(Color::Yellow)))
+        }
+        McpConnection::LoggingIn { authorize_url: None } => lines.push(Line::from("Preparing the login...")),
+        McpConnection::LoggingIn { authorize_url: Some(url) } => {
+            lines.push(Line::from("Waiting for the browser login. If no browser opened, visit:"));
+            lines.push(Line::from(url.clone()));
+        }
         McpConnection::Connecting | McpConnection::Disconnected => {}
     }
     lines

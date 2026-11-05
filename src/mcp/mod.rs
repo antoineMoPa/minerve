@@ -7,10 +7,10 @@
 
 pub mod client;
 pub mod config;
-mod transport;
+pub mod oauth;
 
 use crate::ChatCompletionFunctionDefinition;
-use client::McpServer;
+use client::{ConnectError, McpServer};
 use config::{ConfigSource, McpServerConfig};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -29,6 +29,10 @@ pub enum McpConnection {
     Connecting,
     Connected(Arc<McpServer>),
     Failed(String),
+    /// The server answered 401. Holds its `WWW-Authenticate` header, which starts the login.
+    NeedsLogin { challenge: String },
+    /// Browser login running. The URL is set once the browser is sent there.
+    LoggingIn { authorize_url: Option<String> },
     /// Disconnected from `/mcp`. Lasts until minerve exits or the server is connected again.
     Disconnected,
 }
@@ -82,7 +86,7 @@ pub fn skipped_tool_names(server_name: &str, server: &McpServer) -> Vec<String> 
         .tools
         .iter()
         .filter(|tool| !is_valid_function_name(&tool_function_name(server_name, &tool.name)))
-        .map(|tool| tool.name.clone())
+        .map(|tool| tool.name.to_string())
         .collect()
 }
 
@@ -116,23 +120,60 @@ pub fn connect(name: &str) {
     notify_change();
     let name = name.to_string();
     crate::get_global_runtime().spawn(async move {
-        let result = match tokio::time::timeout(CONNECT_TIMEOUT, McpServer::connect(&config, reqwest::Client::new())).await
-        {
-            Ok(result) => result,
-            Err(_) => Err(format!("no answer within {}s", CONNECT_TIMEOUT.as_secs())),
+        let connection = match tokio::time::timeout(CONNECT_TIMEOUT, McpServer::connect(&config)).await {
+            Ok(Ok(server)) => McpConnection::Connected(Arc::new(server)),
+            Ok(Err(ConnectError::NeedsLogin { challenge })) => McpConnection::NeedsLogin { challenge },
+            Ok(Err(ConnectError::Failed(err))) => McpConnection::Failed(err),
+            Err(_) => McpConnection::Failed(format!("no answer within {}s", CONNECT_TIMEOUT.as_secs())),
         };
-        {
-            let mut slots = registry().slots.lock().unwrap();
-            // Removed, disconnected or reconnected meanwhile: this connection is not wanted.
-            let Some(slot) = slots.get_mut(&name).filter(|slot| slot.attempt == attempt) else {
-                return;
-            };
-            slot.connection = match result {
-                Ok(server) => McpConnection::Connected(Arc::new(server)),
-                Err(err) => McpConnection::Failed(err),
-            };
+        set_connection_if_current(&name, attempt, connection);
+    });
+}
+
+/// Sets the state of a server unless it was removed, disconnected or reconnected since
+/// `attempt` started: then the result is not wanted.
+fn set_connection_if_current(name: &str, attempt: u64, connection: McpConnection) {
+    {
+        let mut slots = registry().slots.lock().unwrap();
+        let Some(slot) = slots.get_mut(name).filter(|slot| slot.attempt == attempt) else {
+            return;
+        };
+        slot.connection = connection;
+    }
+    notify_change();
+}
+
+/// Starts the browser login of a server that answered 401, then connects with the new token.
+pub fn log_in(name: &str) {
+    let (url, challenge, attempt) = {
+        let mut slots = registry().slots.lock().unwrap();
+        let slot = slots.get_mut(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
+        let McpServerConfig::Http { url, .. } = &slot.config else {
+            panic!("login of stdio MCP server '{}'", name);
+        };
+        let McpConnection::NeedsLogin { challenge } = &slot.connection else {
+            panic!("login of MCP server '{}' that does not need one", name);
+        };
+        let login = (url.clone(), challenge.clone());
+        slot.attempt += 1;
+        slot.connection = McpConnection::LoggingIn { authorize_url: None };
+        (login.0, login.1, slot.attempt)
+    };
+    notify_change();
+    let name = name.to_string();
+    crate::get_global_runtime().spawn(async move {
+        let show_url = |authorize_url: String| {
+            set_connection_if_current(&name, attempt, McpConnection::LoggingIn { authorize_url: Some(authorize_url) });
+        };
+        match oauth::log_in(&url, &challenge, show_url).await {
+            Ok(()) => {
+                let still_current = registry().slots.lock().unwrap().get(&name).is_some_and(|slot| slot.attempt == attempt);
+                if still_current {
+                    connect(&name);
+                }
+            }
+            Err(err) => set_connection_if_current(&name, attempt, McpConnection::Failed(format!("login: {}", err))),
         }
-        notify_change();
     });
 }
 
@@ -162,13 +203,17 @@ pub fn add_server(name: &str, config: McpServerConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Disconnects the server and deletes it from the config file it was read from.
+/// Disconnects the server, deletes it from the config file it was read from and forgets its login.
 pub fn remove_server(name: &str) -> Result<(), String> {
-    let source = {
+    let (source, config) = {
         let slots = registry().slots.lock().unwrap();
-        slots.get(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name)).source
+        let slot = slots.get(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
+        (slot.source, slot.config.clone())
     };
     config::remove_server_from_file(&source.path(), name)?;
+    if let McpServerConfig::Http { url, .. } = &config {
+        oauth::forget_login(url)?;
+    }
     registry().slots.lock().unwrap().remove(name);
     notify_change();
     Ok(())
@@ -244,7 +289,7 @@ impl McpServers {
                     Some(ChatCompletionFunctionDefinition {
                         name: function_name,
                         description: Some(description),
-                        parameters: Some(tool.input_schema.clone()),
+                        parameters: Some(Value::Object(tool.input_schema.as_ref().clone())),
                     })
                 })
             })
@@ -263,11 +308,11 @@ impl McpServers {
                 .strip_prefix(TOOL_NAME_SEPARATOR)?;
             server.tools.iter().any(|tool| tool.name == tool_name).then_some((server, tool_name))
         })?;
-        let arguments: Value = if arguments.trim().is_empty() {
-            Value::Object(Default::default())
+        let arguments = if arguments.trim().is_empty() {
+            serde_json::Map::new()
         } else {
             match serde_json::from_str(arguments) {
-                Ok(value @ Value::Object(_)) => value,
+                Ok(Value::Object(map)) => map,
                 Ok(other) => return Some(Err(format!("arguments must be a JSON object, got {}", other))),
                 Err(err) => return Some(Err(format!("arguments are not valid JSON: {}", err))),
             }

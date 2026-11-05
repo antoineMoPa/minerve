@@ -76,6 +76,8 @@ Their tools reach the model as `mcp__<server>__<tool>`.
 
 Type `/mcp` to manage servers: see each one's state and tools, connect or disconnect it for the session, remove it from its config file, or add a new one (saved to `~/.minerve/mcp.json`). In the add form, a URL makes an HTTP server and anything else is a command line. The optional third field takes `KEY=value` pairs separated by commas, used as env vars for a command or headers for a URL.
 
+HTTP servers that need a login (OAuth 2.1 with PKCE, as the MCP spec asks, plus OAuth 2.0 discovery fallbacks) show **needs login** in `/mcp`: press Enter to log in with your browser. Logins are kept in `~/.minerve/mcp_auth.json` (owner-only) and refreshed when the server allows it. A server with an `Authorization` header in its config uses that header instead.
+
 ## Credits
 
 Minerva boot screen is based on an image by wikipedia user JackyM59. [[source]](https://ast.wikipedia.org/wiki/Minerva#/media/Ficheru:Statue_de_la_d%C3%A9esse_Minerve_-_Mus%C3%A9e_du_Louvre_(Ma_332).jpg)
