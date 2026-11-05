@@ -17,6 +17,17 @@ pub struct ChatCompletionMessage {
     pub tool_calls: Option<Vec<ChatCompletionToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Set on user-role messages that minerve wrote rather than the user, so the chat labels
+    /// them by who wrote them. Kept in session files; never sent to the API (`RequestMessage` has no such field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_author: Option<PromptAuthor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAuthor {
+    /// `/goal`: the evaluator's reason the goal is not reached yet.
+    GoalEvaluator,
 }
 
 impl ChatCompletionMessage {
@@ -26,6 +37,7 @@ impl ChatCompletionMessage {
             content: Some(content),
             tool_calls: None,
             tool_call_id: None,
+            prompt_author: None,
         }
     }
 
@@ -35,6 +47,7 @@ impl ChatCompletionMessage {
             content: Some(content),
             tool_calls: None,
             tool_call_id: None,
+            prompt_author: None,
         }
     }
 
@@ -44,6 +57,7 @@ impl ChatCompletionMessage {
             content: Some(content),
             tool_calls: None,
             tool_call_id: None,
+            prompt_author: None,
         }
     }
 
@@ -53,6 +67,15 @@ impl ChatCompletionMessage {
             content: Some(content),
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
+            prompt_author: None,
+        }
+    }
+
+    /// A user-role message written by minerve: sent to the model as the user, labeled `author` in the chat.
+    pub fn authored_prompt(author: PromptAuthor, content: String) -> Self {
+        Self {
+            prompt_author: Some(author),
+            ..Self::user(content)
         }
     }
 }

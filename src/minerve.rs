@@ -72,7 +72,9 @@ use crate::mcp::McpServers;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::utils::cap_tool_output;
 use crate::control_socket::{AgentState, ControlSocket, MinerveEvent};
-use crate::ui::{send_status, update_chat_ui, UiSender};
+use crate::chat::PromptAuthor;
+use crate::goal;
+use crate::ui::{send_notice, send_status, update_chat_ui, UiSender};
 use crate::{
     ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole,
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionToolCall,
@@ -102,6 +104,9 @@ pub struct Minerve {
     /// See `control_socket`.
     control: Option<Arc<ControlSocket>>,
 }
+
+/// Role label in the chat transcript of the prompts the `/goal` evaluator sends.
+pub const GOAL_EVALUATOR_UI_ROLE: &str = "goal evaluator";
 
 pub fn get_system_prompt() -> String {
     return String::from(include_str!("../prompts/MAIN_SYSTEM_PROMPT.txt"));
@@ -153,7 +158,10 @@ fn get_ui_messages(messages: &[ChatCompletionMessage]) -> Vec<(String, String)> 
         };
         let role_label = match msg.role {
             ChatCompletionMessageRole::System => String::from("system"),
-            ChatCompletionMessageRole::User => String::from("user"),
+            ChatCompletionMessageRole::User => match msg.prompt_author {
+                None => String::from("user"),
+                Some(PromptAuthor::GoalEvaluator) => String::from(GOAL_EVALUATOR_UI_ROLE),
+            },
             ChatCompletionMessageRole::Assistant => String::from("minerve"),
             ChatCompletionMessageRole::Tool => {
                 let tool_call_id = msg
@@ -348,7 +356,7 @@ impl Minerve {
     }
 
     /// URL and key of the API the model is served from. Fails when that provider has no key set.
-    fn endpoint_for(&self, model: &ActiveModel) -> Result<(String, String), String> {
+    pub(crate) fn endpoint_for(&self, model: &ActiveModel) -> Result<(String, String), String> {
         let url = model.provider.request_url(&self.base_url);
         let api_key = self.api_keys.lock().unwrap().for_provider(model.provider)?.to_string();
         Ok((url, api_key))
@@ -586,112 +594,202 @@ impl Minerve {
         self.send_control_event(&MinerveEvent::Session { session_id: &self.current_session_id() });
     }
 
-    pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
+    /// Marks a turn as running and adds the user's prompt to the conversation.
+    fn start_turn(&self, user_input: String, ui: &UiSender) {
         self.request_in_flight.store(true, Ordering::SeqCst);
         self.cancel_requested.store(false, Ordering::SeqCst);
         self.send_control_event(&MinerveEvent::State { state: AgentState::Working });
+        self.add_user_prompt(user_input, ui);
+        send_status(ui, "working...");
+    }
 
+    fn add_user_prompt(&self, user_input: String, ui: &UiSender) {
+        self.add_prompt(ChatCompletionMessage::user(user_input), ui);
+    }
+
+    /// Adds a user-role message, written by the user or by minerve (see `PromptAuthor`).
+    fn add_prompt(&self, prompt: ChatCompletionMessage, ui: &UiSender) {
         clean_tool_outputs_of_previous_prompts(&mut self.messages.lock().unwrap());
-        self.push_message(ChatCompletionMessage::user(user_input));
-        update_chat_ui(&ui, get_ui_messages(&self.messages.lock().unwrap()));
+        self.push_message(prompt);
+        update_chat_ui(ui, get_ui_messages(&self.messages.lock().unwrap()));
+    }
 
-        send_status(&ui, "working...");
+    fn end_turn(&self, ui: &UiSender) {
+        self.save_session();
+        self.request_in_flight.store(false, Ordering::SeqCst);
+        self.send_control_event(&MinerveEvent::State { state: AgentState::WaitingForInput });
+        send_status(ui, "");
+    }
 
-        crate::get_global_runtime().spawn({
-            let self_clone = self.clone();
-            async move {
-                let messages = self_clone.messages.clone();
-                let cancel_requested = self_clone.cancel_requested.clone();
-                // One model for the whole turn, even if `/model` switches it meanwhile.
-                let model = self_clone.active_model();
-                let mut should_continue = true;
+    /// Requests and tool calls until the model answers without tool calls, a tool fails, or the turn is cancelled.
+    /// Fails with the error of a request that failed; it is also added to the chat.
+    async fn run_turn(&self, ui: &UiSender, is_headless: bool) -> Result<(), String> {
+        let messages = self.messages.clone();
+        let cancel_requested = self.cancel_requested.clone();
+        // One model for the whole turn, even if `/model` switches it meanwhile.
+        let model = self.active_model();
+        let mut should_continue = true;
 
-                while should_continue {
-                    should_continue = false;
+        while should_continue {
+            should_continue = false;
 
-                    // Servers still connecting (at launch, or from `/mcp`) are waited for.
-                    if crate::mcp::is_any_connecting() {
-                        send_status(&ui, "connecting to MCP servers...");
-                    }
-                    let mcp = crate::mcp::connected_servers().await;
+            // Servers still connecting (at launch, or from `/mcp`) are waited for.
+            if crate::mcp::is_any_connecting() {
+                send_status(ui, "connecting to MCP servers...");
+            }
+            let mcp = crate::mcp::connected_servers().await;
 
-                    // Show working indicator at start of each loop iteration
-                    send_status(&ui, "working...");
+            // Show working indicator at start of each loop iteration
+            send_status(ui, "working...");
 
-                    let request = {
-                        let msgs = messages.lock().unwrap();
-                        self_clone.build_request(&model, &msgs, &mcp)
-                    };
+            let request = {
+                let msgs = messages.lock().unwrap();
+                self.build_request(&model, &msgs, &mcp)
+            };
 
-                    // Register for the cancel signal before checking the flag, so a cancel
-                    // arriving in between is not missed.
-                    let cancelled = self_clone.cancel_notify.notified();
-                    tokio::pin!(cancelled);
-                    cancelled.as_mut().enable();
-                    let chat_result = match self_clone.endpoint_for(&model) {
-                        Err(err) => Some(Err(err)),
-                        Ok(_) if cancel_requested.load(Ordering::SeqCst) => None,
-                        Ok((url, api_key)) => {
-                            tokio::select! {
-                                result = post_request_with_token_count(
-                                    &self_clone.client,
-                                    model.provider,
-                                    &url,
-                                    &api_key,
-                                    request,
-                                    self_clone.token_counter.clone(),
-                                ) => Some(result),
-                                _ = &mut cancelled => None,
-                            }
-                        }
-                    };
-
-                    match chat_result {
-                        // Cancelled: nothing was added, so the conversation ends on the last user
-                        // or tool message and the next prompt can follow.
-                        None => {}
-                        Some(Ok(response)) => {
-                            let assistant_message = response
-                                .choices
-                                .into_iter()
-                                .next()
-                                .expect("chat completion response without choices")
-                                .message;
-
-                            let tool_calls = assistant_message.tool_calls.clone();
-                            self_clone.push_message(assistant_message);
-
-                            if let Some(tool_calls) = tool_calls {
-                                let mut errors = Vec::new();
-                                should_continue = run_tool_calls(
-                                    &tool_calls,
-                                    &mcp,
-                                    Some(ui.clone()),
-                                    is_headless,
-                                    &cancel_requested,
-                                    &mut |msg| self_clone.push_message(msg),
-                                    &mut |err| errors.push(err),
-                                )
-                                .await;
-                                for err in errors {
-                                    self_clone.add_assistant_message_with_update_ui(err, &ui);
-                                }
-                            }
-
-                            update_chat_ui(&ui, get_ui_messages(&messages.lock().unwrap()));
-                        }
-                        Some(Err(req_err)) => {
-                            let error_msg = format!("Request Error: {}", req_err);
-                            self_clone.add_assistant_message_with_update_ui(error_msg, &ui);
-                        }
+            // Register for the cancel signal before checking the flag, so a cancel
+            // arriving in between is not missed.
+            let cancelled = self.cancel_notify.notified();
+            tokio::pin!(cancelled);
+            cancelled.as_mut().enable();
+            let chat_result = match self.endpoint_for(&model) {
+                Err(err) => Some(Err(err)),
+                Ok(_) if cancel_requested.load(Ordering::SeqCst) => None,
+                Ok((url, api_key)) => {
+                    tokio::select! {
+                        result = post_request_with_token_count(
+                            &self.client,
+                            model.provider,
+                            &url,
+                            &api_key,
+                            request,
+                            self.token_counter.clone(),
+                        ) => Some(result),
+                        _ = &mut cancelled => None,
                     }
                 }
+            };
 
-                self_clone.save_session();
-                self_clone.request_in_flight.store(false, Ordering::SeqCst);
-                self_clone.send_control_event(&MinerveEvent::State { state: AgentState::WaitingForInput });
-                send_status(&ui, "");
+            match chat_result {
+                // Cancelled: nothing was added, so the conversation ends on the last user
+                // or tool message and the next prompt can follow.
+                None => {}
+                Some(Ok(response)) => {
+                    let assistant_message = response
+                        .choices
+                        .into_iter()
+                        .next()
+                        .expect("chat completion response without choices")
+                        .message;
+
+                    let tool_calls = assistant_message.tool_calls.clone();
+                    self.push_message(assistant_message);
+
+                    if let Some(tool_calls) = tool_calls {
+                        let mut errors = Vec::new();
+                        should_continue = run_tool_calls(
+                            &tool_calls,
+                            &mcp,
+                            Some(ui.clone()),
+                            is_headless,
+                            &cancel_requested,
+                            &mut |msg| self.push_message(msg),
+                            &mut |err| errors.push(err),
+                        )
+                        .await;
+                        for err in errors {
+                            self.add_assistant_message_with_update_ui(err, ui);
+                        }
+                    }
+
+                    update_chat_ui(ui, get_ui_messages(&messages.lock().unwrap()));
+                }
+                Some(Err(req_err)) => {
+                    let error_msg = format!("Request Error: {}", req_err);
+                    self.add_assistant_message_with_update_ui(error_msg, ui);
+                    return Err(req_err);
+                }
             }
+        }
+        Ok(())
+    }
+
+    pub fn chat_with_arc(self: Arc<Self>, user_input: String, ui: UiSender, is_headless: bool) {
+        self.start_turn(user_input, &ui);
+        crate::get_global_runtime().spawn(async move {
+            // A failed request is already shown in the chat.
+            let _ = self.run_turn(&ui, is_headless).await;
+            self.end_turn(&ui);
+        });
+    }
+
+    /// `/goal`: takes turns until the goal evaluator judges the goal reached, the user cancels
+    /// with Esc, the evaluator fails, or `MAX_GOAL_TURNS` turns ran. How it ended is sent as a notice.
+    pub fn pursue_goal(self: Arc<Self>, goal: String, ui: UiSender) {
+        let goal_start = self.messages.lock().unwrap().len();
+        self.start_turn(goal::start_prompt(&goal), &ui);
+        crate::get_global_runtime().spawn(async move {
+            let provider = self.active_model().provider;
+            let mut outcome = goal::GoalOutcome::NotReached;
+            // Copy of the goal's messages for the evaluator. A new prompt cleans tool results out of
+            // `messages`; this copy keeps them, so every turn's results can be checked.
+            let mut goal_messages: Vec<ChatCompletionMessage> = Vec::new();
+            let mut copied_until = goal_start;
+            for turn in 1..=goal::MAX_GOAL_TURNS {
+                if let Err(error) = self.run_turn(&ui, false).await {
+                    outcome = goal::GoalOutcome::RequestFailed { error };
+                    break;
+                }
+                // Registered before checking the flag, so a cancel arriving in between is not missed.
+                let cancelled = self.cancel_notify.notified();
+                tokio::pin!(cancelled);
+                cancelled.as_mut().enable();
+                if self.cancel_requested.load(Ordering::SeqCst) {
+                    outcome = goal::GoalOutcome::Cancelled;
+                    break;
+                }
+                send_status(&ui, format!("goal: evaluating turn {}/{}...", turn, goal::MAX_GOAL_TURNS));
+                {
+                    let messages = self.messages.lock().unwrap();
+                    goal_messages.extend_from_slice(&messages[copied_until..]);
+                    copied_until = messages.len();
+                }
+                let verdict = tokio::select! {
+                    verdict = goal::evaluate(&self, provider, &goal, &goal_messages) => verdict,
+                    _ = &mut cancelled => {
+                        outcome = goal::GoalOutcome::Cancelled;
+                        break;
+                    }
+                };
+                let (verdict, evaluator_model_id) = match verdict {
+                    Ok(verdict) => verdict,
+                    Err(errors) => {
+                        outcome = goal::GoalOutcome::EvaluatorFailed { errors };
+                        break;
+                    }
+                };
+                match verdict.status {
+                    goal::GoalStatus::Reached => {
+                        outcome = goal::GoalOutcome::Reached { turns: turn, evaluator_model_id, reason: verdict.reason };
+                        break;
+                    }
+                    goal::GoalStatus::Stalled => {
+                        outcome = goal::GoalOutcome::Stalled { turns: turn, evaluator_model_id, reason: verdict.reason };
+                        break;
+                    }
+                    goal::GoalStatus::NotReached => {
+                        self.add_prompt(
+                            ChatCompletionMessage::authored_prompt(
+                                PromptAuthor::GoalEvaluator,
+                                goal::continue_prompt(&goal, &verdict.reason),
+                            ),
+                            &ui,
+                        )
+                    }
+                }
+            }
+            send_notice(&ui, outcome.notice());
+            self.end_turn(&ui);
         });
     }
 }

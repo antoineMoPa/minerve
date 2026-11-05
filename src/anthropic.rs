@@ -213,6 +213,7 @@ pub fn parse_messages_response(body: &str) -> Result<ChatCompletionResponse, Str
         content: (!text_parts.is_empty()).then(|| text_parts.concat()),
         tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
         tool_call_id: None,
+        prompt_author: None,
     };
     Ok(ChatCompletionResponse {
         choices: vec![ChatCompletionChoice { message }],
@@ -289,6 +290,7 @@ mod tests {
             content: None,
             tool_calls: Some(vec![call.clone(), call]),
             tool_call_id: None,
+            prompt_author: None,
         };
         let request = request_with(vec![
             from(ChatCompletionMessage::system(String::from("be brief"))),

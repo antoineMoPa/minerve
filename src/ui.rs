@@ -12,6 +12,9 @@ pub enum UiEvent {
     Status(String),
     /// Result of one provider's model list fetch started by `/model`. Ids carry the provider prefix.
     ModelList(crate::provider::Provider, Result<Vec<String>, String>),
+    /// A line for the user about local work (e.g. how a `/goal` ended), shown in the chat
+    /// until the next message. Not sent to the model.
+    Notice(String),
     /// A command from the program that started minerve, read off the control socket.
     ParentCommand(crate::control_socket::ParentCommand),
 }
@@ -25,4 +28,8 @@ pub fn update_chat_ui(ui: &UiSender, messages: Vec<(String, String)>) {
 
 pub fn send_status(ui: &UiSender, status: impl Into<String>) {
     let _ = ui.send(UiEvent::Status(status.into()));
+}
+
+pub fn send_notice(ui: &UiSender, notice: impl Into<String>) {
+    let _ = ui.send(UiEvent::Notice(notice.into()));
 }

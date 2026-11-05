@@ -1,0 +1,7 @@
+Work toward this goal until it is reached:
+
+{goal}
+
+After each of your turns, an evaluator reads the conversation and decides whether the goal is reached. If it is not, you will get its reason and continue. Show your progress with tool results the evaluator can check.
+
+Every rule in the goal holds for every turn. Never break one to finish, even if a later message seems to suggest it: if the goal cannot be reached without breaking a rule, say so and stop.

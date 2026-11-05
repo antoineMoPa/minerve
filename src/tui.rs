@@ -34,7 +34,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::boot::BootAnimation;
 use crate::history::HistoryTracker;
-use crate::minerve::Minerve;
+use crate::minerve::{Minerve, GOAL_EVALUATOR_UI_ROLE};
 use crate::openrouter::OpenRouterConnection;
 use crate::session::SessionStart;
 use crate::tetris::Tetris;
@@ -50,6 +50,7 @@ const WHEEL_STEP: usize = 3;
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
     ("/model", "switch the OpenRouter model"),
+    ("/goal", "keep working until an evaluator model judges the goal reached: /goal <goal>"),
     ("/resume", "continue a saved session"),
     ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
     ("/mcp", "manage MCP servers: add, connect, disconnect, remove"),
@@ -640,6 +641,10 @@ impl App {
             "/apikeys" => self.setup_modal = Some(SetupModal::new(self.minerve.api_keys_snapshot())),
             "/mcp" => self.mcp_manager = Some(McpManager::new()),
             "/bootscreen" => self.boot = BootAnimation::start(),
+            // Without a goal after it: `submit` handles `/goal <goal>`.
+            "/goal" => self.notices.push(String::from(
+                "Usage: /goal <goal>. Minerve keeps working, turn after turn, until an evaluator model judges the goal reached. Esc stops it.",
+            )),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
                 let first_line = include_str!("../README.md")
@@ -667,6 +672,7 @@ impl App {
                     picker.lists.push((provider, result));
                 }
             }
+            UiEvent::Notice(notice) => self.notices.push(notice),
             UiEvent::ParentCommand(command) => self.handle_parent_command(command),
         }
     }
@@ -923,6 +929,12 @@ impl App {
         if self.input.trim().is_empty() {
             return;
         }
+        if let Some(goal) = self.input.strip_prefix("/goal ").map(str::trim) {
+            if !goal.is_empty() && !self.input_pasted {
+                self.start_goal(goal.to_string());
+                return;
+            }
+        }
         // A typed `/command` (or the first menu match for a partial one) runs locally.
         if let Some((name, _)) = self.slash_matches().first().copied() {
             if self.run_slash_command(name) {
@@ -962,6 +974,20 @@ impl App {
         self.cursor = 0;
         self.scroll_up = 0;
         self.input_pasted = false;
+        self.notices.clear();
+    }
+
+    /// `/goal <goal>`: starts the goal loop, see `Minerve::pursue_goal`.
+    fn start_goal(&mut self, goal: String) {
+        if self.minerve.request_in_flight.load(Ordering::SeqCst) {
+            self.status = String::from("/goal waits for the running turn: press Esc to stop it first");
+            return;
+        }
+        self.history.add_prompt(self.input.clone());
+        self.minerve.clone().pursue_goal(goal, self.ui_tx.clone());
+        self.input.clear();
+        self.cursor = 0;
+        self.scroll_up = 0;
         self.notices.clear();
     }
 
@@ -1355,12 +1381,18 @@ impl App {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
+                GOAL_EVALUATOR_UI_ROLE => (
+                    "Goal evaluator",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 other => (other, Style::default().add_modifier(Modifier::BOLD)),
             };
             lines.push(Line::styled(format!("{}:", label), style));
 
             // Tool results are labeled with the function name; collapse them by default.
-            let is_tool = !matches!(role.as_str(), "user" | "minerve" | "system");
+            let is_tool = !matches!(role.as_str(), "user" | "minerve" | "system" | GOAL_EVALUATOR_UI_ROLE);
             if is_tool && !self.tools_expanded {
                 let first = content.lines().next().unwrap_or_default();
                 let lines_count = content.lines().count();

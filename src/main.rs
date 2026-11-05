@@ -12,6 +12,7 @@ mod agents_md;
 mod boot;
 mod chat;
 mod chat_selection;
+mod goal;
 mod control_socket;
 mod history;
 mod input_layout;
