@@ -379,7 +379,7 @@ fn server_config_from_form(command_or_url: &str, env_or_headers: &str) -> Result
         if command_or_url.contains(char::is_whitespace) {
             return Err(String::from("A URL cannot contain spaces."));
         }
-        return Ok(McpServerConfig::Http { url: command_or_url.to_string(), headers: pairs });
+        return Ok(McpServerConfig::Http { url: command_or_url.to_string(), headers: pairs, oauth: None });
     }
     let mut words = split_command_line(command_or_url)?.into_iter();
     let command = words.next().expect("non-empty command line has a first word");
@@ -467,6 +467,7 @@ mod tests {
             McpServerConfig::Http {
                 url: "https://x/mcp".into(),
                 headers: BTreeMap::from([("Authorization".into(), "Bearer abc".into())]),
+                oauth: None,
             }
         );
     }

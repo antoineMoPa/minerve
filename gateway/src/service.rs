@@ -31,6 +31,8 @@ pub struct GatewayOptions {
     pub slack_tokens: Option<SlackTokens>,
     /// The minerve binary each turn runs, headless.
     pub minerve_bin: PathBuf,
+    /// Where those turns run: the folder of the minerve serving the apps.
+    pub workdir: PathBuf,
     /// Also read prompts from stdin (the standalone binary's `--console`).
     pub console: bool,
 }
@@ -64,16 +66,10 @@ impl Gateway {
     pub fn start(runtime: &Handle, options: GatewayOptions) -> Result<Gateway, StartError> {
         let lock = acquire_lock()?;
         let status = SharedStatus::default();
-        let workdir = options
-            .config
-            .slack
-            .as_ref()
-            .map(|slack| slack.workdir.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
         let router = Arc::new(Router {
             allowlist: Allowlist::new(options.config.allowed.clone()),
             sessions: SessionStore::open(SessionStore::default_path()),
-            agent: Agent::new(options.minerve_bin, workdir),
+            agent: Agent::new(options.minerve_bin, options.workdir),
             status: status.clone(),
             link: Mutex::new(None),
             config_path: Some(config::config_path()),
@@ -120,6 +116,10 @@ impl Gateway {
     pub fn cancel_link(&self) {
         *self.router.link.lock().unwrap() = None;
         self.status.lock().unwrap().link = None;
+    }
+
+    pub fn workdir(&self) -> PathBuf {
+        self.router.agent.workdir.clone()
     }
 
     pub fn allowed(&self) -> Vec<String> {

@@ -36,17 +36,15 @@ enum Field {
     SlackApp,
     AppToken,
     BotToken,
-    Workdir,
 }
 
-const FIELDS: [Field; 5] = [Field::BotName, Field::SlackApp, Field::AppToken, Field::BotToken, Field::Workdir];
+const FIELDS: [Field; 4] = [Field::BotName, Field::SlackApp, Field::AppToken, Field::BotToken];
 
 #[derive(Default)]
 struct SetupForm {
     bot_name: String,
     app_token: String,
     bot_token: String,
-    workdir: String,
     field_index: usize,
     /// A token is already saved: a blank field keeps it.
     has_app_token: bool,
@@ -155,13 +153,9 @@ impl MessageApps {
 
     fn open_form(&mut self) {
         let tokens = config::load_slack_tokens();
-        let (bot_name, workdir) = match &self.config.slack {
-            Some(slack) => (slack.bot_name.clone(), slack.workdir.clone()),
-            None => (String::new(), std::env::current_dir().unwrap_or_default()),
-        };
+        let bot_name = self.config.slack.as_ref().map(|slack| slack.bot_name.clone()).unwrap_or_default();
         self.view = View::Form(SetupForm {
             bot_name,
-            workdir: tilde_path(&workdir),
             has_app_token: tokens.is_some(),
             has_bot_token: tokens.is_some(),
             ..SetupForm::default()
@@ -350,7 +344,7 @@ impl MessageApps {
             lines.push(Line::styled(err.clone(), Style::default().fg(Color::Red)));
             lines.push(Line::from(""));
         }
-        if let Some(slack) = self.config.slack.as_ref().filter(|_| row != SlackRow::NotSetUp) {
+        if self.config.slack.is_some() && row != SlackRow::NotSetUp {
             let allowed = match view {
                 RunnerView::Running { allowed, .. } => slack_members(allowed),
                 _ => slack_members(&self.config.allowed),
@@ -363,7 +357,9 @@ impl MessageApps {
                 true => Line::from(vec![Span::raw("  Allowed   "), Span::styled(nobody, dim)]),
                 false => Line::from(format!("  Allowed   {}", allowed.join(", "))),
             });
-            lines.push(Line::from(format!("  Workdir   {}", tilde_path(&slack.workdir))));
+            if let RunnerView::Running { workdir, .. } = view {
+                lines.push(Line::from(format!("  Workdir   {}", tilde_path(workdir))));
+            }
             if let (RunnerView::Running { status, .. }, SlackRow::Connected { .. }) = (view, &row) {
                 lines.push(Line::from(format!("  Served    {} conversations", status.conversations)));
             }
@@ -409,7 +405,6 @@ impl MessageApps {
                 label("Bot OAuth Token"),
                 token(&form.bot_token, form.has_bot_token, "xoxb-…  Install App → Bot User OAuth Token"),
             ]),
-            Line::from(vec![label("Workdir"), Span::raw(form.workdir.clone())]),
             Line::from(""),
         ];
         push_note(&mut lines, &self.note);
@@ -423,7 +418,6 @@ impl MessageApps {
                 Field::BotName => form.bot_name.chars().count(),
                 Field::AppToken => mask_token(&form.app_token).chars().count(),
                 Field::BotToken => mask_token(&form.bot_token).chars().count(),
-                Field::Workdir => form.workdir.chars().count(),
                 Field::SlackApp => 0,
             } as u16;
             let x = (inner.x + LABEL_WIDTH as u16 + shown).min(inner.right().saturating_sub(1));
@@ -501,7 +495,6 @@ impl SetupForm {
             Field::SlackApp => None,
             Field::AppToken => Some(&mut self.app_token),
             Field::BotToken => Some(&mut self.bot_token),
-            Field::Workdir => Some(&mut self.workdir),
         }
     }
 }
@@ -518,11 +511,7 @@ fn check_form(form: &SetupForm) -> Result<CheckedForm, String> {
     check_bot_name(bot_name)?;
     let app_token = check_token(&form.app_token, form.has_app_token, "xapp-", "app")?;
     let bot_token = check_token(&form.bot_token, form.has_bot_token, "xoxb-", "bot")?;
-    let workdir = expand_tilde(form.workdir.trim());
-    if !workdir.is_dir() {
-        return Err(format!("Workdir: {} is not a folder.", form.workdir.trim()));
-    }
-    Ok(CheckedForm { settings: SlackSettings { bot_name: bot_name.to_string(), workdir }, app_token, bot_token })
+    Ok(CheckedForm { settings: SlackSettings { bot_name: bot_name.to_string() }, app_token, bot_token })
 }
 
 /// Slack's rule for a bot's display name, so the manifest is accepted.
@@ -553,13 +542,6 @@ fn mask_token(token: &str) -> String {
 
 fn slack_members(allowed: &[String]) -> Vec<String> {
     allowed.iter().filter_map(|entry| entry.strip_prefix("slack:")).map(String::from).collect()
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    match path.strip_prefix("~") {
-        Some(rest) => dirs::home_dir().expect("no home directory").join(rest.trim_start_matches('/')),
-        None => PathBuf::from(path),
-    }
 }
 
 pub(crate) fn tilde_path(path: &std::path::Path) -> String {
@@ -617,7 +599,6 @@ mod tests {
             bot_name: "antoine-bot".into(),
             app_token: "xapp-1-A".into(),
             bot_token: "xoxb-2".into(),
-            workdir: std::env::temp_dir().display().to_string(),
             ..SetupForm::default()
         }
     }
@@ -640,10 +621,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_swapped_tokens_bad_names_and_missing_folders() {
+    fn rejects_swapped_tokens_and_bad_names() {
         assert!(check_form(&SetupForm { app_token: "xoxb-2".into(), ..form() }).is_err());
         assert!(check_form(&SetupForm { bot_name: "Antoine Bot".into(), ..form() }).is_err());
-        assert!(check_form(&SetupForm { workdir: "/no/such/folder".into(), ..form() }).is_err());
     }
 
     #[test]
@@ -653,10 +633,10 @@ mod tests {
     }
 
     #[test]
-    fn tilde_round_trips() {
+    fn home_shows_as_tilde() {
         let home = dirs::home_dir().unwrap();
-        assert_eq!(expand_tilde("~/prog"), home.join("prog"));
         assert_eq!(tilde_path(&home.join("prog")), "~/prog");
+        assert_eq!(tilde_path(&home), "~");
     }
 
     #[test]

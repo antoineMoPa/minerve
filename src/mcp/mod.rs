@@ -145,19 +145,19 @@ fn set_connection_if_current(name: &str, attempt: u64, connection: McpConnection
 
 /// Starts the browser login of a server that answered 401, then connects with the new token.
 pub fn log_in(name: &str) {
-    let (url, challenge, attempt) = {
+    let (url, oauth_client, challenge, attempt) = {
         let mut slots = registry().slots.lock().unwrap();
         let slot = slots.get_mut(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
-        let McpServerConfig::Http { url, .. } = &slot.config else {
+        let McpServerConfig::Http { url, oauth, .. } = &slot.config else {
             panic!("login of stdio MCP server '{}'", name);
         };
         let McpConnection::NeedsLogin { challenge } = &slot.connection else {
             panic!("login of MCP server '{}' that does not need one", name);
         };
-        let login = (url.clone(), challenge.clone());
+        let login = (url.clone(), oauth.clone(), challenge.clone());
         slot.attempt += 1;
         slot.connection = McpConnection::LoggingIn { authorize_url: None };
-        (login.0, login.1, slot.attempt)
+        (login.0, login.1, login.2, slot.attempt)
     };
     notify_change();
     let name = name.to_string();
@@ -165,7 +165,7 @@ pub fn log_in(name: &str) {
         let show_url = |authorize_url: String| {
             set_connection_if_current(&name, attempt, McpConnection::LoggingIn { authorize_url: Some(authorize_url) });
         };
-        match oauth::log_in(&url, &challenge, show_url).await {
+        match oauth::log_in(&url, oauth_client.as_ref(), &challenge, show_url).await {
             Ok(()) => {
                 let still_current = registry().slots.lock().unwrap().get(&name).is_some_and(|slot| slot.attempt == attempt);
                 if still_current {

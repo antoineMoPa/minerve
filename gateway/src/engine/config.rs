@@ -16,7 +16,6 @@ pub struct MessageAppsConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SlackSettings {
     pub bot_name: String,
-    pub workdir: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,12 +112,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_config_from_before_workdir_was_dropped_still_loads() {
+        let config: MessageAppsConfig = toml::from_str("allowed = []\n[slack]\nbot_name = \"b\"\nworkdir = \"/tmp\"\n").unwrap();
+        assert_eq!(config.slack, Some(SlackSettings { bot_name: "b".into() }));
+    }
+
+    #[test]
     fn round_trips_through_toml() {
         let path = std::env::temp_dir().join(format!("message-apps-{}.toml", uuid::Uuid::new_v4()));
         assert_eq!(load_from(&path).unwrap(), MessageAppsConfig::default());
         let config = MessageAppsConfig {
             allowed: vec!["slack:U1".into()],
-            slack: Some(SlackSettings { bot_name: "antoine-bot".into(), workdir: "/tmp".into() }),
+            slack: Some(SlackSettings { bot_name: "antoine-bot".into() }),
         };
         save_to(&path, &config).unwrap();
         assert_eq!(load_from(&path).unwrap(), config);

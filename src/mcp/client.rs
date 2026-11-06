@@ -93,7 +93,7 @@ impl McpServer {
     pub async fn connect(config: &McpServerConfig) -> Result<Self, ConnectError> {
         let service = match config {
             McpServerConfig::Stdio { command, args, env } => connect_stdio(command, args, env).await?,
-            McpServerConfig::Http { url, headers } => connect_http(url, headers).await?,
+            McpServerConfig::Http { url, headers, .. } => connect_http(url, headers).await?,
         };
         let tools = service.list_all_tools().await.map_err(|err| format!("tools/list: {}", err))?;
         Ok(Self { service, tools })

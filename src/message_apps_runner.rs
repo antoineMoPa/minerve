@@ -2,6 +2,7 @@
 //! It stops when minerve quits. Only one minerve runs it at a time (the gateway holds a lock);
 //! the others show why.
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minerve_gateway::engine::config::{self, MessageAppsConfig};
@@ -44,7 +45,9 @@ pub fn start() {
 fn start_gateway() -> Result<Gateway, String> {
     let config = config::load()?;
     let minerve_bin = std::env::current_exe().map_err(|err| format!("cannot find the minerve binary: {}", err))?;
-    let options = GatewayOptions { config, slack_tokens: config::load_slack_tokens(), minerve_bin, console: false };
+    // Turns run in the folder this minerve was started in, the one its top bar shows.
+    let workdir = std::env::current_dir().map_err(|err| format!("cannot read the current folder: {}", err))?;
+    let options = GatewayOptions { config, slack_tokens: config::load_slack_tokens(), minerve_bin, console: false, workdir };
     Gateway::start(get_global_runtime().handle(), options).map_err(|err| err.to_string())
 }
 
@@ -58,14 +61,14 @@ pub fn stop() {
 /// What the modal draws from.
 pub enum RunnerView {
     Stopped,
-    Running { status: Status, allowed: Vec<String> },
+    Running { status: Status, allowed: Vec<String>, workdir: PathBuf },
     Blocked(String),
 }
 
 pub fn view() -> RunnerView {
     match &*RUNNER.lock().unwrap() {
         Runner::Stopped => RunnerView::Stopped,
-        Runner::Running(gateway) => RunnerView::Running { status: gateway.status(), allowed: gateway.allowed() },
+        Runner::Running(gateway) => RunnerView::Running { status: gateway.status(), allowed: gateway.allowed(), workdir: gateway.workdir() },
         Runner::Blocked(err) => RunnerView::Blocked(err.clone()),
     }
 }

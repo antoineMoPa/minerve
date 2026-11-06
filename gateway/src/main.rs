@@ -29,6 +29,7 @@ async fn main() {
         slack_tokens: config::load_slack_tokens(),
         minerve_bin: std::env::var_os("MINERVE_BIN").map(Into::into).unwrap_or_else(|| "minerve".into()),
         console: args.iter().any(|arg| arg == "--console"),
+        workdir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
     };
     let gateway = Gateway::start(&tokio::runtime::Handle::current(), options).unwrap_or_else(|err| {
         eprintln!("minerve-gateway: {}", err);

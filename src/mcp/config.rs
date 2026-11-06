@@ -53,7 +53,20 @@ pub enum McpServerConfig {
     Http {
         url: String,
         headers: BTreeMap<String, String>,
+        oauth: Option<OAuthClient>,
     },
+}
+
+/// A pre-registered OAuth client, for servers that do not let clients register themselves
+/// (Slack's, for one). Written as Claude Code writes it in `.mcp.json`:
+/// `"oauth": {"clientId": "…", "callbackPort": 3118}`. The login then comes back to
+/// `http://localhost:<callbackPort>/callback`, the redirect the client was registered with.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthClient {
+    pub client_id: String,
+    #[serde(default)]
+    pub callback_port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize, Default, PartialEq)]
@@ -79,6 +92,8 @@ struct McpServerEntry {
     url: Option<String>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    #[serde(default)]
+    oauth: Option<OAuthClient>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,8 +106,8 @@ impl McpServerEntry {
     fn into_config(self, server_name: &str) -> Result<McpServerConfig, String> {
         match self.transport {
             TransportKind::Stdio => {
-                if self.url.is_some() || !self.headers.is_empty() {
-                    return Err(format!("server '{}': url and headers need \"type\": \"http\"", server_name));
+                if self.url.is_some() || !self.headers.is_empty() || self.oauth.is_some() {
+                    return Err(format!("server '{}': url, headers and oauth need \"type\": \"http\"", server_name));
                 }
                 let command = self
                     .command
@@ -106,7 +121,7 @@ impl McpServerEntry {
                 let url = self
                     .url
                     .ok_or_else(|| format!("server '{}': http server without \"url\"", server_name))?;
-                Ok(McpServerConfig::Http { url, headers: self.headers })
+                Ok(McpServerConfig::Http { url, headers: self.headers, oauth: self.oauth })
             }
         }
     }
@@ -172,11 +187,18 @@ fn config_as_entry_json(config: &McpServerConfig) -> Value {
                 entry.insert("env".into(), json!(env));
             }
         }
-        McpServerConfig::Http { url, headers } => {
+        McpServerConfig::Http { url, headers, oauth } => {
             entry.insert("type".into(), json!("http"));
             entry.insert("url".into(), json!(url));
             if !headers.is_empty() {
                 entry.insert("headers".into(), json!(headers));
+            }
+            if let Some(oauth) = oauth {
+                let mut client = json!({ "clientId": oauth.client_id });
+                if let Some(port) = oauth.callback_port {
+                    client["callbackPort"] = json!(port);
+                }
+                entry.insert("oauth".into(), client);
             }
         }
     }
@@ -250,8 +272,22 @@ mod tests {
             McpServerConfig::Http {
                 url: "https://x/mcp".into(),
                 headers: BTreeMap::from([("Authorization".into(), "Bearer t".into())]),
+                oauth: None,
             }
         );
+    }
+
+    #[test]
+    fn reads_a_preregistered_oauth_client_like_claude_code_writes_it() {
+        let servers = parse_config(
+            r#"{"mcpServers": {"slack": {"type": "http", "url": "https://mcp.slack.com/mcp",
+                "oauth": {"clientId": "123.456", "callbackPort": 3118}}}}"#,
+        )
+        .unwrap();
+        let McpServerConfig::Http { oauth, .. } = &servers["slack"] else { panic!("not http") };
+        assert_eq!(oauth, &Some(OAuthClient { client_id: "123.456".into(), callback_port: Some(3118) }));
+        let entry = config_as_entry_json(&servers["slack"]);
+        assert_eq!(entry["oauth"], json!({"clientId": "123.456", "callbackPort": 3118}));
     }
 
     #[test]
@@ -277,7 +313,7 @@ mod tests {
             args: vec!["-y".into(), "a b".into()],
             env: BTreeMap::from([("K".into(), "v".into())]),
         };
-        let http = McpServerConfig::Http { url: "https://x/mcp".into(), headers: BTreeMap::new() };
+        let http = McpServerConfig::Http { url: "https://x/mcp".into(), headers: BTreeMap::new(), oauth: None };
         write_server_to_file(&path, "s", &stdio).unwrap();
         write_server_to_file(&path, "h", &http).unwrap();
         let servers = read_config_file(&path).unwrap();

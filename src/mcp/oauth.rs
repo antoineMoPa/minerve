@@ -10,6 +10,8 @@ use rmcp::transport::auth::{
     AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore, StoredCredentials,
 };
 use std::collections::BTreeMap;
+
+use super::config::OAuthClient;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -130,10 +132,27 @@ async fn wait_for_callback(listener: &TcpListener, redirect_origin: &str) -> Res
 /// Runs the browser login for the MCP server at `server_url`; rmcp stores the token through
 /// `FileCredentialStore`. `challenge` is the `WWW-Authenticate` header of the server's 401.
 /// `on_authorize_url` gets the URL the browser is sent to, so it can be shown in case no browser opens.
-pub async fn log_in(server_url: &str, challenge: &str, on_authorize_url: impl FnOnce(String)) -> Result<(), String> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|err| err.to_string())?;
-    let port = listener.local_addr().map_err(|err| err.to_string())?.port();
-    let redirect_origin = format!("http://127.0.0.1:{}", port);
+/// With a pre-registered `client`, logs in as that client, and on its `callbackPort` when it has one.
+pub async fn log_in(
+    server_url: &str,
+    client: Option<&OAuthClient>,
+    challenge: &str,
+    on_authorize_url: impl FnOnce(String),
+) -> Result<(), String> {
+    let (listener, redirect_origin) = match client.and_then(|client| client.callback_port) {
+        // The redirect must match the registered one exactly, and Claude Code registers `localhost`.
+        Some(port) => {
+            let listener = TcpListener::bind(("127.0.0.1", port))
+                .await
+                .map_err(|err| format!("cannot listen on callback port {}: {}", port, err))?;
+            (listener, format!("http://localhost:{}", port))
+        }
+        None => {
+            let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|err| err.to_string())?;
+            let port = listener.local_addr().map_err(|err| err.to_string())?.port();
+            (listener, format!("http://127.0.0.1:{}", port))
+        }
+    };
     let redirect_uri = format!("{}{}", redirect_origin, CALLBACK_PATH);
 
     let mut manager = AuthorizationManager::new(server_url).await.map_err(|err| err.to_string())?;
@@ -143,9 +162,12 @@ pub async fn log_in(server_url: &str, challenge: &str, on_authorize_url: impl Fn
         .await
         .map_err(|err| err.to_string())?;
     manager.set_metadata(resolution.metadata);
-    let request = AuthorizationRequest::new(redirect_uri)
+    let mut request = AuthorizationRequest::new(redirect_uri)
         .with_client_name(CLIENT_NAME)
         .with_challenge(challenge);
+    if let Some(client) = client {
+        request = request.with_preregistered_client(client.client_id.clone());
+    }
     let session = AuthorizationSession::new(manager, request)
         .await
         .map_err(|(_, err)| err.to_string())?;
