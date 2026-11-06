@@ -1,4 +1,4 @@
-use crate::token_counter::TokenCounter;
+use crate::token_counter::{TokenCounter, UsageSnapshot};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,6 +101,8 @@ pub struct Minerve {
     /// Wakes a request that is waiting for the API when the turn is cancelled.
     pub cancel_notify: Arc<Notify>,
     pub token_counter: Arc<TokenCounter>,
+    /// `--append-system-prompt` texts, added to every new session (see `start_new_session`).
+    extra_system_prompts: Vec<String>,
     /// Socket of the program that started minerve, told about the conversation as it goes.
     /// See `control_socket`.
     control: Option<Arc<ControlSocket>>,
@@ -553,6 +555,7 @@ impl Minerve {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             cancel_notify: Arc::new(Notify::new()),
             token_counter,
+            extra_system_prompts: extra_system_prompts.to_vec(),
             control,
         };
         if save_now {
@@ -603,6 +606,16 @@ impl Minerve {
     /// Id of the session this conversation is saved to.
     pub fn current_session_id(&self) -> String {
         self.session_id.lock().unwrap().clone()
+    }
+
+    /// `/clear`: starts a fresh conversation under a new session id, with the same system prompts
+    /// as a new session. Nothing is saved until the first message, like `SessionStart::New`.
+    /// The caller makes sure no turn is running.
+    pub fn start_new_session(&self) {
+        self.token_counter.restore(&UsageSnapshot::default());
+        *self.messages.lock().unwrap() = new_session_messages(&self.extra_system_prompts);
+        *self.session_id.lock().unwrap() = uuid::Uuid::new_v4().to_string();
+        self.send_control_event(&MinerveEvent::Session { session_id: &self.current_session_id() });
     }
 
     /// Continues another saved session: its messages, id and usage replace the current ones.

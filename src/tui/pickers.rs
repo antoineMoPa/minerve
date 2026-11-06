@@ -61,6 +61,22 @@ impl App {
 
     /// Loads the saved session `id` and shows its chat. A file that cannot be read keeps the
     /// current session and reports why on the status line.
+    /// `/clear`: a fresh conversation in a new session. Refused while a turn runs, like `/resume`.
+    pub(super) fn clear_conversation(&mut self) {
+        if self.minerve.request_in_flight.load(Ordering::SeqCst) {
+            self.status = String::from("wait for the running answer before clearing the conversation");
+            return;
+        }
+        self.minerve.start_new_session();
+        self.transcript = self.minerve.ui_messages();
+        self.scroll_up = 0;
+        self.notices.clear();
+        self.pending_command_output.clear();
+        self.queued_prompts.clear();
+        self.chat_selection = None;
+        self.status = String::from("started a new conversation");
+    }
+
     pub(super) fn resume_session(&mut self, id: &str) {
         match crate::session::load_for_resume(id) {
             Ok(file) => {
