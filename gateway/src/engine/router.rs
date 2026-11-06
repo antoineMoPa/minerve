@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use super::agent::{session_cost, Agent};
+use super::agent::{session_cost, Agent, TIMED_OUT};
 use super::auth::Allowlist;
 use super::config;
 use super::inspect;
@@ -113,7 +113,7 @@ impl Router {
         // Set when a reply was cut, delivered to the agent with the next prompt.
         let mut pending_note: Option<String> = None;
         while let Some(message) = queue.recv().await {
-            let session_id = self.sessions.session_for(&message.key);
+            let session_id = self.sessions.session_for(&message.key, message.is_direct);
             let capabilities = transport.capabilities();
             // Where the transport can edit, a placeholder shows at once and becomes the first piece of the reply.
             let placeholder = if capabilities.can_edit {
@@ -148,6 +148,8 @@ impl Router {
             self.publish_snapshot();
             let reply = match result {
                 Ok(reply) => reply,
+                // A turn given up is reported as it is, not as an error.
+                Err(err) if err == TIMED_OUT => err,
                 Err(err) => format!("Error: {}", err),
             };
             let mut placeholder = placeholder;

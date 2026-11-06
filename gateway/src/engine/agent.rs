@@ -7,11 +7,19 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tokio::process::Command;
 
 /// Tokens the agent has no use for; not passed to the minerve it runs.
 const HIDDEN_ENV: [&str; 2] = ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
+
+/// How long a turn may take before the gateway starts to wait for its last reply.
+pub const TURN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Extra time, after `TURN_TIMEOUT`, in which a turn still can reply before it is given up.
+pub const TURN_GRACE: Duration = Duration::from_secs(15);
+/// The reply sent for a turn given up after `TURN_TIMEOUT` + `TURN_GRACE`.
+pub const TIMED_OUT: &str = "Agent timed out";
 
 pub struct Agent {
     pub minerve_bin: PathBuf,
@@ -61,7 +69,26 @@ impl Agent {
         if let Some(pid) = pid {
             self.running.lock().unwrap().insert(pid);
         }
-        let output = child.wait_with_output().await;
+        // Pinned, so the grace wait continues the same wait instead of starting over.
+        let mut waiting = Box::pin(child.wait_with_output());
+        let output = match tokio::time::timeout(TURN_TIMEOUT, &mut waiting).await {
+            Ok(output) => output,
+            Err(_) => match tokio::time::timeout(TURN_GRACE, &mut waiting).await {
+                Ok(output) => output,
+                Err(_) => {
+                    drop(waiting); // kill_on_drop ends the minerve process itself.
+                    if let Some(pid) = pid {
+                        self.running.lock().unwrap().remove(&pid);
+                        // Its shells too, which live in its process group.
+                        // SAFETY: plain kill(2) on a process group this agent created.
+                        unsafe {
+                            libc::kill(-(pid as i32), libc::SIGTERM);
+                        }
+                    }
+                    return Err(TIMED_OUT.to_string());
+                }
+            },
+        };
         if let Some(pid) = pid {
             self.running.lock().unwrap().remove(&pid);
         }
