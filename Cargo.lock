@@ -2769,6 +2769,7 @@ dependencies = [
  "eframe",
  "http 1.5.0",
  "image",
+ "libc",
  "minerve-gateway",
  "ratatui",
  "regex",

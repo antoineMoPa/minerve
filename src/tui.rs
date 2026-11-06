@@ -656,13 +656,14 @@ impl App {
             KeyCode::Up if self.chat_focused => self.scroll_up = self.scroll_up.saturating_add(WHEEL_STEP),
             KeyCode::Down if self.chat_focused => self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP),
             KeyCode::Up => {
-                if let Some(prompt) = self.history.get_previous_prompt() {
+                if let Some(prompt) = self.history.get_previous_prompt(&self.input) {
                     self.set_input(prompt);
                 }
             }
             KeyCode::Down => {
-                let prompt = self.history.get_next_prompt().unwrap_or_default();
-                self.set_input(prompt);
+                if let Some(prompt) = self.history.get_next_prompt() {
+                    self.set_input(prompt);
+                }
             }
             KeyCode::PageUp => self.scroll_up = self.scroll_up.saturating_add(SCROLL_STEP),
             KeyCode::PageDown => self.scroll_up = self.scroll_up.saturating_sub(SCROLL_STEP),

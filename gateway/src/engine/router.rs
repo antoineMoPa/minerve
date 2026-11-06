@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use super::agent::{session_cost, Agent};
 use super::auth::Allowlist;
 use super::config;
+use super::inspect;
 use super::link::PendingLink;
 use super::log::log;
 use super::render::{length_instruction, plan_reply};
@@ -28,6 +29,8 @@ pub struct Router {
     pub link: Mutex<Option<PendingLink>>,
     /// Where a newly linked sender is saved. `None` keeps it in memory (tests).
     pub config_path: Option<PathBuf>,
+    /// Where the status snapshot for `minerve --threads` is written. `None` writes nothing (tests).
+    pub snapshot_path: Option<PathBuf>,
 }
 
 pub const LINKED_REPLY: &str = "Linked. You can talk to me now.";
@@ -98,6 +101,14 @@ impl Router {
         true
     }
 
+    /// Writes the status snapshot, if this router has a place for it.
+    pub fn publish_snapshot(&self) {
+        let Some(path) = &self.snapshot_path else { return };
+        let status = self.status.lock().unwrap().clone();
+        let snapshot = inspect::Snapshot::from_status(&status, std::process::id(), &self.agent.workdir.display().to_string());
+        inspect::write(path, &snapshot);
+    }
+
     async fn conversation(self: Arc<Self>, transport: Arc<dyn Transport>, mut queue: mpsc::UnboundedReceiver<InboundMessage>) {
         // Set when a reply was cut, delivered to the agent with the next prompt.
         let mut pending_note: Option<String> = None;
@@ -117,16 +128,24 @@ impl Router {
             // Given once, when the session starts: where the agent runs, and any length limit.
             let mut system_prompts = vec![format!("You are running in {}.", transport.display_name())];
             system_prompts.extend(length_instruction(capabilities));
-            self.status.lock().unwrap().working += 1;
+            let key = message.key.to_string();
+            {
+                let mut status = self.status.lock().unwrap();
+                status.working += 1;
+                status.running.insert(key.clone());
+            }
+            self.publish_snapshot();
             let before = session_cost(&session_id);
             let result = self.agent.run_turn(&session_id, &system_prompts, &prompt).await;
             let after = session_cost(&session_id);
             {
                 let mut status = self.status.lock().unwrap();
                 status.working -= 1;
+                status.running.remove(&key);
                 status.cost_usd += (after.usd - before.usd).max(0.0);
                 status.cost_incomplete |= after.requests_without_cost > before.requests_without_cost;
             }
+            self.publish_snapshot();
             let reply = match result {
                 Ok(reply) => reply,
                 Err(err) => format!("Error: {}", err),
@@ -166,6 +185,7 @@ mod tests {
             status: SharedStatus::default(),
             link: Mutex::new(None),
             config_path: None,
+            snapshot_path: None,
         }
     }
 

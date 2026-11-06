@@ -1,6 +1,6 @@
 //! What the gateway is doing, read by minerve's `/message-apps` modal.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -24,6 +24,8 @@ pub struct Status {
     pub conversations: usize,
     /// Turns running now.
     pub working: usize,
+    /// Conversation keys (as `ConversationKey` displays) whose turn runs now.
+    pub running: BTreeSet<String>,
     /// What the turns run since start cost, as reported by the provider.
     pub cost_usd: f64,
     /// Some turn's provider reported no cost, so `cost_usd` is a floor.

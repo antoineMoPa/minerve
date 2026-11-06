@@ -29,3 +29,4 @@ rmcp = { version = "3.8", default-features = false, features = ["client", "trans
 reqwest_rmcp = { package = "reqwest", version = "0.13", default-features = false }
 http = "1"
 minerve-gateway = { path = "gateway" }
+libc = "0.2"

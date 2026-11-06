@@ -20,6 +20,15 @@ pub struct Cli {
     #[arg(short = 's', long = "append-system-prompt", value_name = "TEXT")]
     pub system_prompt: Vec<String>,
 
+    /// Print the chat-app threads (Slack and others): cost, messages, tool calls, and which gateway
+    /// runs them now. Read-only; prints and exits. Add `--json` for machine-readable output.
+    #[arg(long, conflicts_with_all = ["prompt", "resume", "session_id", "setup"])]
+    pub threads: bool,
+
+    /// With `--threads`: print JSON instead of text.
+    #[arg(long, requires = "threads")]
+    pub json: bool,
+
     /// Open the API key setup modal, even when a key is already set. Same as `/apikeys`.
     /// Saving writes ~/.minerve/keys.json; a blank field keeps the stored key.
     #[arg(long)]

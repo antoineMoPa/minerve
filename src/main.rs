@@ -31,6 +31,7 @@ mod session_picker;
 mod token_counter;
 mod tools;
 mod tetris;
+mod threads_report;
 mod tui;
 mod ui;
 
@@ -153,6 +154,11 @@ fn main() {
     }));
 
     let cli = Cli::parse();
+
+    if cli.threads {
+        threads_report::print(cli.json);
+        return;
+    }
 
     // Read configuration before the TUI takes over the terminal, so errors stay visible.
     load_home_dotenv();

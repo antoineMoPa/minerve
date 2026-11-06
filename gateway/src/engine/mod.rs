@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod auth;
 pub mod config;
+pub mod inspect;
 pub mod link;
 pub mod log;
 pub mod render;

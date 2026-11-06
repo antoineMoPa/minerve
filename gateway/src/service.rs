@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use crate::engine::agent::Agent;
 use crate::engine::auth::Allowlist;
 use crate::engine::config::{self, MessageAppsConfig, SlackTokens};
+use crate::engine::inspect;
 use crate::engine::link::PendingLink;
 use crate::engine::log::log;
 use crate::engine::router::Router;
@@ -73,7 +74,9 @@ impl Gateway {
             status: status.clone(),
             link: Mutex::new(None),
             config_path: Some(config::config_path()),
+            snapshot_path: Some(inspect::default_path()),
         });
+        router.publish_snapshot();
 
         let mut transports: Vec<Arc<dyn Transport>> = Vec::new();
         if let (Some(_), Some(tokens)) = (&options.config.slack, options.slack_tokens) {
@@ -97,6 +100,15 @@ impl Gateway {
         drop(tx);
         let by_name: HashMap<_, _> = transports.into_iter().map(|t| (t.name(), t)).collect();
         tasks.push(runtime.spawn(router.clone().serve(by_name, rx)));
+        // Connection changes reach no event of their own, so the snapshot is also rewritten on a beat.
+        let heartbeat = router.clone();
+        tasks.push(runtime.spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                heartbeat.publish_snapshot();
+            }
+        }));
         log("started");
         Ok(Gateway { router, status, tasks, _lock: lock })
     }
@@ -139,6 +151,7 @@ impl Drop for Gateway {
         for task in &self.tasks {
             task.abort();
         }
+        inspect::remove(&inspect::default_path());
     }
 }
 

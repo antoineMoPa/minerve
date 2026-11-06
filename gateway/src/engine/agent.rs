@@ -105,7 +105,8 @@ pub fn session_cost(session_id: &str) -> SessionCost {
     }
 }
 
-fn session_file(session_id: &str) -> Result<PathBuf, String> {
+/// Where minerve saves a session. Errors only when there is no home directory.
+pub fn session_file(session_id: &str) -> Result<PathBuf, String> {
     Ok(dirs::home_dir().ok_or("no home directory")?.join(format!(".minerve/sessions/{}.json", session_id)))
 }
 
