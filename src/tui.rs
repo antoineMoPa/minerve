@@ -649,6 +649,8 @@ impl App {
             KeyCode::Char(c) if !ctrl && !alt => self.insert_char(c),
             KeyCode::Backspace => self.delete_before_cursor(),
             KeyCode::Delete => self.delete_at_cursor(),
+            KeyCode::Left if ctrl => self.word_left(),
+            KeyCode::Right if ctrl => self.word_right(),
             KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
             KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input_len()),
             KeyCode::Home => self.cursor = 0,

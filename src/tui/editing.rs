@@ -23,6 +23,41 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
+    /// Ctrl+Left: moves the cursor to the start of the previous word.
+    /// Whitespace is skipped first, then a run of word characters or of punctuation.
+    pub(super) fn word_left(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut i = self.cursor.min(chars.len());
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        if i > 0 {
+            let word = is_word_char(chars[i - 1]);
+            while i > 0 && !chars[i - 1].is_whitespace() && is_word_char(chars[i - 1]) == word {
+                i -= 1;
+            }
+        }
+        self.cursor = i;
+    }
+
+    /// Ctrl+Right: moves the cursor to the start of the next word.
+    /// A run of word characters or of punctuation is skipped, then whitespace.
+    pub(super) fn word_right(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        let mut i = self.cursor.min(len);
+        if i < len && !chars[i].is_whitespace() {
+            let word = is_word_char(chars[i]);
+            while i < len && !chars[i].is_whitespace() && is_word_char(chars[i]) == word {
+                i += 1;
+            }
+        }
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+        self.cursor = i;
+    }
+
     pub(super) fn insert_char(&mut self, c: char) {
         let idx = self.byte_index(self.cursor);
         self.input.insert(idx, c);
@@ -104,4 +139,9 @@ impl App {
         self.input.insert_str(idx, text);
         self.cursor += text.chars().count();
     }
+}
+
+/// Letters, digits and `_` make up a word; other punctuation forms its own run.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
