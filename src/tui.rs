@@ -65,7 +65,7 @@ const WHEEL_STEP: usize = 3;
 /// Slash commands offered by the `/` menu: (name, one-line description).
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
-    ("/model", "switch the OpenRouter model"),
+    ("/model", "switch models and providers"),
     ("/goal", "keep working until an evaluator model judges the goal reached: /goal <goal>"),
     ("/resume", "continue a saved session"),
     ("/clear", "start a new conversation from fresh"),
