@@ -48,6 +48,14 @@ mod pickers;
 
 use matrix::MatrixRain;
 
+/// Something the user sent while a turn was running. It waits until the turn ends.
+enum QueuedPrompt {
+    /// A normal message, with the image files pasted into it.
+    Message { content: String, images: Vec<std::path::PathBuf> },
+    /// A `/goal <goal>` to pursue.
+    Goal(String),
+}
+
 /// Tool results longer than this are cut short in the chat view (the model still gets them all).
 const MAX_OUTPUT_LEN: usize = 500;
 /// Lines scrolled per PageUp/PageDown.
@@ -92,6 +100,9 @@ struct App {
     last_yank: Option<YankState>,
     /// Output of `!command` runs, sent to the model with the next message and then cleared.
     pending_command_output: Vec<String>,
+    /// Prompts sent while a turn was running, with their images, oldest first. The run loop sends one
+    /// each time a turn ends.
+    queued_prompts: std::collections::VecDeque<QueuedPrompt>,
     /// Images pasted into the prompt being typed, shown as `[Image #N]` tokens.
     pasted_images: crate::images::PastedImages,
     /// True while the input holds pasted text. Pasted text never opens the slash menu or runs a command.
@@ -210,6 +221,7 @@ pub fn run(
         kill_ring: Vec::new(),
         last_yank: None,
         pending_command_output: Vec::new(),
+        queued_prompts: std::collections::VecDeque::new(),
         input_pasted: false,
         pasted_images: Default::default(),
         notices: Vec::new(),
@@ -267,6 +279,7 @@ impl App {
             while let Ok(event) = self.ui_rx.try_recv() {
                 self.handle_ui_event(event);
             }
+            self.send_next_queued_prompt();
 
             if let Some(game) = self.tetris.as_mut() {
                 game.update(Instant::now());
@@ -697,9 +710,16 @@ impl App {
             format!("Output of commands I ran in the shell:\n```\n{}\n```\n\n{}", context, content)
         };
         let images = self.pasted_images.take_referenced(&content);
-        self.minerve
-            .clone()
-            .chat_with_arc(content, images, self.ui_tx.clone(), false);
+        // One turn at a time: a second prompt would run beside the first in the same session.
+        // While a turn runs, the prompt waits in the queue (see `send_next_queued_prompt`).
+        if self.must_queue() {
+            self.queued_prompts.push_back(QueuedPrompt::Message { content, images });
+            self.status = format!("{} queued", self.queued_prompts.len());
+        } else {
+            self.minerve
+                .clone()
+                .chat_with_arc(content, images, self.ui_tx.clone(), false);
+        }
 
         self.input.clear();
         self.cursor = 0;
@@ -708,14 +728,37 @@ impl App {
         self.notices.clear();
     }
 
-    /// `/goal <goal>`: starts the goal loop, see `Minerve::pursue_goal`.
-    fn start_goal(&mut self, goal: String) {
+    /// True when a new prompt must wait: a turn is running, or older prompts are still queued.
+    fn must_queue(&self) -> bool {
+        self.minerve.request_in_flight.load(Ordering::SeqCst) || !self.queued_prompts.is_empty()
+    }
+
+    /// Sends the oldest queued prompt once no turn is running. Called on every loop pass.
+    fn send_next_queued_prompt(&mut self) {
         if self.minerve.request_in_flight.load(Ordering::SeqCst) {
-            self.status = String::from("/goal waits for the running turn: press Esc to stop it first");
             return;
         }
+        let Some(queued) = self.queued_prompts.pop_front() else {
+            return;
+        };
+        match queued {
+            QueuedPrompt::Message { content, images } => {
+                self.minerve.clone().chat_with_arc(content, images, self.ui_tx.clone(), false);
+            }
+            QueuedPrompt::Goal(goal) => self.minerve.clone().pursue_goal(goal, self.ui_tx.clone()),
+        }
+        self.status = String::new();
+    }
+
+    /// `/goal <goal>`: starts the goal loop, see `Minerve::pursue_goal`.
+    fn start_goal(&mut self, goal: String) {
         self.history.add_prompt(self.input.clone());
-        self.minerve.clone().pursue_goal(goal, self.ui_tx.clone());
+        if self.must_queue() {
+            self.queued_prompts.push_back(QueuedPrompt::Goal(goal));
+            self.status = format!("{} queued", self.queued_prompts.len());
+        } else {
+            self.minerve.clone().pursue_goal(goal, self.ui_tx.clone());
+        }
         self.input.clear();
         self.cursor = 0;
         self.scroll_up = 0;

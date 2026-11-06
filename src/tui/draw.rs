@@ -351,6 +351,22 @@ impl App {
             lines.extend(crate::markdown::render(output));
             lines.push(Line::default());
         }
+
+        // Prompts sent during a turn, waiting for it to end.
+        for queued in &self.queued_prompts {
+            let (title, text) = match queued {
+                super::QueuedPrompt::Message { content, .. } => ("You (queued):", content.clone()),
+                super::QueuedPrompt::Goal(goal) => ("Goal (queued):", goal.clone()),
+            };
+            lines.push(Line::styled(
+                title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::styled(text, Style::default().fg(Color::Gray)));
+            lines.push(Line::default());
+        }
         lines
     }
 
