@@ -79,8 +79,8 @@ impl Gateway {
         router.publish_snapshot();
 
         let mut transports: Vec<Arc<dyn Transport>> = Vec::new();
-        if let (Some(_), Some(tokens)) = (&options.config.slack, options.slack_tokens) {
-            transports.push(Arc::new(Slack::new(tokens)));
+        if let (Some(settings), Some(tokens)) = (&options.config.slack, options.slack_tokens) {
+            transports.push(Arc::new(Slack::new(tokens, settings.icon_url().to_string())));
         }
         if options.console {
             transports.push(Arc::new(Console));

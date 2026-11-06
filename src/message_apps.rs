@@ -267,7 +267,9 @@ impl MessageApps {
                 return;
             }
         };
-        config.slack = Some(checked.settings);
+        // The form has no icon field: keep an icon set by hand in the file.
+        let icon_url = config.slack.as_ref().and_then(|slack| slack.icon_url.clone());
+        config.slack = Some(SlackSettings { icon_url, ..checked.settings });
         let saved = config::save(&config)
             .and_then(|()| config::save_slack_tokens(checked.app_token.as_deref(), checked.bot_token.as_deref()));
         if let Err(err) = saved {
@@ -511,7 +513,7 @@ fn check_form(form: &SetupForm) -> Result<CheckedForm, String> {
     check_bot_name(bot_name)?;
     let app_token = check_token(&form.app_token, form.has_app_token, "xapp-", "app")?;
     let bot_token = check_token(&form.bot_token, form.has_bot_token, "xoxb-", "bot")?;
-    Ok(CheckedForm { settings: SlackSettings { bot_name: bot_name.to_string() }, app_token, bot_token })
+    Ok(CheckedForm { settings: SlackSettings { bot_name: bot_name.to_string(), icon_url: None }, app_token, bot_token })
 }
 
 /// Slack's rule for a bot's display name, so the manifest is accepted.

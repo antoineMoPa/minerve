@@ -2,7 +2,7 @@
 //!
 //! Needs a Slack app with Socket Mode on, an app-level token (`xapp-…`, scope
 //! `connections:write`), a bot token (`xoxb-…`, scopes `chat:write`, `app_mentions:read`,
-//! `im:history`), and the events `app_mention` and `message.im` subscribed.
+//! `im:history`, `chat:write.customize` for the icon), and the events `app_mention` and `message.im` subscribed.
 //!
 //! Conversations: a DM is one flat conversation; a mention in a channel starts (or continues)
 //! a thread, and the thread is the conversation.
@@ -46,7 +46,7 @@ pub fn manifest(bot_name: &str) -> String {
             "bot_user": { "display_name": bot_name, "always_online": true }
         },
         "oauth_config": {
-            "scopes": { "bot": ["app_mentions:read", "chat:write", "im:history", "im:read", "im:write"] }
+            "scopes": { "bot": ["app_mentions:read", "chat:write", "chat:write.customize", "im:history", "im:read", "im:write"] }
         },
         "settings": {
             "event_subscriptions": { "bot_events": ["app_mention", "message.im"] },
@@ -74,13 +74,16 @@ impl std::error::Error for SlackApiError {}
 pub struct Slack {
     app_token: String,
     bot_token: String,
+    /// Sent with each message: a manifest cannot set the app's own icon, so every install would
+    /// otherwise show Slack's placeholder. Needs `chat:write.customize`; without it Slack ignores it.
+    icon_url: String,
     http: reqwest::Client,
     seen_events: Mutex<VecDeque<String>>,
 }
 
 impl Slack {
-    pub fn new(tokens: SlackTokens) -> Self {
-        Self { app_token: tokens.app_token, bot_token: tokens.bot_token, http: reqwest::Client::new(), seen_events: Mutex::new(VecDeque::new()) }
+    pub fn new(tokens: SlackTokens, icon_url: String) -> Self {
+        Self { app_token: tokens.app_token, bot_token: tokens.bot_token, icon_url, http: reqwest::Client::new(), seen_events: Mutex::new(VecDeque::new()) }
     }
 
     async fn call(&self, method: &str, token: &str, body: Value) -> Result<Value, TransportError> {
@@ -271,7 +274,7 @@ impl Transport for Slack {
     }
 
     async fn send(&self, to: &ConversationKey, text: &str) -> Result<MessageRef, TransportError> {
-        let mut body = json!({ "channel": to.channel, "text": text });
+        let mut body = json!({ "channel": to.channel, "text": text, "icon_url": self.icon_url });
         if let Some(thread) = &to.thread {
             body["thread_ts"] = json!(thread);
         }
@@ -304,6 +307,8 @@ mod tests {
         assert_eq!(manifest["display_information"]["name"], "antoine-bot");
         assert_eq!(manifest["features"]["bot_user"]["display_name"], "antoine-bot");
         assert_eq!(manifest["settings"]["socket_mode_enabled"], true);
+        let scopes = manifest["oauth_config"]["scopes"]["bot"].as_array().unwrap();
+        assert!(scopes.contains(&json!("chat:write.customize")), "the icon on each message needs it");
     }
 
     #[test]

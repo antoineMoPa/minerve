@@ -16,6 +16,20 @@ pub struct MessageAppsConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SlackSettings {
     pub bot_name: String,
+    /// Avatar on the bot's messages; `None` means minerve's own icon ([`DEFAULT_SLACK_ICON_URL`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
+}
+
+/// Served from the public minerve repo, so every install gets it without setup. Old installs
+/// have this URL compiled in: keep the file at this path on `main`.
+pub const DEFAULT_SLACK_ICON_URL: &str =
+    "https://raw.githubusercontent.com/antoineMoPa/minerve/main/gateway/assets/minerve-icon.png";
+
+impl SlackSettings {
+    pub fn icon_url(&self) -> &str {
+        self.icon_url.as_deref().unwrap_or(DEFAULT_SLACK_ICON_URL)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -114,7 +128,7 @@ mod tests {
     #[test]
     fn a_config_from_before_workdir_was_dropped_still_loads() {
         let config: MessageAppsConfig = toml::from_str("allowed = []\n[slack]\nbot_name = \"b\"\nworkdir = \"/tmp\"\n").unwrap();
-        assert_eq!(config.slack, Some(SlackSettings { bot_name: "b".into() }));
+        assert_eq!(config.slack, Some(SlackSettings { bot_name: "b".into(), icon_url: None }));
     }
 
     #[test]
@@ -123,7 +137,7 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), MessageAppsConfig::default());
         let config = MessageAppsConfig {
             allowed: vec!["slack:U1".into()],
-            slack: Some(SlackSettings { bot_name: "antoine-bot".into() }),
+            slack: Some(SlackSettings { bot_name: "antoine-bot".into(), icon_url: None }),
         };
         save_to(&path, &config).unwrap();
         assert_eq!(load_from(&path).unwrap(), config);
