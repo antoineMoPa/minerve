@@ -429,6 +429,16 @@ impl App {
     }
 }
 
+/// What this minerve's Slack turns cost: `$0.042` under a dollar, `$1.23` above; `+` when some
+/// provider reported no cost. `None` until a turn cost anything.
+fn bar_cost(usd: f64, incomplete: bool) -> Option<String> {
+    if usd == 0.0 && !incomplete {
+        return None;
+    }
+    let amount = if usd >= 1.0 { format!("${:.2}", usd) } else { format!("${:.3}", usd) };
+    Some(if incomplete { format!("{}+", amount) } else { amount })
+}
+
 /// `minerve · ~/dir` on the left, `● slack · @bot` (and how many turns run) on the right, on a tinted line.
 fn draw_message_apps_bar(frame: &mut Frame, area: Rect, bar: &crate::message_apps_runner::TopBar) {
     let background = Style::default().bg(Color::Rgb(31, 42, 48));
@@ -440,6 +450,9 @@ fn draw_message_apps_bar(frame: &mut Frame, area: Rect, bar: &crate::message_app
     ];
     if bar.working > 0 {
         right.push(Span::styled(format!(" · {} working", bar.working), dim));
+    }
+    if let Some(cost) = bar_cost(bar.cost_usd, bar.cost_incomplete) {
+        right.push(Span::styled(format!(" · {}", cost), dim));
     }
     right.push(Span::raw(" "));
     frame.render_widget(Paragraph::new("").style(background), area);
@@ -456,7 +469,7 @@ mod tests {
 
     fn bar_text(working: usize) -> String {
         let mut terminal = Terminal::new(TestBackend::new(70, 1)).unwrap();
-        let bar = TopBar { bot: "antoine-bot".into(), working };
+        let bar = TopBar { bot: "antoine-bot".into(), working, cost_usd: 0.0, cost_incomplete: false };
         terminal.draw(|frame| draw_message_apps_bar(frame, frame.area(), &bar)).unwrap();
         let buffer = terminal.backend().buffer();
         (0..70).map(|x| buffer[(x, 0)].symbol().to_string()).collect()
@@ -469,5 +482,14 @@ mod tests {
         assert!(text.starts_with(" minerve · "), "{text}");
         assert!(text.ends_with("● slack · @antoine-bot "), "{text}");
         assert!(bar_text(2).ends_with("● slack · @antoine-bot · 2 working "));
+    }
+
+    #[test]
+    fn cost_is_short_and_hidden_until_there_is_one() {
+        assert_eq!(bar_cost(0.0, false), None);
+        assert_eq!(bar_cost(0.04213, false).as_deref(), Some("$0.042"));
+        assert_eq!(bar_cost(12.345, false).as_deref(), Some("$12.35"));
+        assert_eq!(bar_cost(0.5, true).as_deref(), Some("$0.500+"));
+        assert_eq!(bar_cost(0.0, true).as_deref(), Some("$0.000+"));
     }
 }

@@ -24,6 +24,10 @@ pub struct Status {
     pub conversations: usize,
     /// Turns running now.
     pub working: usize,
+    /// What the turns run since start cost, as reported by the provider.
+    pub cost_usd: f64,
+    /// Some turn's provider reported no cost, so `cost_usd` is a floor.
+    pub cost_incomplete: bool,
     pub link: Option<LinkState>,
 }
 

@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use super::agent::Agent;
+use super::agent::{session_cost, Agent};
 use super::auth::Allowlist;
 use super::config;
 use super::link::PendingLink;
@@ -118,8 +118,15 @@ impl Router {
             let mut system_prompts = vec![format!("You are running in {}.", transport.display_name())];
             system_prompts.extend(length_instruction(capabilities));
             self.status.lock().unwrap().working += 1;
+            let before = session_cost(&session_id);
             let result = self.agent.run_turn(&session_id, &system_prompts, &prompt).await;
-            self.status.lock().unwrap().working -= 1;
+            let after = session_cost(&session_id);
+            {
+                let mut status = self.status.lock().unwrap();
+                status.working -= 1;
+                status.cost_usd += (after.usd - before.usd).max(0.0);
+                status.cost_incomplete |= after.requests_without_cost > before.requests_without_cost;
+            }
             let reply = match result {
                 Ok(reply) => reply,
                 Err(err) => format!("Error: {}", err),

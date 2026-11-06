@@ -84,6 +84,27 @@ impl Agent {
     }
 }
 
+/// What a session has cost so far, from the usage minerve saves in its file. Zero before it exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SessionCost {
+    pub usd: f64,
+    /// Requests whose provider reported no cost (Anthropic and OpenAI do not).
+    pub requests_without_cost: u64,
+}
+
+pub fn session_cost(session_id: &str) -> SessionCost {
+    let usage = session_file(session_id)
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .map(|session| session["usage"].clone())
+        .unwrap_or_default();
+    SessionCost {
+        usd: usage["cost_usd"].as_f64().unwrap_or(0.0),
+        requests_without_cost: usage["requests_without_cost"].as_u64().unwrap_or(0),
+    }
+}
+
 fn session_file(session_id: &str) -> Result<PathBuf, String> {
     Ok(dirs::home_dir().ok_or("no home directory")?.join(format!(".minerve/sessions/{}.json", session_id)))
 }

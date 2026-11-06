@@ -77,13 +77,20 @@ pub fn view() -> RunnerView {
 pub struct TopBar {
     pub bot: String,
     pub working: usize,
+    pub cost_usd: f64,
+    pub cost_incomplete: bool,
 }
 
 pub fn top_bar() -> Option<TopBar> {
     let Runner::Running(gateway) = &*RUNNER.lock().unwrap() else { return None };
     let status = gateway.status();
     match status.connections.get("slack") {
-        Some(Connection::Connected { bot, .. }) => Some(TopBar { bot: bot.clone(), working: status.working }),
+        Some(Connection::Connected { bot, .. }) => Some(TopBar {
+            bot: bot.clone(),
+            working: status.working,
+            cost_usd: status.cost_usd,
+            cost_incomplete: status.cost_incomplete,
+        }),
         _ => None,
     }
 }
