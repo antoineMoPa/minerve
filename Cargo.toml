@@ -5,6 +5,7 @@ members = [".", "gateway"]
 name = "minerve"
 version = "0.7.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "time"] }

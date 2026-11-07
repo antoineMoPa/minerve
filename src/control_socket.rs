@@ -7,7 +7,7 @@
 //! Both directions carry one JSON object per line, told apart by `type`.
 //!
 //! minerve → parent ([`MinerveEvent`]):
-//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"]}`
+//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"],"cwd":"/home/me/project"}`
 //!   first, once. `features` names the commands this minerve accepts beyond the original ones, so
 //!   a parent sends a newer command only when it is listed (an unknown command stops the reader).
 //! - `{"type":"session","session_id":"…"}` after `hello`, and again when `/resume` switches session.
@@ -88,7 +88,8 @@ pub enum AgentState {
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MinerveEvent<'a> {
-    Hello { version: u32, minerve_version: &'static str, features: &'static [&'static str] },
+    /// `cwd`: the folder minerve works in, for a window to show.
+    Hello { version: u32, minerve_version: &'static str, features: &'static [&'static str], cwd: String },
     Session { session_id: &'a str },
     State { state: AgentState },
     Message { message: &'a ChatCompletionMessage },
@@ -223,6 +224,7 @@ impl ControlSocket {
             version: PROTOCOL_VERSION,
             minerve_version: env!("CARGO_PKG_VERSION"),
             features,
+            cwd: std::env::current_dir().map(|dir| dir.display().to_string()).unwrap_or_default(),
         });
         Ok(Some(socket))
     }
@@ -284,12 +286,13 @@ mod tests {
             version: 1,
             minerve_version: env!("CARGO_PKG_VERSION"),
             features: SERVE_FEATURES,
+            cwd: "/w".to_string(),
         })
         .unwrap();
         assert_eq!(
             hello,
             format!(
-                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"]}}"#,
+                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"],"cwd":"/w"}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );
