@@ -90,7 +90,7 @@ impl App {
 
         // Caption centered under the video, one blank line below the ring. It stays for the
         // whole boot screen (also after the video stops) until the dash sweep erases it.
-        const CAPTION: &str = "loading ancient knowledge";
+        const CAPTION: &str = crate::boot::CAPTION;
         let caption_y = vy + h + 2;
         let caption_len = CAPTION.chars().count() as i32;
         let cap_l = vx + (w - caption_len) / 2;

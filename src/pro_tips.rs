@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-const PRO_TIPS: &[&str] = &[
+pub const PRO_TIPS: &[&str] = &[
     "hold shift to select text here.",
     "Run headless by calling `minerve \"your prompt\"`.",
     "Add context in your AGENTS.md.",

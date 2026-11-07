@@ -22,8 +22,8 @@ use crate::message_apps_runner::{self as runner, RunnerView};
 
 const TRANSPORT: &str = "slack";
 const LABEL_WIDTH: usize = 17;
-const MANIFEST_FILE: &str = ".minerve/slack-manifest.json";
-const SLACK_APPS_URL: &str = "https://api.slack.com/apps";
+pub(crate) const MANIFEST_FILE: &str = ".minerve/slack-manifest.json";
+pub(crate) const SLACK_APPS_URL: &str = "https://api.slack.com/apps";
 
 pub enum MessageAppsStep {
     Stay,
@@ -41,14 +41,14 @@ enum Field {
 const FIELDS: [Field; 4] = [Field::BotName, Field::SlackApp, Field::AppToken, Field::BotToken];
 
 #[derive(Default)]
-struct SetupForm {
-    bot_name: String,
-    app_token: String,
-    bot_token: String,
-    field_index: usize,
+pub(crate) struct SetupForm {
+    pub(crate) bot_name: String,
+    pub(crate) app_token: String,
+    pub(crate) bot_token: String,
+    pub(crate) field_index: usize,
     /// A token is already saved: a blank field keeps it.
-    has_app_token: bool,
-    has_bot_token: bool,
+    pub(crate) has_app_token: bool,
+    pub(crate) has_bot_token: bool,
 }
 
 enum Note {
@@ -501,14 +501,14 @@ impl SetupForm {
     }
 }
 
-struct CheckedForm {
-    settings: SlackSettings,
+pub(crate) struct CheckedForm {
+    pub(crate) settings: SlackSettings,
     /// `None` keeps the saved token.
-    app_token: Option<String>,
-    bot_token: Option<String>,
+    pub(crate) app_token: Option<String>,
+    pub(crate) bot_token: Option<String>,
 }
 
-fn check_form(form: &SetupForm) -> Result<CheckedForm, String> {
+pub(crate) fn check_form(form: &SetupForm) -> Result<CheckedForm, String> {
     let bot_name = form.bot_name.trim();
     check_bot_name(bot_name)?;
     let app_token = check_token(&form.app_token, form.has_app_token, "xapp-", "app")?;
@@ -517,7 +517,7 @@ fn check_form(form: &SetupForm) -> Result<CheckedForm, String> {
 }
 
 /// Slack's rule for a bot's display name, so the manifest is accepted.
-fn check_bot_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_bot_name(name: &str) -> Result<(), String> {
     let valid = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.';
     if name.is_empty() || !name.chars().all(valid) {
         return Err(String::from("Bot name: lowercase letters, digits, - _ . only, e.g. antoine-bot."));

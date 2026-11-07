@@ -9,12 +9,22 @@
 use std::time::{Duration, Instant};
 
 const BOOT_FRAMES: &str = include_str!("../assets/boot.txt");
-const FPS: u64 = 24;
+pub const FPS: u64 = 24;
+/// Shown under the video; also sent to a GUI in the `intro` event.
+pub const CAPTION: &str = "loading ancient knowledge";
 const FRAME_MICROS: u64 = 1_000_000 / FPS;
 /// How long the dotted ring takes to fully disappear after the clip stops.
 const ERODE: Duration = Duration::from_millis(900);
 /// Redraw interval while the ring erodes (no frame boundaries to wait for).
 const ERODE_TICK: Duration = Duration::from_millis(33);
+
+/// The frames of the boot clip, in plain text. Blank characters are transparent.
+pub fn frames() -> Vec<&'static str> {
+    BOOT_FRAMES
+        .split("\n\u{c}\n")
+        .filter(|frame| !frame.is_empty())
+        .collect()
+}
 
 /// Playback state of the boot clip. Frame index is derived from elapsed time,
 /// so a slow redraw skips frames instead of slowing the clip down.
@@ -31,10 +41,7 @@ impl BootAnimation {
         if std::env::var_os("MINERVE_NO_BOOT").is_some() {
             return None;
         }
-        let frames: Vec<&'static str> = BOOT_FRAMES
-            .split("\n\u{c}\n")
-            .filter(|frame| !frame.is_empty())
-            .collect();
+        let frames = frames();
         let first = *frames.first()?;
         let width = first.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         let height = first.lines().count() as u16;

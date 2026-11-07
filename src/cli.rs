@@ -33,4 +33,8 @@ pub struct Cli {
     /// Saving writes ~/.minerve/keys.json; a blank field keeps the stored key.
     #[arg(long)]
     pub setup: bool,
+
+    /// Run without a terminal UI, driven over MINERVE_CONTROL_SOCKET. Used by minerve-gui.
+    #[arg(long, conflicts_with_all = ["prompt", "threads", "setup"])]
+    pub serve: bool,
 }

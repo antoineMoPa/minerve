@@ -77,7 +77,8 @@ pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
     let model = pick_model_with_key(candidates, &api_keys);
 
     OpenRouterConnection {
-        base_url: String::from(OPENROUTER_BASE_URL),
+        // The override is for tests, which point minerve at a server of their own.
+        base_url: std::env::var("MINERVE_OPENROUTER_BASE_URL").unwrap_or_else(|_| String::from(OPENROUTER_BASE_URL)),
         api_keys,
         model,
     }

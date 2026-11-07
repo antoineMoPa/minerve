@@ -186,9 +186,12 @@ pub fn run(
     let control = control.map(Arc::new);
     if let Some(control) = &control {
         let commands_tx = ui_tx.clone();
-        control.read_commands_in_background(move |command| {
-            let _ = commands_tx.send(UiEvent::ParentCommand(command));
-        });
+        control.read_commands_in_background(
+            move |command| {
+                let _ = commands_tx.send(UiEvent::ParentCommand(command));
+            },
+            || {},
+        );
     }
     // The boot clip is for fresh sessions only; resuming one goes straight to the chat.
     let boot = match start {
@@ -563,6 +566,7 @@ impl App {
             }
             UiEvent::Notice(notice) => self.notices.push(notice),
             UiEvent::ParentCommand(command) => self.handle_parent_command(command),
+            UiEvent::ParentClosed => {}
         }
     }
 
@@ -594,6 +598,8 @@ impl App {
                 self.cursor = cursor;
             }
             ParentCommand::GetHistory {} => self.minerve.send_history_to_control(),
+            // Only the GUI's `--serve` minerve acts on these.
+            _ => {}
         }
     }
 

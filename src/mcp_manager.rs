@@ -369,7 +369,7 @@ fn draw_form(frame: &mut Frame, area: Rect, form: &AddServerForm) {
 
 /// A URL makes an HTTP server whose pairs are headers; anything else is a command line whose
 /// pairs are environment variables.
-fn server_config_from_form(command_or_url: &str, env_or_headers: &str) -> Result<McpServerConfig, String> {
+pub(crate) fn server_config_from_form(command_or_url: &str, env_or_headers: &str) -> Result<McpServerConfig, String> {
     let command_or_url = command_or_url.trim();
     if command_or_url.is_empty() {
         return Err(String::from("Enter a command or a URL."));

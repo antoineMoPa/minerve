@@ -17,6 +17,8 @@ pub enum UiEvent {
     Notice(String),
     /// A command from the program that started minerve, read off the control socket.
     ParentCommand(crate::control_socket::ParentCommand),
+    /// The parent closed the control socket. Only `--serve` acts on it.
+    ParentClosed,
 }
 
 pub type UiSender = Sender<UiEvent>;

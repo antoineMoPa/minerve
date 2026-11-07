@@ -27,6 +27,10 @@ mod message_apps;
 mod message_apps_runner;
 mod pro_tips;
 mod recent_models;
+mod serve;
+mod serve_commands;
+mod serve_mcp;
+mod serve_message_apps;
 mod session_picker;
 mod token_counter;
 mod tools;
@@ -194,12 +198,20 @@ fn main() {
     }
 
     // Connected before the TUI takes over, so a parent that named a dead socket is reported on stderr.
-    let control = match control_socket::ControlSocket::connect_from_env() {
+    let control = match control_socket::ControlSocket::connect_from_env(if cli.serve { control_socket::SERVE_FEATURES } else { control_socket::TUI_FEATURES }) {
         Ok(control) => control,
         Err(err) => {
             eprintln!("minerve: {}", err);
             std::process::exit(1);
         }
     };
+    if cli.serve {
+        let Some(control) = control else {
+            eprintln!("minerve: --serve needs {}", control_socket::CONTROL_SOCKET_ENV_VAR);
+            std::process::exit(2);
+        };
+        serve::run(openrouter_connection, start, &cli.system_prompt, control);
+        return;
+    }
     launch_tui(openrouter_connection, start, &cli.system_prompt, cli.setup, control);
 }
