@@ -584,7 +584,7 @@ impl App {
                 };
             }
             ParentCommand::InsertText { text } => self.insert_str_at_cursor(&text),
-            ParentCommand::Submit { text } => {
+            ParentCommand::Submit { text, .. } => {
                 if self.minerve.request_in_flight.load(Ordering::SeqCst) {
                     self.status = String::from("a prompt from the parent program was refused: a turn is running");
                     return;

@@ -163,9 +163,10 @@ impl App {
 
         // The minerve answering Slack says so on a line of its own, above everything else.
         let mut area = frame.area();
-        if let Some(bar) = crate::message_apps_runner::top_bar() {
+        let slack_bar = crate::message_apps_runner::top_bar();
+        if let Some(bar) = &slack_bar {
             let [bar_area, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-            draw_message_apps_bar(frame, bar_area, &bar);
+            draw_message_apps_bar(frame, bar_area, bar);
             area = rest;
         }
 
@@ -174,9 +175,8 @@ impl App {
         let row_count = layout_input(&self.input, inner_width).rows.len() as u16;
         let input_height = (row_count + 2).clamp(3, 10);
 
-        let [chat_area, token_area, status_area, input_area, hint_area] = Layout::vertical([
+        let [chat_area, status_area, input_area, usage_area] = Layout::vertical([
             Constraint::Min(3),
-            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(input_height),
             Constraint::Length(1),
@@ -185,30 +185,19 @@ impl App {
 
         self.draw_chat(frame, chat_area);
 
-        frame.render_widget(
-            Paragraph::new(self.minerve.token_counter.format_usage_summary())
-                .style(Style::default().fg(Color::Gray)),
-            token_area,
-        );
-        frame.render_widget(
-            Paragraph::new(self.status.as_str())
-                .style(Style::default().fg(Color::Magenta)),
-            status_area,
-        );
+        // The Slack top bar already shows the dir; the bottom bar only repeats it without one.
+        let dir = match slack_bar {
+            Some(_) => String::new(),
+            None => std::env::current_dir().map(|dir| crate::message_apps::tilde_path(&dir)).unwrap_or_default(),
+        };
+        draw_usage_bar(frame, usage_area, &dir, &self.minerve.token_counter.format_usage_summary());
+        frame.render_widget(Paragraph::new(self.status.as_str()).style(Style::default().fg(Color::Magenta)), status_area);
 
         self.draw_input(frame, input_area);
         self.draw_slash_menu(frame, input_area);
         if let (Some(modal), None) = (self.setup_modal.as_ref(), self.boot.as_ref()) {
             modal.draw(frame, frame.area());
         }
-
-        frame.render_widget(
-            Paragraph::new(
-                "Enter send | Esc clear selection / cancel turn | Shift+Enter newline | Up/Down history | PgUp/PgDn scroll | Ctrl+O tool output | Ctrl+C quit",
-            )
-            .style(Style::default().fg(Color::DarkGray)),
-            hint_area,
-        );
 
         if self.boot.is_some() {
             self.draw_boot_overlay(frame, chat_area);
@@ -431,18 +420,58 @@ impl App {
         } else {
             Text::from(layout.rows.join("\n"))
         };
+        // The model on the border's right, so it shows without taking a row.
+        let model = format!(" {} ", self.minerve.active_model().id);
         let input = Paragraph::new(text)
             .scroll((scroll_row, 0))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(title)
+                    .title(Line::styled(model, Style::default().fg(Color::Gray)).right_aligned())
                     .border_style(Style::default().fg(border_color)),
             );
         frame.render_widget(input, area);
 
         frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
     }
+}
+
+/// The tint of the Slack top bar and the usage bottom bar.
+const BAR_BACKGROUND: Color = Color::Rgb(31, 42, 48);
+
+/// `Sent: 7.5k | Cost: $0.01` as dim labels and gray values, the cost white, `·` between.
+fn usage_spans(summary: &str) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = Vec::new();
+    for (index, part) in summary.split(" | ").enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        match part.split_once(": ") {
+            Some((label, value)) => {
+                let color = if label == "Cost" { Color::White } else { Color::Gray };
+                spans.push(Span::styled(format!("{label} "), dim));
+                spans.push(Span::styled(value.to_string(), Style::default().fg(color)));
+            }
+            None => spans.push(Span::styled(part.to_string(), Style::default().fg(Color::Gray))),
+        }
+    }
+    spans.push(Span::raw(" "));
+    spans
+}
+
+/// The last row: ` ~/dir` on the left, tokens and cost on the right, tinted like the Slack bar.
+fn draw_usage_bar(frame: &mut Frame, area: Rect, dir: &str, summary: &str) {
+    let background = Style::default().bg(BAR_BACKGROUND);
+    frame.render_widget(Paragraph::new("").style(background), area);
+    if !dir.is_empty() {
+        frame.render_widget(Paragraph::new(Line::styled(format!(" {dir}"), Style::default().fg(Color::DarkGray))).style(background), area);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(usage_spans(summary))).alignment(ratatui::layout::Alignment::Right).style(background),
+        area,
+    );
 }
 
 /// What this minerve's Slack turns cost: `$0.042` under a dollar, `$1.23` above; `+` when some
@@ -457,7 +486,7 @@ fn bar_cost(usd: f64, incomplete: bool) -> Option<String> {
 
 /// `minerve · ~/dir` on the left, `● slack · @bot` (and how many turns run) on the right, on a tinted line.
 fn draw_message_apps_bar(frame: &mut Frame, area: Rect, bar: &crate::message_apps_runner::TopBar) {
-    let background = Style::default().bg(Color::Rgb(31, 42, 48));
+    let background = Style::default().bg(BAR_BACKGROUND);
     let dim = Style::default().fg(Color::DarkGray);
     let dir = std::env::current_dir().map(|dir| crate::message_apps::tilde_path(&dir)).unwrap_or_default();
     let mut right = vec![
@@ -498,6 +527,19 @@ mod tests {
         assert!(text.starts_with(" minerve · "), "{text}");
         assert!(text.ends_with("● slack · @antoine-bot "), "{text}");
         assert!(bar_text(2).ends_with("● slack · @antoine-bot · 2 working "));
+    }
+
+    #[test]
+    fn usage_bar_puts_the_dir_left_and_the_cost_last() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal.draw(|frame| draw_usage_bar(frame, frame.area(), "~/prog", "Sent: 1k (0% cached) | Cost: $0.01")).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..80).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        assert!(text.starts_with(" ~/prog "), "{text}");
+        assert!(text.ends_with("Sent 1k (0% cached) · Cost $0.01 "), "{text}");
+        let cost_cell = &buffer[(77, 0)];
+        assert_eq!(cost_cell.fg, Color::White);
+        assert_eq!(cost_cell.bg, BAR_BACKGROUND);
     }
 
     #[test]

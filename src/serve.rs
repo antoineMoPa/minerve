@@ -60,11 +60,11 @@ pub fn run(
             UiEvent::Notice(notice) => control.send(&MinerveEvent::Notice { notice: &notice }),
             UiEvent::ModelList(provider, result) => extras.on_model_list(provider, result, &minerve, &control),
             UiEvent::ParentCommand(command) => match command {
-                ParentCommand::Submit { text } => {
+                ParentCommand::Submit { text, images } => {
                     if minerve.request_in_flight.load(Ordering::SeqCst) {
                         control.send(&MinerveEvent::Notice { notice: "busy: a turn is running" });
                     } else {
-                        minerve.clone().chat_with_arc(text, Vec::new(), tx.clone(), false);
+                        minerve.clone().chat_with_arc(text, images, tx.clone(), false);
                     }
                 }
                 ParentCommand::Cancel {} => minerve.cancel_turn(),

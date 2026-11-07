@@ -7,7 +7,7 @@
 //! Both directions carry one JSON object per line, told apart by `type`.
 //!
 //! minerve → parent ([`MinerveEvent`]):
-//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps"]}`
+//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"]}`
 //!   first, once. `features` names the commands this minerve accepts beyond the original ones, so
 //!   a parent sends a newer command only when it is listed (an unknown command stops the reader).
 //! - `{"type":"session","session_id":"…"}` after `hello`, and again when `/resume` switches session.
@@ -28,6 +28,7 @@
 //! - `{"type":"get_intro"}` asks for the `intro` event (answered by `--serve` only).
 //!
 //! `--serve` also answers these (each listed in `hello.features`):
+//! - `{"type":"submit","text":"…","images":["/abs/a.png"]}` (`images`) attaches image files; `[Image #N]` tokens in the text are left as typed.
 //! - `{"type":"goal","goal":"…"}` (`goal`) keeps taking turns until an evaluator judges the goal reached.
 //! - `{"type":"list_models"}` (`models`) answered by `models`: `{"current":"…","recent":[…],"lists":[{"provider":"OpenRouter","models":[…],"error":null}]}`.
 //! - `{"type":"set_model","model":"…"}` (`models`).
@@ -74,7 +75,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Optional abilities, told to the parent in `hello`. Only `--serve` acts on these commands,
 /// so the terminal app advertises none.
-pub const SERVE_FEATURES: &[&str] = &["serve", "cancel", "new_session", "intro", "goal", "models", "sessions", "api_keys", "mcp", "message_apps"];
+pub const SERVE_FEATURES: &[&str] = &["serve", "cancel", "new_session", "intro", "goal", "models", "sessions", "api_keys", "mcp", "message_apps", "images"];
 pub const TUI_FEATURES: &[&str] = &[];
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +167,12 @@ pub enum ParentCommand {
     Scroll { to: ScrollTarget },
     ScrollBy { lines: i64 },
     InsertText { text: String },
-    Submit { text: String },
+    Submit {
+        text: String,
+        /// Image files attached to the prompt (needs the `images` feature).
+        #[serde(default)]
+        images: Vec<std::path::PathBuf>,
+    },
     GetHistory {},
     Cancel {},
     NewSession {},
@@ -283,7 +289,7 @@ mod tests {
         assert_eq!(
             hello,
             format!(
-                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps"]}}"#,
+                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"]}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -305,7 +311,7 @@ mod tests {
         let parse = |line: &str| serde_json::from_str::<ParentCommand>(line).unwrap();
         assert_eq!(parse(r#"{"type":"scroll","to":"bottom"}"#), ParentCommand::Scroll { to: ScrollTarget::Bottom });
         assert_eq!(parse(r#"{"type":"scroll_by","lines":-5}"#), ParentCommand::ScrollBy { lines: -5 });
-        assert_eq!(parse(r#"{"type":"submit","text":"hi"}"#), ParentCommand::Submit { text: "hi".into() });
+        assert_eq!(parse(r#"{"type":"submit","text":"hi"}"#), ParentCommand::Submit { text: "hi".into(), images: Vec::new() });
         assert_eq!(parse(r#"{"type":"get_history"}"#), ParentCommand::GetHistory {});
         assert_eq!(parse(r#"{"type":"cancel"}"#), ParentCommand::Cancel {});
         assert_eq!(parse(r#"{"type":"new_session"}"#), ParentCommand::NewSession {});
