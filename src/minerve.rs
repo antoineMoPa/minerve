@@ -106,6 +106,8 @@ pub struct Minerve {
     /// Socket of the program that started minerve, told about the conversation as it goes.
     /// See `control_socket`.
     control: Option<Arc<ControlSocket>>,
+    /// `/budget`: the session's cost that pauses it. See `budget`.
+    pub budget: crate::budget::Budget,
 }
 
 /// Role label in the chat transcript of the prompts the `/goal` evaluator sends.
@@ -557,6 +559,7 @@ impl Minerve {
             token_counter,
             extra_system_prompts: extra_system_prompts.to_vec(),
             control,
+            budget: Default::default(),
         };
         if save_now {
             minerve.save_session();
@@ -586,6 +589,17 @@ impl Minerve {
                 minerve.token_counter.set_context_window(tokens);
             }
         });
+    }
+
+    /// `/budget <arg>`: sets, drops or shows the budget, and says which.
+    pub fn budget_command(&self, arg: &str) -> String {
+        let reports_cost = self.active_model().provider == Provider::OpenRouter;
+        self.budget.command(arg, self.token_counter.current_cost_usd(), reports_cost)
+    }
+
+    /// The notice to pause with, once the session cost the budget.
+    pub fn over_budget(&self) -> Option<String> {
+        self.budget.exceeded(self.token_counter.current_cost_usd())
     }
 
     /// Asks the running turn to stop. The request in flight is dropped, and tool calls not
@@ -667,6 +681,11 @@ impl Minerve {
                 send_status(ui, "connecting to MCP servers...");
             }
             let mcp = crate::mcp::connected_servers().await;
+
+            if let Some(notice) = self.over_budget() {
+                send_notice(ui, notice);
+                break;
+            }
 
             // Show working indicator at start of each loop iteration
             send_status(ui, "working...");
@@ -768,6 +787,10 @@ impl Minerve {
             for turn in 1..=goal::MAX_GOAL_TURNS {
                 if let Err(error) = self.run_turn(&ui, false).await {
                     outcome = goal::GoalOutcome::RequestFailed { error };
+                    break;
+                }
+                if self.over_budget().is_some() {
+                    outcome = goal::GoalOutcome::OverBudget;
                     break;
                 }
                 // Registered before checking the flag, so a cancel arriving in between is not missed.

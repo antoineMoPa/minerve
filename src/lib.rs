@@ -13,6 +13,7 @@ pub fn get_global_runtime() -> &'static Runtime {
 
 mod agents_md;
 mod boot;
+mod budget;
 mod chat;
 mod chat_selection;
 mod goal;

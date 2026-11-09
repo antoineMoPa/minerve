@@ -67,6 +67,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
     ("/model", "switch models and providers"),
     ("/goal", "keep working until an evaluator model judges the goal reached: /goal <goal>"),
+    ("/budget", "pause once the session costs this much: /budget <usd>, /budget off"),
     ("/resume", "continue a saved session"),
     ("/clear", "start a new conversation from fresh"),
     ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
@@ -157,6 +158,12 @@ struct YankState {
 const KILL_RING_MAX: usize = 60;
 
 /// True when the terminal cell at (column, row) is inside `area`.
+/// What follows `/budget` in `input`, or None when it is not a `/budget`.
+fn budget_arg(input: &str) -> Option<&str> {
+    let rest = input.trim().strip_prefix("/budget")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
 fn contains_cell(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
@@ -533,6 +540,10 @@ impl App {
             "/mcp" => self.mcp_manager = Some(McpManager::new()),
             "/message-apps" => self.message_apps = Some(MessageApps::new()),
             "/bootscreen" => self.boot = BootAnimation::start(),
+            "/budget" => {
+                let notice = self.minerve.budget_command("");
+                self.notices.push(notice);
+            }
             // Without a goal after it: `submit` handles `/goal <goal>`.
             "/goal" => self.notices.push(String::from(
                 "Usage: /goal <goal>. Minerve keeps working, turn after turn, until an evaluator model judges the goal reached. Esc stops it.",
@@ -686,6 +697,16 @@ impl App {
         if let Some(goal) = self.input.strip_prefix("/goal ").map(str::trim) {
             if !goal.is_empty() && !self.input_pasted {
                 self.start_goal(goal.to_string());
+                return;
+            }
+        }
+        if let Some(arg) = budget_arg(&self.input) {
+            if !self.input_pasted {
+                self.history.add_prompt(self.input.clone());
+                let notice = self.minerve.budget_command(arg);
+                self.notices.push(notice);
+                self.input.clear();
+                self.cursor = 0;
                 return;
             }
         }

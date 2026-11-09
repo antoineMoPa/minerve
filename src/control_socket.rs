@@ -7,7 +7,7 @@
 //! Both directions carry one JSON object per line, told apart by `type`.
 //!
 //! minerve → parent ([`MinerveEvent`]):
-//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"],"cwd":"/home/me/project"}`
+//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget"],"cwd":"/home/me/project"}`
 //!   first, once. `features` names the commands this minerve accepts beyond the original ones, so
 //!   a parent sends a newer command only when it is listed (an unknown command stops the reader).
 //! - `{"type":"session","session_id":"…"}` after `hello`, and again when `/resume` switches session.
@@ -30,6 +30,7 @@
 //! `--serve` also answers these (each listed in `hello.features`):
 //! - `{"type":"submit","text":"…","images":["/abs/a.png"]}` (`images`) attaches image files; `[Image #N]` tokens in the text are left as typed.
 //! - `{"type":"goal","goal":"…"}` (`goal`) keeps taking turns until an evaluator judges the goal reached.
+//! - `{"type":"budget","arg":"2"}` (`budget`) runs `/budget <arg>`; minerve answers with a `notice`.
 //! - `{"type":"list_models"}` (`models`) answered by `models`: `{"current":"…","recent":[…],"lists":[{"provider":"OpenRouter","models":[…],"error":null}]}`.
 //! - `{"type":"set_model","model":"…"}` (`models`).
 //! - `{"type":"list_sessions"}` (`sessions`) answered by `sessions`: `{"sessions":[{"id":"…","modified":0,"first_prompt":"…"}]}`.
@@ -75,7 +76,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Optional abilities, told to the parent in `hello`. Only `--serve` acts on these commands,
 /// so the terminal app advertises none.
-pub const SERVE_FEATURES: &[&str] = &["serve", "cancel", "new_session", "intro", "goal", "models", "sessions", "api_keys", "mcp", "message_apps", "images"];
+pub const SERVE_FEATURES: &[&str] = &["serve", "cancel", "new_session", "intro", "goal", "models", "sessions", "api_keys", "mcp", "message_apps", "images", "budget"];
 pub const TUI_FEATURES: &[&str] = &[];
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,7 @@ pub enum ParentCommand {
     NewSession {},
     GetIntro {},
     Goal { goal: String },
+    Budget { arg: String },
     ListModels {},
     SetModel { model: String },
     ListSessions {},
@@ -292,7 +294,7 @@ mod tests {
         assert_eq!(
             hello,
             format!(
-                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images"],"cwd":"/w"}}"#,
+                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget"],"cwd":"/w"}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );

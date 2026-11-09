@@ -52,6 +52,8 @@ pub enum GoalOutcome {
     NotReached,
     Stalled { turns: usize, evaluator_model_id: &'static str, reason: String },
     Cancelled,
+    /// The session cost its `/budget`.
+    OverBudget,
     RequestFailed { error: String },
     EvaluatorFailed { errors: String },
 }
@@ -70,6 +72,7 @@ impl GoalOutcome {
                 format!("Goal stalled after {} turn(s), judged by {}: {}", turns, evaluator_model_id, reason)
             }
             GoalOutcome::Cancelled => String::from("Goal cancelled."),
+            GoalOutcome::OverBudget => String::from("Goal paused at the budget: raise it with /budget <usd>, then /goal again to go on."),
             GoalOutcome::RequestFailed { error } => format!("Goal stopped: a request failed: {}", error),
             GoalOutcome::EvaluatorFailed { errors } => {
                 format!("Goal stopped: no evaluator model gave a verdict.\n{}", errors)

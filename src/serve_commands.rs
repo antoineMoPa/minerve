@@ -1,4 +1,4 @@
-//! The `--serve` commands that open the TUI's pickers and modals: `/goal`, `/model`, `/resume`, `/apikeys`.
+//! The `--serve` commands that open the TUI's pickers and modals: `/goal`, `/budget`, `/model`, `/resume`, `/apikeys`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -35,6 +35,7 @@ impl Extras {
                 }
                 minerve.clone().pursue_goal(goal, ui.clone());
             }
+            ParentCommand::Budget { arg } => control.send(&MinerveEvent::Notice { notice: &minerve.budget_command(&arg) }),
             ParentCommand::ListModels {} => self.list_models(minerve, control, ui),
             ParentCommand::SetModel { model } => {
                 minerve.set_model(model.clone());
