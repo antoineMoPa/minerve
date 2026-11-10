@@ -20,6 +20,11 @@ pub struct Cli {
     #[arg(short = 's', long = "append-system-prompt", value_name = "TEXT")]
     pub system_prompt: Vec<String>,
 
+    /// MCP servers for this run only, on top of ~/.minerve/mcp.json and ./.mcp.json: the JSON
+    /// itself (`{"mcpServers": {...}}`) or the path of a file of it. Repeat the flag for several.
+    #[arg(long = "mcp-config", value_name = "JSON_OR_FILE")]
+    pub mcp_config: Vec<String>,
+
     /// Print the chat-app threads (Slack and others): cost, messages, tool calls, and which gateway
     /// runs them now. Read-only; prints and exits. Add `--json` for machine-readable output.
     #[arg(long, conflicts_with_all = ["prompt", "resume", "session_id", "setup"])]

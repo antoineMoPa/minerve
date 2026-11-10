@@ -25,13 +25,17 @@ pub const PROJECT_CONFIG_PATH: &str = ".mcp.json";
 pub enum ConfigSource {
     User,
     Project,
+    /// Given with `--mcp-config` for this run only: a launcher's servers, kept in no file.
+    CommandLine,
 }
 
 impl ConfigSource {
-    pub fn path(&self) -> PathBuf {
+    /// The file the source's servers are kept in. `None` for the command line's, which are in no file.
+    pub fn path(&self) -> Option<PathBuf> {
         match self {
-            ConfigSource::User => dirs::home_dir().expect("no home directory").join(USER_CONFIG_PATH),
-            ConfigSource::Project => PathBuf::from(PROJECT_CONFIG_PATH),
+            ConfigSource::User => Some(dirs::home_dir().expect("no home directory").join(USER_CONFIG_PATH)),
+            ConfigSource::Project => Some(PathBuf::from(PROJECT_CONFIG_PATH)),
+            ConfigSource::CommandLine => None,
         }
     }
 
@@ -39,6 +43,7 @@ impl ConfigSource {
         match self {
             ConfigSource::User => format!("~/{}", USER_CONFIG_PATH),
             ConfigSource::Project => format!("./{}", PROJECT_CONFIG_PATH),
+            ConfigSource::CommandLine => "--mcp-config".to_string(),
         }
     }
 }
@@ -162,13 +167,35 @@ fn read_config_file(path: &Path) -> Result<BTreeMap<String, McpServerConfig>, St
     parse_config(&text).map_err(|err| format!("{}: {}", path.display(), err))
 }
 
-/// Servers of `~/.minerve/mcp.json`, then of `./.mcp.json`, with the file each one comes from.
-/// Missing files mean no servers.
-pub fn load_mcp_servers() -> Result<BTreeMap<String, (McpServerConfig, ConfigSource)>, String> {
+/// Servers of `~/.minerve/mcp.json`, then of `./.mcp.json`, then of each `--mcp-config` given
+/// on the command line, with where each one comes from. Missing files mean no servers, and a
+/// server named twice is the later one.
+///
+/// A `--mcp-config` value is the JSON itself when it starts with `{`, and the path of a file
+/// of it otherwise.
+pub fn load_mcp_servers(
+    command_line_configs: &[String],
+) -> Result<BTreeMap<String, (McpServerConfig, ConfigSource)>, String> {
     let mut servers = BTreeMap::new();
     for source in [ConfigSource::User, ConfigSource::Project] {
-        for (name, config) in read_config_file(&source.path())? {
+        let path = source.path().expect("the user's and the project's servers are in a file");
+        for (name, config) in read_config_file(&path)? {
             servers.insert(name, (config, source));
+        }
+    }
+    for given in command_line_configs {
+        let configs = match given.trim_start().starts_with('{') {
+            true => parse_config(given).map_err(|err| format!("--mcp-config: {}", err))?,
+            false => {
+                let path = Path::new(given);
+                if !path.exists() {
+                    return Err(format!("--mcp-config: {} does not exist", path.display()));
+                }
+                read_config_file(path)?
+            }
+        };
+        for (name, config) in configs {
+            servers.insert(name, (config, ConfigSource::CommandLine));
         }
     }
     Ok(servers)
@@ -331,5 +358,22 @@ mod tests {
     #[test]
     fn rejects_unknown_transport() {
         assert!(parse_config(r#"{"mcpServers": {"a": {"type": "sse", "url": "https://x"}}}"#).is_err());
+    }
+
+    #[test]
+    fn a_command_line_config_is_json_or_a_file_and_is_kept_in_no_file() {
+        let given = r#"{"mcpServers": {"moon": {"command": "/bin/moon", "args": ["mcp"]}}}"#.to_string();
+        let servers = load_mcp_servers(&[given]).unwrap();
+        let (config, source) = &servers["moon"];
+        assert_eq!(
+            config,
+            &McpServerConfig::Stdio { command: "/bin/moon".to_string(), args: vec!["mcp".to_string()], env: Default::default() }
+        );
+        assert_eq!(*source, ConfigSource::CommandLine);
+        assert_eq!(source.path(), None);
+        assert_eq!(source.label(), "--mcp-config");
+
+        assert!(load_mcp_servers(&["/no/such/mcp.json".to_string()]).unwrap_err().contains("does not exist"));
+        assert!(load_mcp_servers(&["{nope".to_string()]).unwrap_err().starts_with("--mcp-config: "));
     }
 }

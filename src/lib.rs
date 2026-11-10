@@ -200,7 +200,7 @@ where
     };
 
     // Read before the TUI takes over, so a bad config file is reported on stderr.
-    match mcp::config::load_mcp_servers() {
+    match mcp::config::load_mcp_servers(&cli.mcp_config) {
         Ok(configs) => mcp::start_connecting(configs),
         Err(err) => {
             eprintln!("minerve: MCP config: {}", err);

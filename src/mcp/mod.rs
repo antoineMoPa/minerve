@@ -194,7 +194,7 @@ pub fn add_server(name: &str, config: McpServerConfig) -> Result<(), String> {
     if registry().slots.lock().unwrap().contains_key(name) {
         return Err(format!("a server named '{}' already exists", name));
     }
-    config::write_server_to_file(&ConfigSource::User.path(), name, &config)?;
+    config::write_server_to_file(&ConfigSource::User.path().expect("the user's servers are in a file"), name, &config)?;
     registry().slots.lock().unwrap().insert(
         name.to_string(),
         McpServerSlot { config, source: ConfigSource::User, connection: McpConnection::Disconnected, attempt: 0 },
@@ -210,7 +210,10 @@ pub fn remove_server(name: &str) -> Result<(), String> {
         let slot = slots.get(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
         (slot.source, slot.config.clone())
     };
-    config::remove_server_from_file(&source.path(), name)?;
+    // A server given on the command line is in no file: it is dropped for this run only.
+    if let Some(path) = source.path() {
+        config::remove_server_from_file(&path, name)?;
+    }
     if let McpServerConfig::Http { url, .. } = &config {
         oauth::forget_login(url)?;
     }
