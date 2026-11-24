@@ -19,6 +19,7 @@ pub mod run_cargo_check_tool;
 pub mod run_shell_command_tool;
 pub mod search_for_path_pattern_tool;
 pub mod search_for_string_tool;
+pub mod stoppable_command;
 pub mod utils;
 pub mod view_image_tool;
 pub mod write_tool;

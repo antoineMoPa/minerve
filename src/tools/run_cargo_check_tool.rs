@@ -1,7 +1,7 @@
+use super::stoppable_command::StoppableCommand;
 use crate::tools::{ExecuteCommandSettings, Tool};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::process::Command;
 
 pub struct RunCargoCheckTool;
 
@@ -24,9 +24,10 @@ impl Tool for RunCargoCheckTool {
         _args: HashMap<String, String>,
         _settings: ExecuteCommandSettings,
     ) -> String {
-        let output = Command::new("cargo")
+        let output = StoppableCommand::new("cargo")
             .arg("check")
             .output()
+            .await
             .map(|out| {
                 if out.status.success() {
                     let stdout = String::from_utf8_lossy(&out.stdout);

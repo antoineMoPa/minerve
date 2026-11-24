@@ -223,6 +223,7 @@ async fn run_tool_calls(
     ui: Option<UiSender>,
     is_headless: bool,
     cancel_requested: &AtomicBool,
+    cancel_notify: &Notify,
     on_tool_message: &mut impl FnMut(ChatCompletionMessage),
     on_error: &mut impl FnMut(String),
 ) -> bool {
@@ -244,7 +245,23 @@ async fn run_tool_calls(
             ));
             continue;
         }
-        match handle_tool_call(tool_call, mcp, ui.clone(), is_headless).await {
+        // Registered before the call starts, so a stop while the tool runs ends it: the call's
+        // future is dropped, and the command it was waiting for is killed.
+        let cancelled = cancel_notify.notified();
+        tokio::pin!(cancelled);
+        cancelled.as_mut().enable();
+        let result = tokio::select! {
+            result = handle_tool_call(tool_call, mcp, ui.clone(), is_headless) => result,
+            _ = &mut cancelled => {
+                on_tool_message(ChatCompletionMessage::tool_result(
+                    tool_call.id.clone(),
+                    String::from("Stopped: the user stopped the turn while this tool call was running."),
+                ));
+                should_continue = false;
+                continue;
+            }
+        };
+        match result {
             ToolCallResult::Success(mut msg) => {
                 msg.content = msg.content.map(cap_tool_output);
                 on_tool_message(msg)
@@ -504,6 +521,7 @@ impl Minerve {
                             None,
                             is_headless,
                             &AtomicBool::new(false),
+                            &Notify::new(),
                             &mut |msg| history.push(msg),
                             &mut |err| eprintln!("{}", err),
                         )
@@ -724,7 +742,17 @@ impl Minerve {
             if crate::mcp::is_any_connecting() {
                 send_status(ui, "connecting to MCP servers...");
             }
-            let mcp = crate::mcp::connected_servers().await;
+            // A stop does not wait for a server that is slow to connect.
+            let cancelled = self.cancel_notify.notified();
+            tokio::pin!(cancelled);
+            cancelled.as_mut().enable();
+            if cancel_requested.load(Ordering::SeqCst) {
+                break;
+            }
+            let mcp = tokio::select! {
+                mcp = crate::mcp::connected_servers() => mcp,
+                _ = &mut cancelled => break,
+            };
 
             if let Some(notice) = self.over_budget() {
                 send_notice(ui, notice);
@@ -788,6 +816,7 @@ impl Minerve {
                             Some(ui.clone()),
                             is_headless,
                             &cancel_requested,
+                            &self.cancel_notify,
                             &mut |msg| self.push_message(msg),
                             &mut |err| errors.push(err),
                         )
@@ -911,6 +940,10 @@ impl Minerve {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "minerve_stop_tests.rs"]
+mod stop_tests;
 
 #[cfg(test)]
 mod tests {

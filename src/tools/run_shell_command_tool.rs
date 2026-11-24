@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 
+use super::stoppable_command::StoppableCommand;
 use super::{ExecuteCommandSettings, Tool, ToolParams};
 
 pub struct RunShellCommandTool;
@@ -38,23 +39,27 @@ impl RunShellCommandTool {
             Ok(cmd) => cmd,
             Err(e) => return e,
         };
-        Self::execute_command(&command, Some(settings))
+        let _ = settings;
+        describe_shell_output(StoppableCommand::shell(&command).output().await)
     }
 
-    /// Runs the command directly. Every shell command is trusted and runs without approval.
+    /// Runs the command directly and waits for it: for `!command`, which no turn is running for.
+    /// Every shell command is trusted and runs without approval.
     pub fn execute_command(command: &str, _settings: Option<ExecuteCommandSettings>) -> String {
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output()
-            .map(|out| {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    format!("[Error] {}", String::from_utf8_lossy(&out.stderr))
-                }
-            })
-            .unwrap_or_else(|e| format!("[Error] {}", e));
-        output
+        describe_shell_output(
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .output(),
+        )
+    }
+}
+
+/// What the model reads: stdout of a command that succeeded, stderr of one that failed.
+fn describe_shell_output(output: std::io::Result<std::process::Output>) -> String {
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+        Ok(out) => format!("[Error] {}", String::from_utf8_lossy(&out.stderr)),
+        Err(e) => format!("[Error] {}", e),
     }
 }

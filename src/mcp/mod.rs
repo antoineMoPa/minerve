@@ -335,6 +335,14 @@ pub struct McpServers {
 }
 
 impl McpServers {
+    /// No server at all, for tests of the built-in tools.
+    #[cfg(test)]
+    pub fn none() -> Self {
+        Self {
+            servers: Vec::new(),
+        }
+    }
+
     /// Function definitions of every tool of every connected server, sorted by function name
     /// so requests keep the same tool order and the prompt cache holds.
     pub fn function_definitions(&self) -> Vec<ChatCompletionFunctionDefinition> {

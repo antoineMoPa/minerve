@@ -1,7 +1,7 @@
+use super::stoppable_command::StoppableCommand;
 use crate::tools::{ExecuteCommandSettings, Tool};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::process::Command;
 
 pub struct CompileTypescriptProjectTool;
 
@@ -24,10 +24,11 @@ impl Tool for CompileTypescriptProjectTool {
         _args: HashMap<String, String>,
         _settings: ExecuteCommandSettings,
     ) -> String {
-        match Command::new("sh")
-            .arg("-c")
-            .arg("NODE_OPTIONS=\"--max-old-space-size=8192\" yarn run tsc --incremental")
-            .output()
+        match StoppableCommand::shell(
+            "NODE_OPTIONS=\"--max-old-space-size=8192\" yarn run tsc --incremental",
+        )
+        .output()
+        .await
         {
             Ok(output) => String::from_utf8_lossy(&output.stdout).to_string(),
             Err(err) => err.to_string(),

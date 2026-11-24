@@ -1,9 +1,9 @@
+use super::stoppable_command::StoppableCommand;
 use super::utils::truncate;
 use super::ExecuteCommandSettings;
 use crate::tools::{ParamName, Tool, ToolParams};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::process::Command;
 
 pub struct SearchForPathPatternTool;
 
@@ -34,10 +34,9 @@ impl Tool for SearchForPathPatternTool {
             Err(e) => return e,
         };
 
-        let ag_check = Command::new("sh")
-            .arg("-c")
-            .arg("command -v ag")
+        let ag_check = StoppableCommand::shell("command -v ag")
             .output()
+            .await
             .map(|o| o.status.success())
             .unwrap_or(false);
 
@@ -50,10 +49,9 @@ impl Tool for SearchForPathPatternTool {
             )
         };
 
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&command)
+        let output = StoppableCommand::shell(&command)
             .output()
+            .await
             .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
             .unwrap_or_else(|e| format!("[Error] {}", e));
 
