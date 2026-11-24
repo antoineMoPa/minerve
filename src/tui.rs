@@ -45,19 +45,10 @@ mod draw;
 mod editing;
 mod matrix;
 mod pickers;
+mod queued_prompts;
 
 use matrix::MatrixRain;
-
-/// Something the user sent while a turn was running. It waits until the turn ends.
-enum QueuedPrompt {
-    /// A normal message, with the image files pasted into it.
-    Message {
-        content: String,
-        images: Vec<std::path::PathBuf>,
-    },
-    /// A `/goal <goal>` to pursue.
-    Goal(String),
-}
+use queued_prompts::{take_next_queued_prompt, QueuedPrompt};
 
 /// Tool results longer than this are cut short in the chat view (the model still gets them all).
 const MAX_OUTPUT_LEN: usize = 500;
@@ -822,12 +813,13 @@ impl App {
         self.minerve.request_in_flight.load(Ordering::SeqCst) || !self.queued_prompts.is_empty()
     }
 
-    /// Sends the oldest queued prompt once no turn is running. Called on every loop pass.
+    /// Sends what is queued once no turn is running: every message waiting, as one message.
+    /// Called on every loop pass.
     fn send_next_queued_prompt(&mut self) {
         if self.minerve.request_in_flight.load(Ordering::SeqCst) {
             return;
         }
-        let Some(queued) = self.queued_prompts.pop_front() else {
+        let Some(queued) = take_next_queued_prompt(&mut self.queued_prompts) else {
             return;
         };
         match queued {

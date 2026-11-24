@@ -161,6 +161,8 @@ fn format_tool_call_group(name: &str, count: usize) -> String {
 
 /// Every tool call of an assistant message needs a tool message answering it,
 /// otherwise OpenRouter rejects the next request.
+/// A call that fails is answered with its error, and the calls after it still run: the model
+/// reads the failure and goes on. Only a stop ends the run.
 /// Returns whether the conversation should continue with another request.
 async fn run_tool_calls(
     tool_calls: &[ChatCompletionToolCall],
@@ -170,7 +172,6 @@ async fn run_tool_calls(
     cancel_requested: &AtomicBool,
     cancel_notify: &Notify,
     on_tool_message: &mut impl FnMut(ChatCompletionMessage),
-    on_error: &mut impl FnMut(String),
 ) -> bool {
     let mut should_continue = true;
     for tool_call in tool_calls {
@@ -181,13 +182,6 @@ async fn run_tool_calls(
                 String::from("Skipped: the turn was cancelled."),
             ));
             should_continue = false;
-            continue;
-        }
-        if !should_continue {
-            on_tool_message(ChatCompletionMessage::tool_result(
-                tool_call.id.clone(),
-                String::from("Skipped: a previous tool call failed."),
-            ));
             continue;
         }
         // Registered before the call starts, so a stop while the tool runs ends it: the call's
@@ -216,8 +210,6 @@ async fn run_tool_calls(
                     tool_call.id.clone(),
                     format!("Error: {}", err),
                 ));
-                on_error(format!("Error occurred in tool call: {}", err));
-                should_continue = false;
             }
         }
     }
@@ -461,7 +453,6 @@ impl Minerve {
                             &AtomicBool::new(false),
                             &Notify::new(),
                             &mut |msg| history.push(msg),
-                            &mut |err| eprintln!("{}", err),
                         )
                         .await;
                         println!("{}", self.token_counter.format_usage_summary());
@@ -664,7 +655,7 @@ impl Minerve {
         send_status(ui, "");
     }
 
-    /// Requests and tool calls until the model answers without tool calls, a tool fails, or the turn is cancelled.
+    /// Requests and tool calls until the model answers without tool calls or the turn is cancelled.
     /// Fails with the error of a request that failed; it is also added to the chat.
     async fn run_turn(&self, ui: &UiSender, is_headless: bool) -> Result<(), String> {
         let messages = self.messages.clone();
@@ -740,7 +731,6 @@ impl Minerve {
                     self.push_message(assistant_message);
 
                     if let Some(tool_calls) = tool_calls {
-                        let mut errors = Vec::new();
                         should_continue = run_tool_calls(
                             &tool_calls,
                             &mcp,
@@ -749,12 +739,8 @@ impl Minerve {
                             &cancel_requested,
                             &self.cancel_notify,
                             &mut |msg| self.push_message(msg),
-                            &mut |err| errors.push(err),
                         )
                         .await;
-                        for err in errors {
-                            self.add_assistant_message_with_update_ui(err, ui);
-                        }
                     }
 
                     update_chat_ui(ui, get_ui_messages(&messages.lock().unwrap()));

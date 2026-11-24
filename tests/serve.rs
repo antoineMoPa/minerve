@@ -303,36 +303,70 @@ fn start_with_model_at(
     (child, stream)
 }
 
-/// Submits a prompt, then waits for the turn to end by itself and gives the chat it ended with.
-fn submit_and_read_chat_at_turn_end(writer: &mut impl Write, reader: &mut impl BufRead) -> String {
+/// Submits a prompt, then waits until the turn has ended by itself and the chat shows every
+/// text of `expected`. The last transcript can come after the state: they take different paths.
+fn submit_and_wait_for_ended_turn_showing(
+    writer: &mut impl Write,
+    reader: &mut impl BufRead,
+    expected: &[&str],
+) {
     writer
         .write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n")
         .unwrap();
     assert_eq!(wait_for(reader, "state")["state"], "working");
     let mut chat = String::new();
-    loop {
+    let mut ended = false;
+    while !(ended && expected.iter().all(|text| chat.contains(text))) {
         let event = read_event(reader);
         match event["type"].as_str() {
             Some("transcript") => chat = event["messages"].to_string(),
             Some("state") => {
                 assert_eq!(event["state"], "waiting_for_input");
-                return chat;
+                ended = true;
             }
             _ => {}
         }
     }
 }
 
+/// The headers of a request and all of its body: a server that answers before it has read
+/// everything resets the connection under the client.
+fn read_whole_http_request(stream: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 65536];
+    while let Ok(read) = stream.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&request);
+        let Some(headers_end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let body_length = text[..headers_end]
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|value| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        if request.len() >= headers_end + 4 + body_length {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&request).to_string()
+}
+
 /// A server that answers every request with `status_line` (like "200 OK") and `body`.
 fn start_server_answering(status_line: &'static str, body: &'static str) -> String {
-    use std::io::Read;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            let mut buffer = [0u8; 65536];
-            let _ = stream.read(&mut buffer);
+            read_whole_http_request(&mut stream);
             let _ = write!(
                 stream,
                 "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -345,12 +379,103 @@ fn start_server_answering(status_line: &'static str, body: &'static str) -> Stri
     url
 }
 
-/// The chat a turn ends with, by itself, when the model's server answers `status_line` and `body`.
-fn read_chat_of_turn_answered_with(
+fn build_shell_tool_call_answer(id: &str, command: &str) -> String {
+    serde_json::json!({"choices": [{"message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{"id": id, "type": "function", "function": {
+            "name": "run_shell_command",
+            "arguments": serde_json::json!({ "command": command }).to_string(),
+        }}],
+    }}]})
+    .to_string()
+}
+
+/// A model that asks for `command` in the shell, reads its result, asks for `echo recovered`,
+/// then answers "all done". The requests it got are kept, to read what the results looked like.
+fn start_model_running_shell_command(
+    command: &str,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let first_call = build_shell_tool_call_answer("call_1", command);
+    let second_call = build_shell_tool_call_answer("call_2", "echo recovered");
+    let done = r#"{"choices":[{"message":{"role":"assistant","content":"all done"}}]}"#.to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = requests.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let request = read_whole_http_request(&mut stream);
+            let body = match request.matches("\"role\":\"tool\"").count() {
+                0 => &first_call,
+                1 => &second_call,
+                _ => &done,
+            };
+            seen.lock().unwrap().push(request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+        }
+    });
+    (url, requests)
+}
+
+#[test]
+fn a_shell_command_that_fails_is_told_to_the_model_which_keeps_working() {
+    // Each command, with what the model must read of its failure.
+    let commands = [
+        // Unterminated substitute: sed fails at once.
+        ("sed 's/a/b' /etc/hosts", "[Error] sed"),
+        // No file: sed reads stdin, which must not be a terminal or an open pipe.
+        ("sed 's/a/b/'", ""),
+        ("echo oops >&2; exit 3", "[Error] oops"),
+        // Not ASCII, in the command and in sed's error.
+        ("sed 's/é→/e' /etc/hosts", "[Error] sed"),
+        // The pipeline succeeds with no output: the result is empty.
+        ("sed 's/a/b' /etc/hosts | head -1", ""),
+        // Fails with nothing on stderr.
+        ("false", "[Error]"),
+    ];
+    for (index, (command, failure)) in commands.iter().enumerate() {
+        let (url, requests) = start_model_running_shell_command(command);
+        let dir = std::env::temp_dir().join(format!(
+            "minerve-serve-badshell-{index}-{}",
+            std::process::id()
+        ));
+        let (mut child, stream) = start_with_model_at(&dir, &url);
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        wait_for(&mut reader, "usage");
+
+        submit_and_wait_for_ended_turn_showing(&mut writer, &mut reader, &["all done"]);
+        let requests = requests.lock().unwrap();
+        let posts: Vec<&String> = requests
+            .iter()
+            .filter(|request| request.starts_with("POST"))
+            .collect();
+        assert_eq!(posts.len(), 3, "{command}");
+        // The model read the failure, then its next command ran.
+        assert!(posts[1].contains(failure), "{command}: {}", posts[1]);
+        assert!(posts[2].contains("recovered"), "{command}: {}", posts[2]);
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A turn ends by itself and its chat shows `expected` when the model's server answers
+/// `status_line` and `body`.
+fn assert_turn_answered_with_ends_showing(
     name: &str,
     status_line: &'static str,
     body: &'static str,
-) -> String {
+    expected: &[&str],
+) {
     let url = start_server_answering(status_line, body);
     let dir = std::env::temp_dir().join(format!("minerve-serve-{name}-{}", std::process::id()));
     let (mut child, stream) = start_with_model_at(&dir, &url);
@@ -358,39 +483,41 @@ fn read_chat_of_turn_answered_with(
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");
 
-    let chat = submit_and_read_chat_at_turn_end(&mut writer, &mut reader);
+    submit_and_wait_for_ended_turn_showing(&mut writer, &mut reader, expected);
 
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
-    chat
 }
 
 #[test]
 fn an_answer_without_choices_ends_the_turn_with_an_error() {
-    let chat = read_chat_of_turn_answered_with("nochoice", "200 OK", r#"{"choices":[]}"#);
-    assert!(chat.contains("no choices"), "{chat}");
+    assert_turn_answered_with_ends_showing(
+        "nochoice",
+        "200 OK",
+        r#"{"choices":[]}"#,
+        &["no choices"],
+    );
 }
 
 #[test]
 fn an_http_error_ends_the_turn_and_shows_its_status_and_body() {
-    let chat = read_chat_of_turn_answered_with(
+    assert_turn_answered_with_ends_showing(
         "http-error",
         "429 Too Many Requests",
         r#"{"error":{"message":"rate limited upstream"}}"#,
+        &["429 Too Many Requests", "rate limited upstream"],
     );
-    assert!(chat.contains("429 Too Many Requests"), "{chat}");
-    assert!(chat.contains("rate limited upstream"), "{chat}");
 }
 
 #[test]
 fn an_error_sent_with_status_200_ends_the_turn_and_shows_its_body() {
-    let chat = read_chat_of_turn_answered_with(
+    assert_turn_answered_with_ends_showing(
         "error-200",
         "200 OK",
         r#"{"error":{"message":"provider returned error","code":502}}"#,
+        &["provider returned error"],
     );
-    assert!(chat.contains("provider returned error"), "{chat}");
 }
 
 #[test]
