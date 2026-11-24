@@ -52,6 +52,7 @@ use cli::*;
 mod utils;
 
 mod anthropic;
+mod completion_request;
 mod minerve;
 mod openrouter;
 mod provider;

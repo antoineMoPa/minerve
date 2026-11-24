@@ -276,7 +276,7 @@ fn hanging_server() -> (
     (url, handle, stop)
 }
 
-fn start_with_hanging_model(
+fn start_with_model_at(
     dir: &std::path::Path,
     url: &str,
 ) -> (std::process::Child, std::os::unix::net::UnixStream) {
@@ -303,11 +303,101 @@ fn start_with_hanging_model(
     (child, stream)
 }
 
+/// Submits a prompt, then waits for the turn to end by itself and gives the chat it ended with.
+fn submit_and_read_chat_at_turn_end(writer: &mut impl Write, reader: &mut impl BufRead) -> String {
+    writer
+        .write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n")
+        .unwrap();
+    assert_eq!(wait_for(reader, "state")["state"], "working");
+    let mut chat = String::new();
+    loop {
+        let event = read_event(reader);
+        match event["type"].as_str() {
+            Some("transcript") => chat = event["messages"].to_string(),
+            Some("state") => {
+                assert_eq!(event["state"], "waiting_for_input");
+                return chat;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A server that answers every request with `status_line` (like "200 OK") and `body`.
+fn start_server_answering(status_line: &'static str, body: &'static str) -> String {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut buffer = [0u8; 65536];
+            let _ = stream.read(&mut buffer);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status_line,
+                body.len(),
+                body
+            );
+        }
+    });
+    url
+}
+
+/// The chat a turn ends with, by itself, when the model's server answers `status_line` and `body`.
+fn read_chat_of_turn_answered_with(
+    name: &str,
+    status_line: &'static str,
+    body: &'static str,
+) -> String {
+    let url = start_server_answering(status_line, body);
+    let dir = std::env::temp_dir().join(format!("minerve-serve-{name}-{}", std::process::id()));
+    let (mut child, stream) = start_with_model_at(&dir, &url);
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    wait_for(&mut reader, "usage");
+
+    let chat = submit_and_read_chat_at_turn_end(&mut writer, &mut reader);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    chat
+}
+
+#[test]
+fn an_answer_without_choices_ends_the_turn_with_an_error() {
+    let chat = read_chat_of_turn_answered_with("nochoice", "200 OK", r#"{"choices":[]}"#);
+    assert!(chat.contains("no choices"), "{chat}");
+}
+
+#[test]
+fn an_http_error_ends_the_turn_and_shows_its_status_and_body() {
+    let chat = read_chat_of_turn_answered_with(
+        "http-error",
+        "429 Too Many Requests",
+        r#"{"error":{"message":"rate limited upstream"}}"#,
+    );
+    assert!(chat.contains("429 Too Many Requests"), "{chat}");
+    assert!(chat.contains("rate limited upstream"), "{chat}");
+}
+
+#[test]
+fn an_error_sent_with_status_200_ends_the_turn_and_shows_its_body() {
+    let chat = read_chat_of_turn_answered_with(
+        "error-200",
+        "200 OK",
+        r#"{"error":{"message":"provider returned error","code":502}}"#,
+    );
+    assert!(chat.contains("provider returned error"), "{chat}");
+}
+
 #[test]
 fn submit_runs_a_turn_and_cancel_ends_it() {
     let (url, server, stop) = hanging_server();
     let dir = std::env::temp_dir().join(format!("minerve-serve-cancel-{}", std::process::id()));
-    let (mut child, stream) = start_with_hanging_model(&dir, &url);
+    let (mut child, stream) = start_with_model_at(&dir, &url);
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");
@@ -339,7 +429,7 @@ fn submit_runs_a_turn_and_cancel_ends_it() {
 fn closing_the_socket_mid_turn_ends_minerve_and_saves_nothing() {
     let (url, server, stop) = hanging_server();
     let dir = std::env::temp_dir().join(format!("minerve-serve-midturn-{}", std::process::id()));
-    let (mut child, stream) = start_with_hanging_model(&dir, &url);
+    let (mut child, stream) = start_with_model_at(&dir, &url);
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");

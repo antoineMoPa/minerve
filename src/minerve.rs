@@ -4,68 +4,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Sends `request` to the API of `provider` and records its usage in `token_counter`.
-/// `url` is the endpoint of that provider; `api_key` is the key of that provider.
-pub async fn post_request_with_token_count(
-    client: &Client,
-    provider: Provider,
-    url: &str,
-    api_key: &str,
-    request: ChatCompletionRequest,
-    token_counter: Arc<TokenCounter>,
-) -> Result<ChatCompletionResponse, String> {
-    let chat_response = match provider {
-        Provider::Anthropic => anthropic::post_messages(client, url, api_key, &request).await?,
-        Provider::OpenRouter | Provider::OpenAi => {
-            post_chat_completions(client, url, api_key, &request).await?
-        }
-    };
-
-    if let Some(ref usage) = chat_response.usage {
-        // Correctly use the increment with the provided token_counter
-        token_counter.increment_prompt(usage.prompt_tokens as usize);
-        token_counter.increment_completion(usage.completion_tokens as usize);
-        token_counter.add_request_cost(usage.cost);
-        token_counter.set_last_prompt_tokens(usage.prompt_tokens as usize);
-        if let Some(details) = &usage.prompt_tokens_details {
-            token_counter.increment_cached_prompt(details.cached_tokens as usize);
-        }
-    }
-
-    Ok(chat_response)
-}
-
-/// OpenRouter and OpenAI share the chat completions request and answer shape.
-async fn post_chat_completions(
-    client: &Client,
-    url: &str,
-    api_key: &str,
-    request: &ChatCompletionRequest,
-) -> Result<ChatCompletionResponse, String> {
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(request)
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        return Err(format!("{}: {}", status, body));
-    }
-
-    serde_json::from_str(&body).map_err(|err| format!("Unexpected response ({}): {}", err, body))
-}
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
-use crate::anthropic;
 use crate::chat::PromptAuthor;
+use crate::completion_request::build_model_client;
+pub use crate::completion_request::post_request_with_token_count;
 use crate::control_socket::{AgentState, ControlSocket, MinerveEvent};
 use crate::goal;
 use crate::mcp::McpServers;
@@ -482,29 +427,21 @@ impl Minerve {
                 .endpoint_for(&model)
                 .and_then(|endpoint| Ok((endpoint, self.build_request(&model, &history, &mcp)?)))
             {
-                Ok(((url, api_key), request)) => {
-                    post_request_with_token_count(
-                        &self.client,
-                        model.provider,
-                        &url,
-                        &api_key,
-                        request,
-                        self.token_counter.clone(),
-                    )
-                    .await
-                }
+                Ok(((url, api_key), request)) => post_request_with_token_count(
+                    &self.client,
+                    model.provider,
+                    &url,
+                    &api_key,
+                    request,
+                    self.token_counter.clone(),
+                )
+                .await
+                .and_then(ChatCompletionResponse::take_first_message),
                 Err(err) => Err(err),
             };
 
             match chat_result {
-                Ok(chat_response) => {
-                    let assistant_message = chat_response
-                        .choices
-                        .into_iter()
-                        .next()
-                        .expect("chat completion response without choices")
-                        .message;
-
+                Ok(assistant_message) => {
                     if let Some(content) = &assistant_message.content {
                         println!("{}", content);
                     }
@@ -599,7 +536,7 @@ impl Minerve {
         let minerve = Self {
             session_id: Mutex::new(session_id),
             messages: Arc::new(Mutex::new(messages)),
-            client: Client::new(),
+            client: build_model_client(),
             api_keys: Mutex::new(openrouter_connection.api_keys),
             base_url: openrouter_connection.base_url,
             model: Mutex::new(ActiveModel::new(openrouter_connection.model)),
@@ -788,7 +725,7 @@ impl Minerve {
                             &api_key,
                             request,
                             self.token_counter.clone(),
-                        ) => Some(result),
+                        ) => Some(result.and_then(ChatCompletionResponse::take_first_message)),
                         _ = &mut cancelled => None,
                     }
                 }
@@ -798,14 +735,7 @@ impl Minerve {
                 // Cancelled: nothing was added, so the conversation ends on the last user
                 // or tool message and the next prompt can follow.
                 None => {}
-                Some(Ok(response)) => {
-                    let assistant_message = response
-                        .choices
-                        .into_iter()
-                        .next()
-                        .expect("chat completion response without choices")
-                        .message;
-
+                Some(Ok(assistant_message)) => {
                     let tool_calls = assistant_message.tool_calls.clone();
                     self.push_message(assistant_message);
 

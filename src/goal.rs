@@ -201,11 +201,7 @@ async fn ask_evaluator(
     )
     .await?;
     let answer = response
-        .choices
-        .into_iter()
-        .next()
-        .expect("chat completion response without choices")
-        .message
+        .take_first_message()?
         .content
         .ok_or_else(|| String::from("evaluator answered without text"))?;
     parse_verdict(&answer)

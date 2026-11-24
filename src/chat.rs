@@ -409,6 +409,18 @@ pub struct ChatCompletionResponse {
     pub usage: Option<Usage>,
 }
 
+impl ChatCompletionResponse {
+    /// The message the model answered with. Fails when the provider sent no choice at all,
+    /// which some do instead of an error (a filtered or dropped answer).
+    pub fn take_first_message(self) -> Result<ChatCompletionMessage, String> {
+        self.choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message)
+            .ok_or_else(|| String::from("the provider answered without a message (no choices)"))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionChoice {
     pub message: ChatCompletionMessage,
