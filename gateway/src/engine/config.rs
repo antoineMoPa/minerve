@@ -39,7 +39,9 @@ pub struct SlackTokens {
 }
 
 fn minerve_dir() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(".minerve")
+    dirs::home_dir()
+        .expect("no home directory")
+        .join(".minerve")
 }
 
 pub fn config_path() -> PathBuf {
@@ -81,10 +83,17 @@ pub fn load_slack_tokens() -> Option<SlackTokens> {
     let pick = |env: &str, key: &str| {
         std::env::var(env)
             .ok()
-            .or_else(|| keys.get(key).and_then(|value| value.as_str()).map(String::from))
+            .or_else(|| {
+                keys.get(key)
+                    .and_then(|value| value.as_str())
+                    .map(String::from)
+            })
             .filter(|token| !token.trim().is_empty())
     };
-    Some(SlackTokens { app_token: pick("SLACK_APP_TOKEN", "slack_app_token")?, bot_token: pick("SLACK_BOT_TOKEN", "slack_bot_token")? })
+    Some(SlackTokens {
+        app_token: pick("SLACK_APP_TOKEN", "slack_app_token")?,
+        bot_token: pick("SLACK_BOT_TOKEN", "slack_bot_token")?,
+    })
 }
 
 /// Stores the given tokens in keys.json, keeping every other key there. `None` keeps the stored one.
@@ -127,8 +136,16 @@ mod tests {
 
     #[test]
     fn a_config_from_before_workdir_was_dropped_still_loads() {
-        let config: MessageAppsConfig = toml::from_str("allowed = []\n[slack]\nbot_name = \"b\"\nworkdir = \"/tmp\"\n").unwrap();
-        assert_eq!(config.slack, Some(SlackSettings { bot_name: "b".into(), icon_url: None }));
+        let config: MessageAppsConfig =
+            toml::from_str("allowed = []\n[slack]\nbot_name = \"b\"\nworkdir = \"/tmp\"\n")
+                .unwrap();
+        assert_eq!(
+            config.slack,
+            Some(SlackSettings {
+                bot_name: "b".into(),
+                icon_url: None
+            })
+        );
     }
 
     #[test]
@@ -137,7 +154,10 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), MessageAppsConfig::default());
         let config = MessageAppsConfig {
             allowed: vec!["slack:U1".into()],
-            slack: Some(SlackSettings { bot_name: "antoine-bot".into(), icon_url: None }),
+            slack: Some(SlackSettings {
+                bot_name: "antoine-bot".into(),
+                icon_url: None,
+            }),
         };
         save_to(&path, &config).unwrap();
         assert_eq!(load_from(&path).unwrap(), config);

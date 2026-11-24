@@ -3,8 +3,8 @@
 use super::*;
 
 /// Characters the falling streams are made of (same set as the Emacs `matrix-mode` it follows).
-pub(super) const MATRIX_GLYPHS: &str = "123456789abcdefghijklmnopqrstuvwxyzαβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
-
+pub(super) const MATRIX_GLYPHS: &str =
+    "123456789abcdefghijklmnopqrstuvwxyzαβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ";
 
 /// Xorshift64 step, returning a float in [0, 1). Good enough for falling letters; avoids a crate.
 pub(super) fn next_unit(state: &mut u64) -> f32 {
@@ -187,7 +187,8 @@ impl MatrixRain {
                     let fade = 1.0 - distance / stream.length as f32;
                     Color::Rgb(0, scale(60.0 + 195.0 * fade), 0)
                 };
-                cell.set_char(self.glyphs[index % self.glyphs.len()]).set_fg(color);
+                cell.set_char(self.glyphs[index % self.glyphs.len()])
+                    .set_fg(color);
             }
         }
         true

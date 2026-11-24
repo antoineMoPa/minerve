@@ -28,7 +28,8 @@ impl App {
         let (aw, ah) = (area.width as i32, area.height as i32);
         let (sw, sh) = (width as i32, height as i32);
         // 0.8 shrinks the fitted video by 20%, leaving more of the dot pattern visible around it.
-        let scale = 0.8 * ((aw - 4).max(1) as f32 / sw as f32).min((ah - 4).max(1) as f32 / sh as f32);
+        let scale =
+            0.8 * ((aw - 4).max(1) as f32 / sw as f32).min((ah - 4).max(1) as f32 / sh as f32);
         let w = ((sw as f32 * scale) as i32).max(1);
         let h = ((sh as f32 * scale) as i32).max(1);
         let vx = ax + (aw - w) / 2;
@@ -46,7 +47,8 @@ impl App {
         let edge_distance = |c: i32, r: i32| (c.min(w - 1 - c)).min(2 * r.min(h - 1 - r));
         // Stable pseudo-random value in [0, 1) per cell.
         let cell_hash = |x: i32, y: i32| {
-            let h = ((x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663)) % 1000;
+            let h =
+                ((x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663)) % 1000;
             h as f32 / 1000.0
         };
 
@@ -61,7 +63,9 @@ impl App {
                 }
                 let visible = erosion.is_none_or(|e| cell_hash(x, y) >= e);
                 if visible {
-                    buf[(x as u16, y as u16)].set_char('·').set_fg(ratatui::style::Color::DarkGray);
+                    buf[(x as u16, y as u16)]
+                        .set_char('·')
+                        .set_fg(ratatui::style::Color::DarkGray);
                 }
             }
         }
@@ -74,18 +78,22 @@ impl App {
                 let sr = (r * sh / h) as usize;
                 for c in 0..w {
                     let sc = (c * sw / w) as usize;
-                    let ch = src.get(sr).and_then(|row| row.get(sc)).copied().unwrap_or(' ');
+                    let ch = src
+                        .get(sr)
+                        .and_then(|row| row.get(sc))
+                        .copied()
+                        .unwrap_or(' ');
                     let (x, y) = (vx + c, vy + r);
                     // Video cells in the blend band show with a chance rising from the border
                     // inward, so the edge dissolves into the dots.
                     let d = edge_distance(c, r);
-                    let show = d >= EDGE_BLEND || cell_hash(x, y) < (d as f32 + 0.5) / EDGE_BLEND as f32;
+                    let show =
+                        d >= EDGE_BLEND || cell_hash(x, y) < (d as f32 + 0.5) / EDGE_BLEND as f32;
                     if show && ch != ' ' && in_area(x, y) {
                         buf[(x as u16, y as u16)].set_char(ch);
                     }
                 }
             }
-
         }
 
         // Caption centered under the video, one blank line below the ring. It stays for the
@@ -98,7 +106,9 @@ impl App {
         for (col, ch) in CAPTION.chars().enumerate() {
             let x = cap_l + col as i32;
             if in_area(x, caption_y) {
-                buf[(x as u16, caption_y as u16)].set_char(ch).set_fg(ratatui::style::Color::Gray);
+                buf[(x as u16, caption_y as u16)]
+                    .set_char(ch)
+                    .set_fg(ratatui::style::Color::Gray);
             }
         }
 
@@ -120,7 +130,9 @@ impl App {
         }
         for x in [lf, rf] {
             if in_area(x, caption_y) {
-                buf[(x as u16, caption_y as u16)].set_char('-').set_fg(ratatui::style::Color::White);
+                buf[(x as u16, caption_y as u16)]
+                    .set_char('-')
+                    .set_fg(ratatui::style::Color::White);
             }
         }
     }
@@ -165,7 +177,8 @@ impl App {
         let mut area = frame.area();
         let slack_bar = crate::message_apps_runner::top_bar();
         if let Some(bar) = &slack_bar {
-            let [bar_area, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+            let [bar_area, rest] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
             draw_message_apps_bar(frame, bar_area, bar);
             area = rest;
         }
@@ -188,10 +201,20 @@ impl App {
         // The Slack top bar already shows the dir; the bottom bar only repeats it without one.
         let dir = match slack_bar {
             Some(_) => String::new(),
-            None => std::env::current_dir().map(|dir| crate::message_apps::tilde_path(&dir)).unwrap_or_default(),
+            None => std::env::current_dir()
+                .map(|dir| crate::message_apps::tilde_path(&dir))
+                .unwrap_or_default(),
         };
-        draw_usage_bar(frame, usage_area, &dir, &self.minerve.token_counter.format_usage_summary());
-        frame.render_widget(Paragraph::new(self.status.as_str()).style(Style::default().fg(Color::Magenta)), status_area);
+        draw_usage_bar(
+            frame,
+            usage_area,
+            &dir,
+            &self.minerve.token_counter.format_usage_summary(),
+        );
+        frame.render_widget(
+            Paragraph::new(self.status.as_str()).style(Style::default().fg(Color::Magenta)),
+            status_area,
+        );
 
         self.draw_input(frame, input_area);
         self.draw_slash_menu(frame, input_area);
@@ -227,8 +250,8 @@ impl App {
             first_line += 1;
         }
         lines.drain(..first_line);
-        let offset_in_first_line = u16::try_from(top - rows_before)
-            .expect("one chat line taller than u16::MAX rows");
+        let offset_in_first_line =
+            u16::try_from(top - rows_before).expect("one chat line taller than u16::MAX rows");
 
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -245,7 +268,9 @@ impl App {
         let Some(selection) = self.chat_selection else {
             return;
         };
-        if selection.chat_top != self.chat_top || !contains_cell(area, selection.anchor.0, selection.anchor.1) {
+        if selection.chat_top != self.chat_top
+            || !contains_cell(area, selection.anchor.0, selection.anchor.1)
+        {
             self.chat_selection = None;
             return;
         }
@@ -290,7 +315,10 @@ impl App {
             lines.push(Line::styled(format!("{}:", label), style));
 
             // Tool results are labeled with the function name; collapse them by default.
-            let is_tool = !matches!(role.as_str(), "user" | "minerve" | "system" | GOAL_EVALUATOR_UI_ROLE);
+            let is_tool = !matches!(
+                role.as_str(),
+                "user" | "minerve" | "system" | GOAL_EVALUATOR_UI_ROLE
+            );
             if is_tool && !self.tools_expanded {
                 let first = content.lines().next().unwrap_or_default();
                 let lines_count = content.lines().count();
@@ -325,7 +353,10 @@ impl App {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ));
-            lines.push(Line::styled(notice.clone(), Style::default().fg(Color::Gray)));
+            lines.push(Line::styled(
+                notice.clone(),
+                Style::default().fg(Color::Gray),
+            ));
             lines.push(Line::default());
         }
 
@@ -373,14 +404,21 @@ impl App {
             height,
         };
         // One column for every name, as wide as the longest command plus a space.
-        let name_width = SLASH_COMMANDS.iter().map(|(name, _)| name.len()).max().unwrap_or(0) + 1;
+        let name_width = SLASH_COMMANDS
+            .iter()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(0)
+            + 1;
         let lines: Vec<Line> = matches
             .iter()
             .map(|(name, description)| {
                 Line::from(vec![
                     Span::styled(
                         format!("{:<width$}", name, width = name_width),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(description.to_string(), Style::default().fg(Color::Gray)),
                 ])
@@ -422,15 +460,13 @@ impl App {
         };
         // The model on the border's right, so it shows without taking a row.
         let model = format!(" {} ", self.minerve.active_model().id);
-        let input = Paragraph::new(text)
-            .scroll((scroll_row, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .title(Line::styled(model, Style::default().fg(Color::Gray)).right_aligned())
-                    .border_style(Style::default().fg(border_color)),
-            );
+        let input = Paragraph::new(text).scroll((scroll_row, 0)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .title(Line::styled(model, Style::default().fg(Color::Gray)).right_aligned())
+                .border_style(Style::default().fg(border_color)),
+        );
         frame.render_widget(input, area);
 
         frame.set_cursor_position((area.x + 1 + col, area.y + 1 + row - scroll_row));
@@ -450,11 +486,18 @@ fn usage_spans(summary: &str) -> Vec<Span<'static>> {
         }
         match part.split_once(": ") {
             Some((label, value)) => {
-                let color = if label == "Cost" { Color::White } else { Color::Gray };
+                let color = if label == "Cost" {
+                    Color::White
+                } else {
+                    Color::Gray
+                };
                 spans.push(Span::styled(format!("{label} "), dim));
                 spans.push(Span::styled(value.to_string(), Style::default().fg(color)));
             }
-            None => spans.push(Span::styled(part.to_string(), Style::default().fg(Color::Gray))),
+            None => spans.push(Span::styled(
+                part.to_string(),
+                Style::default().fg(Color::Gray),
+            )),
         }
     }
     spans.push(Span::raw(" "));
@@ -466,10 +509,19 @@ fn draw_usage_bar(frame: &mut Frame, area: Rect, dir: &str, summary: &str) {
     let background = Style::default().bg(BAR_BACKGROUND);
     frame.render_widget(Paragraph::new("").style(background), area);
     if !dir.is_empty() {
-        frame.render_widget(Paragraph::new(Line::styled(format!(" {dir}"), Style::default().fg(Color::DarkGray))).style(background), area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!(" {dir}"),
+                Style::default().fg(Color::DarkGray),
+            ))
+            .style(background),
+            area,
+        );
     }
     frame.render_widget(
-        Paragraph::new(Line::from(usage_spans(summary))).alignment(ratatui::layout::Alignment::Right).style(background),
+        Paragraph::new(Line::from(usage_spans(summary)))
+            .alignment(ratatui::layout::Alignment::Right)
+            .style(background),
         area,
     );
 }
@@ -480,15 +532,25 @@ fn bar_cost(usd: f64, incomplete: bool) -> Option<String> {
     if usd == 0.0 && !incomplete {
         return None;
     }
-    let amount = if usd >= 1.0 { format!("${:.2}", usd) } else { format!("${:.3}", usd) };
-    Some(if incomplete { format!("{}+", amount) } else { amount })
+    let amount = if usd >= 1.0 {
+        format!("${:.2}", usd)
+    } else {
+        format!("${:.3}", usd)
+    };
+    Some(if incomplete {
+        format!("{}+", amount)
+    } else {
+        amount
+    })
 }
 
 /// `minerve · ~/dir` on the left, `● slack · @bot` (and how many turns run) on the right, on a tinted line.
 fn draw_message_apps_bar(frame: &mut Frame, area: Rect, bar: &crate::message_apps_runner::TopBar) {
     let background = Style::default().bg(BAR_BACKGROUND);
     let dim = Style::default().fg(Color::DarkGray);
-    let dir = std::env::current_dir().map(|dir| crate::message_apps::tilde_path(&dir)).unwrap_or_default();
+    let dir = std::env::current_dir()
+        .map(|dir| crate::message_apps::tilde_path(&dir))
+        .unwrap_or_default();
     let mut right = vec![
         Span::styled("● ", Style::default().fg(Color::Green)),
         Span::raw(format!("slack · @{}", bar.bot)),
@@ -501,8 +563,16 @@ fn draw_message_apps_bar(frame: &mut Frame, area: Rect, bar: &crate::message_app
     }
     right.push(Span::raw(" "));
     frame.render_widget(Paragraph::new("").style(background), area);
-    frame.render_widget(Paragraph::new(Line::styled(format!(" minerve · {}", dir), dim)).style(background), area);
-    frame.render_widget(Paragraph::new(Line::from(right)).alignment(ratatui::layout::Alignment::Right).style(background), area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(format!(" minerve · {}", dir), dim)).style(background),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(right))
+            .alignment(ratatui::layout::Alignment::Right)
+            .style(background),
+        area,
+    );
 }
 
 #[cfg(test)]
@@ -514,10 +584,19 @@ mod tests {
 
     fn bar_text(working: usize) -> String {
         let mut terminal = Terminal::new(TestBackend::new(70, 1)).unwrap();
-        let bar = TopBar { bot: "antoine-bot".into(), working, cost_usd: 0.0, cost_incomplete: false };
-        terminal.draw(|frame| draw_message_apps_bar(frame, frame.area(), &bar)).unwrap();
+        let bar = TopBar {
+            bot: "antoine-bot".into(),
+            working,
+            cost_usd: 0.0,
+            cost_incomplete: false,
+        };
+        terminal
+            .draw(|frame| draw_message_apps_bar(frame, frame.area(), &bar))
+            .unwrap();
         let buffer = terminal.backend().buffer();
-        (0..70).map(|x| buffer[(x, 0)].symbol().to_string()).collect()
+        (0..70)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect()
     }
 
     #[test]
@@ -532,11 +611,25 @@ mod tests {
     #[test]
     fn usage_bar_puts_the_dir_left_and_the_cost_last() {
         let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
-        terminal.draw(|frame| draw_usage_bar(frame, frame.area(), "~/prog", "Sent: 1k (0% cached) | Cost: $0.01")).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_usage_bar(
+                    frame,
+                    frame.area(),
+                    "~/prog",
+                    "Sent: 1k (0% cached) | Cost: $0.01",
+                )
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer();
-        let text: String = (0..80).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        let text: String = (0..80)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
         assert!(text.starts_with(" ~/prog "), "{text}");
-        assert!(text.ends_with("Sent 1k (0% cached) · Cost $0.01 "), "{text}");
+        assert!(
+            text.ends_with("Sent 1k (0% cached) · Cost $0.01 "),
+            "{text}"
+        );
         let cost_cell = &buffer[(77, 0)];
         assert_eq!(cost_cell.fg, Color::White);
         assert_eq!(cost_cell.bg, BAR_BACKGROUND);

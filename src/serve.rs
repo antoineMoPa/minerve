@@ -8,10 +8,10 @@ use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 
 use crate::boot;
-use crate::pro_tips;
 use crate::control_socket::{ControlSocket, MinerveEvent, ParentCommand};
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
+use crate::pro_tips;
 use crate::serve_commands::Extras;
 use crate::session::SessionStart;
 use crate::setup;
@@ -36,13 +36,19 @@ pub fn run(
         },
     );
     let needs_setup = setup::needs_setup(&connection.api_keys);
-    let minerve = Arc::new(Minerve::new(connection, start, extra_system_prompts, Some(control.clone())));
+    let minerve = Arc::new(Minerve::new(
+        connection,
+        start,
+        extra_system_prompts,
+        Some(control.clone()),
+    ));
     minerve.fetch_context_window_in_background();
 
     send_transcript(&control, &minerve);
     if needs_setup {
         control.send(&MinerveEvent::Notice {
-            notice: "No API key set. Run `minerve --setup` in a terminal, then restart minerve-gui.",
+            notice:
+                "No API key set. Run `minerve --setup` in a terminal, then restart minerve-gui.",
         });
     }
 
@@ -50,7 +56,9 @@ pub fn run(
     while let Ok(event) = rx.recv() {
         match event {
             UiEvent::Transcript(messages) => {
-                control.send(&MinerveEvent::Transcript { messages: &messages });
+                control.send(&MinerveEvent::Transcript {
+                    messages: &messages,
+                });
                 send_usage(&control, &minerve);
             }
             UiEvent::Status(status) => {
@@ -58,19 +66,27 @@ pub fn run(
                 send_usage(&control, &minerve);
             }
             UiEvent::Notice(notice) => control.send(&MinerveEvent::Notice { notice: &notice }),
-            UiEvent::ModelList(provider, result) => extras.on_model_list(provider, result, &minerve, &control),
+            UiEvent::ModelList(provider, result) => {
+                extras.on_model_list(provider, result, &minerve, &control)
+            }
             UiEvent::ParentCommand(command) => match command {
                 ParentCommand::Submit { text, images } => {
                     if minerve.request_in_flight.load(Ordering::SeqCst) {
-                        control.send(&MinerveEvent::Notice { notice: "busy: a turn is running" });
+                        control.send(&MinerveEvent::Notice {
+                            notice: "busy: a turn is running",
+                        });
                     } else {
-                        minerve.clone().chat_with_arc(text, images, tx.clone(), false);
+                        minerve
+                            .clone()
+                            .chat_with_arc(text, images, tx.clone(), false);
                     }
                 }
                 ParentCommand::Cancel {} => minerve.cancel_turn(),
                 ParentCommand::NewSession {} => {
                     if minerve.request_in_flight.load(Ordering::SeqCst) {
-                        control.send(&MinerveEvent::Notice { notice: "busy: a turn is running" });
+                        control.send(&MinerveEvent::Notice {
+                            notice: "busy: a turn is running",
+                        });
                     } else {
                         minerve.start_new_session();
                         send_transcript(&control, &minerve);
@@ -84,7 +100,9 @@ pub fn run(
                     tips: pro_tips::PRO_TIPS,
                 }),
                 // The GUI keeps its own view and input box.
-                ParentCommand::Scroll { .. } | ParentCommand::ScrollBy { .. } | ParentCommand::InsertText { .. } => {}
+                ParentCommand::Scroll { .. }
+                | ParentCommand::ScrollBy { .. }
+                | ParentCommand::InsertText { .. } => {}
                 other => {
                     extras.handle(other, &minerve, &control, &tx);
                 }
@@ -102,10 +120,14 @@ pub fn run(
 }
 
 fn send_transcript(control: &ControlSocket, minerve: &Minerve) {
-    control.send(&MinerveEvent::Transcript { messages: &minerve.ui_messages() });
+    control.send(&MinerveEvent::Transcript {
+        messages: &minerve.ui_messages(),
+    });
     send_usage(control, minerve);
 }
 
 fn send_usage(control: &ControlSocket, minerve: &Minerve) {
-    control.send(&MinerveEvent::Usage { summary: &minerve.token_counter.format_usage_summary() });
+    control.send(&MinerveEvent::Usage {
+        summary: &minerve.token_counter.format_usage_summary(),
+    });
 }

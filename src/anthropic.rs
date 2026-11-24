@@ -13,10 +13,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{
-    ChatCompletionChoice, ChatCompletionMessage, ChatCompletionMessageRole,
-    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionToolCall,
-    ChatCompletionToolDefinition, ChatCompletionFunctionCall, PromptTokensDetails,
-    RequestContent, RequestPart, Usage,
+    ChatCompletionChoice, ChatCompletionFunctionCall, ChatCompletionMessage,
+    ChatCompletionMessageRole, ChatCompletionRequest, ChatCompletionResponse,
+    ChatCompletionToolCall, ChatCompletionToolDefinition, PromptTokensDetails, RequestContent,
+    RequestPart, Usage,
 };
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -38,11 +38,17 @@ fn content_blocks(content: &Option<RequestContent>) -> (Vec<Value>, bool) {
             let mut has_breakpoint = false;
             for part in parts {
                 match part {
-                    RequestPart::Text { text, cache_control } => {
+                    RequestPart::Text {
+                        text,
+                        cache_control,
+                    } => {
                         blocks.extend(text_blocks(text));
                         has_breakpoint |= cache_control.is_some();
                     }
-                    RequestPart::ImageUrl { image_url, cache_control } => {
+                    RequestPart::ImageUrl {
+                        image_url,
+                        cache_control,
+                    } => {
                         blocks.push(json!({
                             "type": "image",
                             "source": {
@@ -138,7 +144,11 @@ pub fn to_messages_body(request: &ChatCompletionRequest) -> Result<Value, String
                     .as_ref()
                     .expect("tool message without tool_call_id");
                 // Tool results only hold text; an empty result is sent as an empty string.
-                let content = if content_blocks.is_empty() { json!("") } else { Value::Array(content_blocks) };
+                let content = if content_blocks.is_empty() {
+                    json!("")
+                } else {
+                    Value::Array(content_blocks)
+                };
                 blocks.push(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_call_id,
@@ -319,8 +329,14 @@ mod tests {
             from(ChatCompletionMessage::system(String::from("be brief"))),
             from(ChatCompletionMessage::user(String::from("hi"))),
             from(assistant),
-            from(ChatCompletionMessage::tool_result(String::from("toolu_1"), String::from("one"))),
-            from(ChatCompletionMessage::tool_result(String::from("toolu_1"), String::from("two"))),
+            from(ChatCompletionMessage::tool_result(
+                String::from("toolu_1"),
+                String::from("one"),
+            )),
+            from(ChatCompletionMessage::tool_result(
+                String::from("toolu_1"),
+                String::from("two"),
+            )),
         ]);
 
         let body = to_messages_body(&request).unwrap();
@@ -340,14 +356,20 @@ mod tests {
         let mut first = from(ChatCompletionMessage::user(String::from("hi")));
         first.add_cache_breakpoint();
         let body = to_messages_body(&request_with(vec![first])).unwrap();
-        assert_eq!(body["messages"][0]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
     }
 
     #[test]
     fn image_becomes_a_base64_block_before_the_text_and_takes_no_breakpoint() {
         let image = std::env::temp_dir().join(format!("minerve-test-{}.png", uuid::Uuid::new_v4()));
         std::fs::write(&image, [1u8, 2, 3]).unwrap();
-        let mut message = from(ChatCompletionMessage::user_with_images(String::from("what is this?"), vec![image.clone()]));
+        let mut message = from(ChatCompletionMessage::user_with_images(
+            String::from("what is this?"),
+            vec![image.clone()],
+        ));
         message.add_cache_breakpoint();
         let body = to_messages_body(&request_with(vec![message])).unwrap();
         std::fs::remove_file(&image).unwrap();

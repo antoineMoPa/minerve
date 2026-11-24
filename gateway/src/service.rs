@@ -48,7 +48,9 @@ pub enum StartError {
 impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StartError::AlreadyRunning(Some(pid)) => write!(f, "already running in another minerve (pid {})", pid),
+            StartError::AlreadyRunning(Some(pid)) => {
+                write!(f, "already running in another minerve (pid {})", pid)
+            }
             StartError::AlreadyRunning(None) => write!(f, "already running in another minerve"),
             StartError::Other(err) => f.write_str(err),
         }
@@ -80,7 +82,10 @@ impl Gateway {
 
         let mut transports: Vec<Arc<dyn Transport>> = Vec::new();
         if let (Some(settings), Some(tokens)) = (&options.config.slack, options.slack_tokens) {
-            transports.push(Arc::new(Slack::new(tokens, settings.icon_url().to_string())));
+            transports.push(Arc::new(Slack::new(
+                tokens,
+                settings.icon_url().to_string(),
+            )));
         }
         if options.console {
             transports.push(Arc::new(Console));
@@ -110,7 +115,12 @@ impl Gateway {
             }
         }));
         log("started");
-        Ok(Gateway { router, status, tasks, _lock: lock })
+        Ok(Gateway {
+            router,
+            status,
+            tasks,
+            _lock: lock,
+        })
     }
 
     pub fn status(&self) -> Status {
@@ -121,7 +131,10 @@ impl Gateway {
     pub fn start_link(&self) -> PendingLink {
         let pending = PendingLink::new(Instant::now());
         *self.router.link.lock().unwrap() = Some(pending.clone());
-        self.status.lock().unwrap().link = Some(LinkState::Waiting { code: pending.code.clone(), expires_at: pending.expires_at });
+        self.status.lock().unwrap().link = Some(LinkState::Waiting {
+            code: pending.code.clone(),
+            expires_at: pending.expires_at,
+        });
         pending
     }
 
@@ -156,7 +169,9 @@ impl Drop for Gateway {
 }
 
 fn lock_path() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(".minerve/message-apps.lock")
+    dirs::home_dir()
+        .expect("no home directory")
+        .join(".minerve/message-apps.lock")
 }
 
 fn acquire_lock() -> Result<File, StartError> {
@@ -175,7 +190,9 @@ fn acquire_lock() -> Result<File, StartError> {
             let _ = file.read_to_string(&mut pid);
             return Err(StartError::AlreadyRunning(pid.trim().parse().ok()));
         }
-        Err(std::fs::TryLockError::Error(err)) => return Err(StartError::Other(format!("{}: {}", path.display(), err))),
+        Err(std::fs::TryLockError::Error(err)) => {
+            return Err(StartError::Other(format!("{}: {}", path.display(), err)))
+        }
     }
     let _ = file.set_len(0);
     let _ = file.rewind();

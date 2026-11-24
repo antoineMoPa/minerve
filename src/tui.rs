@@ -3,26 +3,26 @@
 //! Background work reports through `UiEvent`s (see `ui.rs`); key presses are handled here.
 
 use std::io::{self, Write};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::chat_selection::{self, ChatSelection};
 use crate::control_socket::{ControlSocket, ParentCommand, ScrollTarget};
 use crate::input_layout::layout_input;
-use crate::model_picker::ModelPicker;
-use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
-use crate::setup::{self, SetupModal, SetupStep};
-use crate::recent_models::RecentModels;
 use crate::mcp_manager::{McpManager, McpManagerStep};
 use crate::message_apps::{MessageApps, MessageAppsStep};
+use crate::model_picker::ModelPicker;
+use crate::provider::{Provider, PROVIDERS_BY_DEFAULT_PRIORITY};
+use crate::recent_models::RecentModels;
 use crate::session_picker::SessionPicker;
+use crate::setup::{self, SetupModal, SetupStep};
 
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
@@ -51,7 +51,10 @@ use matrix::MatrixRain;
 /// Something the user sent while a turn was running. It waits until the turn ends.
 enum QueuedPrompt {
     /// A normal message, with the image files pasted into it.
-    Message { content: String, images: Vec<std::path::PathBuf> },
+    Message {
+        content: String,
+        images: Vec<std::path::PathBuf>,
+    },
     /// A `/goal <goal>` to pursue.
     Goal(String),
 }
@@ -66,13 +69,25 @@ const WHEEL_STEP: usize = 3;
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
     ("/model", "switch models and providers"),
-    ("/goal", "keep working until an evaluator model judges the goal reached: /goal <goal>"),
-    ("/budget", "pause once the session costs this much: /budget <usd>, /budget off"),
+    (
+        "/goal",
+        "keep working until an evaluator model judges the goal reached: /goal <goal>",
+    ),
+    (
+        "/budget",
+        "pause once the session costs this much: /budget <usd>, /budget off",
+    ),
     ("/resume", "continue a saved session"),
     ("/clear", "start a new conversation from fresh"),
     ("/apikeys", "set the OpenRouter, OpenAI and Anthropic keys"),
-    ("/mcp", "manage MCP servers: add, connect, disconnect, remove"),
-    ("/message-apps", "talk to minerve from Slack: set up, status, link your account"),
+    (
+        "/mcp",
+        "manage MCP servers: add, connect, disconnect, remove",
+    ),
+    (
+        "/message-apps",
+        "talk to minerve from Slack: set up, status, link your account",
+    ),
     ("/bootscreen", "replay the boot screen"),
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
@@ -205,8 +220,7 @@ pub fn run(
         SessionStart::Resume(_) => None,
         SessionStart::New | SessionStart::NewWithId(_) => BootAnimation::start(),
     };
-    let needs_setup = force_setup
-        || setup::needs_setup(&openrouter_connection.api_keys);
+    let needs_setup = force_setup || setup::needs_setup(&openrouter_connection.api_keys);
     let stored_keys = openrouter_connection.api_keys.clone();
     let minerve = Arc::new(Minerve::new(
         openrouter_connection,
@@ -310,7 +324,8 @@ impl App {
                     // Windows also reports key releases; only presses count.
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         // Any key starts the fade-out and is not typed into the prompt. Ctrl+C still quits.
-                        let quit_key = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+                        let quit_key = key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('c');
                         if !quit_key && self.matrix.is_some() {
                             self.stop_matrix();
                             continue;
@@ -380,7 +395,9 @@ impl App {
                         }
                         // Pasted text goes into the picker filter; newlines would not match any model id.
                         if let Some(picker) = self.model_picker.as_mut() {
-                            picker.filter.extend(text.chars().filter(|c| !c.is_control()));
+                            picker
+                                .filter
+                                .extend(text.chars().filter(|c| !c.is_control()));
                             picker.selected = 0;
                             continue;
                         }
@@ -391,7 +408,14 @@ impl App {
                         self.stop_boot();
                         self.handle_paste(&text);
                     }
-                    Event::Mouse(mouse) if self.matrix.is_none() && self.tetris.is_none() && self.mcp_manager.is_none() && self.message_apps.is_none() => self.handle_mouse(mouse),
+                    Event::Mouse(mouse)
+                        if self.matrix.is_none()
+                            && self.tetris.is_none()
+                            && self.mcp_manager.is_none()
+                            && self.message_apps.is_none() =>
+                    {
+                        self.handle_mouse(mouse)
+                    }
                     // Back in the terminal after another app had the screen, or resized: repaint every cell.
                     Event::FocusGained => terminal.clear()?,
                     // The chat rewraps, so a selection's cells no longer hold its text.
@@ -432,12 +456,13 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                self.chat_selection = over_chat
-                    .then(|| ChatSelection::new((mouse.column, mouse.row), self.chat_top));
+                self.chat_selection =
+                    over_chat.then(|| ChatSelection::new((mouse.column, mouse.row), self.chat_top));
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(selection) = self.chat_selection.as_mut() {
-                    selection.cursor = chat_selection::clamp_to(self.chat_area, (mouse.column, mouse.row));
+                    selection.cursor =
+                        chat_selection::clamp_to(self.chat_area, (mouse.column, mouse.row));
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => match self.chat_selection {
@@ -452,8 +477,10 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) if over_input => {
                 // Inside the borders only.
                 let area = self.input_area;
-                if !(mouse.column > area.x && mouse.column < area.right().saturating_sub(1)
-                    && mouse.row > area.y && mouse.row < area.bottom().saturating_sub(1))
+                if !(mouse.column > area.x
+                    && mouse.column < area.right().saturating_sub(1)
+                    && mouse.row > area.y
+                    && mouse.row < area.bottom().saturating_sub(1))
                 {
                     return;
                 }
@@ -464,7 +491,9 @@ impl App {
                 self.last_yank = None;
             }
             MouseEventKind::ScrollUp => self.scroll_up = self.scroll_up.saturating_add(WHEEL_STEP),
-            MouseEventKind::ScrollDown => self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP),
+            MouseEventKind::ScrollDown => {
+                self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP)
+            }
             _ => {}
         }
     }
@@ -511,7 +540,10 @@ impl App {
     /// Slash commands whose name starts with the typed input. Empty unless the input is a
     /// typed (not pasted) single `/word`.
     fn slash_matches(&self) -> Vec<(&'static str, &'static str)> {
-        if self.input_pasted || !self.input.starts_with('/') || self.input.contains(char::is_whitespace) {
+        if self.input_pasted
+            || !self.input.starts_with('/')
+            || self.input.contains(char::is_whitespace)
+        {
             return Vec::new();
         }
         SLASH_COMMANDS
@@ -584,9 +616,13 @@ impl App {
     /// A command of the program that started minerve - see `control_socket`.
     fn handle_parent_command(&mut self, command: ParentCommand) {
         match command {
-            ParentCommand::Scroll { to: ScrollTarget::Bottom } => self.scroll_up = 0,
+            ParentCommand::Scroll {
+                to: ScrollTarget::Bottom,
+            } => self.scroll_up = 0,
             // `draw_chat` clamps this to the top of the chat.
-            ParentCommand::Scroll { to: ScrollTarget::Top } => self.scroll_up = usize::MAX,
+            ParentCommand::Scroll {
+                to: ScrollTarget::Top,
+            } => self.scroll_up = usize::MAX,
             ParentCommand::ScrollBy { lines } => {
                 self.scroll_up = if lines < 0 {
                     self.scroll_up.saturating_add(lines.unsigned_abs() as usize)
@@ -597,7 +633,9 @@ impl App {
             ParentCommand::InsertText { text } => self.insert_str_at_cursor(&text),
             ParentCommand::Submit { text, .. } => {
                 if self.minerve.request_in_flight.load(Ordering::SeqCst) {
-                    self.status = String::from("a prompt from the parent program was refused: a turn is running");
+                    self.status = String::from(
+                        "a prompt from the parent program was refused: a turn is running",
+                    );
                     return;
                 }
                 // Whatever was being typed in the box stays there, under the parent's prompt.
@@ -648,7 +686,12 @@ impl App {
         }
 
         // Editing keys hand focus back to the input, so they are not swallowed by a focused chat.
-        if self.chat_focused && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
+        if self.chat_focused
+            && matches!(
+                key.code,
+                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter
+            )
+        {
             self.chat_focused = false;
         }
 
@@ -672,8 +715,12 @@ impl App {
             KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input_len()),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input_len(),
-            KeyCode::Up if self.chat_focused => self.scroll_up = self.scroll_up.saturating_add(WHEEL_STEP),
-            KeyCode::Down if self.chat_focused => self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP),
+            KeyCode::Up if self.chat_focused => {
+                self.scroll_up = self.scroll_up.saturating_add(WHEEL_STEP)
+            }
+            KeyCode::Down if self.chat_focused => {
+                self.scroll_up = self.scroll_up.saturating_sub(WHEEL_STEP)
+            }
             KeyCode::Up => {
                 if let Some(prompt) = self.history.get_previous_prompt(&self.input) {
                     self.set_input(prompt);
@@ -723,9 +770,15 @@ impl App {
         if let Some(command) = content.trim().strip_prefix('!') {
             let command = command.trim();
             if !command.is_empty() {
-                let output = crate::tools::run_shell_command_tool::RunShellCommandTool::execute_command(command, None);
-                self.pending_command_output
-                    .push(format!("```\n$ {}\n{}\n```", command, output.trim_end()));
+                let output =
+                    crate::tools::run_shell_command_tool::RunShellCommandTool::execute_command(
+                        command, None,
+                    );
+                self.pending_command_output.push(format!(
+                    "```\n$ {}\n{}\n```",
+                    command,
+                    output.trim_end()
+                ));
                 self.input.clear();
                 self.cursor = 0;
                 self.scroll_up = 0;
@@ -739,13 +792,17 @@ impl App {
         } else {
             let context = self.pending_command_output.join("\n\n");
             self.pending_command_output.clear();
-            format!("Output of commands I ran in the shell:\n```\n{}\n```\n\n{}", context, content)
+            format!(
+                "Output of commands I ran in the shell:\n```\n{}\n```\n\n{}",
+                context, content
+            )
         };
         let images = self.pasted_images.take_referenced(&content);
         // One turn at a time: a second prompt would run beside the first in the same session.
         // While a turn runs, the prompt waits in the queue (see `send_next_queued_prompt`).
         if self.must_queue() {
-            self.queued_prompts.push_back(QueuedPrompt::Message { content, images });
+            self.queued_prompts
+                .push_back(QueuedPrompt::Message { content, images });
             self.status = format!("{} queued", self.queued_prompts.len());
         } else {
             self.minerve
@@ -775,7 +832,9 @@ impl App {
         };
         match queued {
             QueuedPrompt::Message { content, images } => {
-                self.minerve.clone().chat_with_arc(content, images, self.ui_tx.clone(), false);
+                self.minerve
+                    .clone()
+                    .chat_with_arc(content, images, self.ui_tx.clone(), false);
             }
             QueuedPrompt::Goal(goal) => self.minerve.clone().pursue_goal(goal, self.ui_tx.clone()),
         }
@@ -809,5 +868,4 @@ impl App {
             matrix.stop();
         }
     }
-
 }

@@ -42,15 +42,24 @@ fn serve_talks_over_the_control_socket() {
         .unwrap();
 
     let (stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
 
     let hello = read_event(&mut reader);
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["version"], 1);
-    assert!(hello["features"].as_array().unwrap().iter().any(|feature| feature == "intro"));
-    let first_session = wait_for(&mut reader, "session")["session_id"].as_str().unwrap().to_string();
+    assert!(hello["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|feature| feature == "intro"));
+    let first_session = wait_for(&mut reader, "session")["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(wait_for(&mut reader, "state")["state"], "waiting_for_input");
     assert!(wait_for(&mut reader, "transcript")["messages"].is_array());
     assert!(wait_for(&mut reader, "usage")["summary"].is_string());
@@ -67,19 +76,33 @@ fn serve_talks_over_the_control_socket() {
     assert!(models["lists"].is_array());
     writer.write_all(b"{\"type\":\"list_mcp\"}\n").unwrap();
     assert!(wait_for(&mut reader, "mcp_servers")["servers"].is_array());
-    writer.write_all(b"{\"type\":\"mcp_remove\",\"name\":\"nope\"}\n").unwrap();
-    assert!(wait_for(&mut reader, "notice")["notice"].as_str().unwrap().contains("no MCP server"));
-    writer.write_all(b"{\"type\":\"message_apps_status\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"mcp_remove\",\"name\":\"nope\"}\n")
+        .unwrap();
+    assert!(wait_for(&mut reader, "notice")["notice"]
+        .as_str()
+        .unwrap()
+        .contains("no MCP server"));
+    writer
+        .write_all(b"{\"type\":\"message_apps_status\"}\n")
+        .unwrap();
     let apps = wait_for(&mut reader, "message_apps");
     assert_eq!(apps["slack"]["state"], "not_set_up");
     writer.write_all(b"{\"type\":\"list_sessions\"}\n").unwrap();
     assert!(wait_for(&mut reader, "sessions")["sessions"].is_array());
     writer.write_all(b"{\"type\":\"get_api_keys\"}\n").unwrap();
     let keys = wait_for(&mut reader, "api_keys");
-    assert!(keys["openrouter"].is_boolean() && keys["openai"].is_boolean() && keys["anthropic"].is_boolean());
+    assert!(
+        keys["openrouter"].is_boolean()
+            && keys["openai"].is_boolean()
+            && keys["anthropic"].is_boolean()
+    );
 
     writer.write_all(b"{\"type\":\"new_session\"}\n").unwrap();
-    let second_session = wait_for(&mut reader, "session")["session_id"].as_str().unwrap().to_string();
+    let second_session = wait_for(&mut reader, "session")["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_ne!(first_session, second_session);
 
     drop(writer);
@@ -117,7 +140,9 @@ fn serve_exits_and_saves_nothing_after_a_bad_command() {
         .unwrap();
 
     let (stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");
@@ -133,8 +158,13 @@ fn serve_exits_and_saves_nothing_after_a_bad_command() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let sessions = dir.join(".minerve/sessions");
-    let saved = std::fs::read_dir(&sessions).map(|entries| entries.count()).unwrap_or(0);
-    assert_eq!(saved, 0, "a chat with no messages must not leave a session file");
+    let saved = std::fs::read_dir(&sessions)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        saved, 0,
+        "a chat with no messages must not leave a session file"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -142,14 +172,21 @@ fn serve_exits_and_saves_nothing_after_a_bad_command() {
 fn wait_for_notice(reader: &mut impl BufRead, text: &str) {
     for _ in 0..20 {
         let event = read_event(reader);
-        if event["type"] == "notice" && event["notice"].as_str().is_some_and(|notice| notice.contains(text)) {
+        if event["type"] == "notice"
+            && event["notice"]
+                .as_str()
+                .is_some_and(|notice| notice.contains(text))
+        {
             return;
         }
     }
     panic!("no notice containing {text:?}");
 }
 
-fn start(args: &[&str], dir: &std::path::Path) -> (std::process::Child, std::os::unix::net::UnixStream) {
+fn start(
+    args: &[&str],
+    dir: &std::path::Path,
+) -> (std::process::Child, std::os::unix::net::UnixStream) {
     std::fs::create_dir_all(dir).unwrap();
     let socket_path = dir.join("s.sock");
     let listener = UnixListener::bind(&socket_path).unwrap();
@@ -165,7 +202,9 @@ fn start(args: &[&str], dir: &std::path::Path) -> (std::process::Child, std::os:
         .spawn()
         .unwrap();
     let (stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     (child, stream)
 }
 
@@ -191,15 +230,22 @@ fn message_apps_refuses_bad_input_without_touching_slack() {
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");
 
-    writer.write_all(b"{\"type\":\"message_apps_save\",\"bot_name\":\"Bad Name\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"message_apps_save\",\"bot_name\":\"Bad Name\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "Bot name");
     writer
         .write_all(b"{\"type\":\"message_apps_save\",\"bot_name\":\"ok-bot\",\"app_token\":\"nope\",\"bot_token\":\"xoxb-1\"}\n")
         .unwrap();
     wait_for_notice(&mut reader, "xapp-");
-    writer.write_all(b"{\"type\":\"message_apps_link\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"message_apps_link\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "Not running.");
-    assert_eq!(wait_for(&mut reader, "message_apps")["slack"]["state"], "not_set_up");
+    assert_eq!(
+        wait_for(&mut reader, "message_apps")["slack"]["state"],
+        "not_set_up"
+    );
 
     let _ = child.kill();
     let _ = child.wait();
@@ -207,7 +253,11 @@ fn message_apps_refuses_bad_input_without_touching_slack() {
 }
 
 /// A server that takes connections and never answers, so a turn stays running.
-fn hanging_server() -> (String, std::thread::JoinHandle<()>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+fn hanging_server() -> (
+    String,
+    std::thread::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     use std::sync::atomic::{AtomicBool, Ordering};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -226,7 +276,10 @@ fn hanging_server() -> (String, std::thread::JoinHandle<()>, std::sync::Arc<std:
     (url, handle, stop)
 }
 
-fn start_with_hanging_model(dir: &std::path::Path, url: &str) -> (std::process::Child, std::os::unix::net::UnixStream) {
+fn start_with_hanging_model(
+    dir: &std::path::Path,
+    url: &str,
+) -> (std::process::Child, std::os::unix::net::UnixStream) {
     std::fs::create_dir_all(dir).unwrap();
     let socket_path = dir.join("s.sock");
     let listener = UnixListener::bind(&socket_path).unwrap();
@@ -244,7 +297,9 @@ fn start_with_hanging_model(dir: &std::path::Path, url: &str) -> (std::process::
         .spawn()
         .unwrap();
     let (stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     (child, stream)
 }
 
@@ -257,13 +312,17 @@ fn submit_runs_a_turn_and_cancel_ends_it() {
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");
 
-    writer.write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n")
+        .unwrap();
     assert_eq!(wait_for(&mut reader, "state")["state"], "working");
     let transcript = wait_for(&mut reader, "transcript");
     assert!(transcript["messages"].to_string().contains("hello there"));
 
     // A second submit while the turn runs is refused, not queued.
-    writer.write_all(b"{\"type\":\"submit\",\"text\":\"again\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"submit\",\"text\":\"again\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "busy");
 
     writer.write_all(b"{\"type\":\"cancel\"}\n").unwrap();
@@ -284,7 +343,9 @@ fn closing_the_socket_mid_turn_ends_minerve_and_saves_nothing() {
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
     wait_for(&mut reader, "usage");
-    writer.write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n")
+        .unwrap();
     assert_eq!(wait_for(&mut reader, "state")["state"], "working");
 
     drop(writer);
@@ -298,7 +359,9 @@ fn closing_the_socket_mid_turn_ends_minerve_and_saves_nothing() {
         std::thread::sleep(Duration::from_millis(50));
     }
     // The turn never finished, so no half-done session may be on disk to resume.
-    let saved = std::fs::read_dir(dir.join(".minerve/sessions")).map(|entries| entries.count()).unwrap_or(0);
+    let saved = std::fs::read_dir(dir.join(".minerve/sessions"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
     assert_eq!(saved, 0, "closing mid-turn must not leave a session file");
 
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -328,15 +391,35 @@ fn message_apps_saves_connects_and_issues_a_link_code() {
     assert_eq!(apps["slack"]["link"], "waiting");
     assert!(!apps["slack"]["link_detail"].as_str().unwrap().is_empty());
 
-    writer.write_all(b"{\"type\":\"message_apps_cancel_link\"}\n").unwrap();
-    assert_eq!(wait_for(&mut reader, "message_apps")["slack"]["link"], "none");
-    writer.write_all(b"{\"type\":\"message_apps_link\"}\n").unwrap();
-    assert_eq!(wait_for(&mut reader, "message_apps")["slack"]["link"], "waiting");
-    writer.write_all(b"{\"type\":\"message_apps_stop\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"message_apps_cancel_link\"}\n")
+        .unwrap();
+    assert_eq!(
+        wait_for(&mut reader, "message_apps")["slack"]["link"],
+        "none"
+    );
+    writer
+        .write_all(b"{\"type\":\"message_apps_link\"}\n")
+        .unwrap();
+    assert_eq!(
+        wait_for(&mut reader, "message_apps")["slack"]["link"],
+        "waiting"
+    );
+    writer
+        .write_all(b"{\"type\":\"message_apps_stop\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "Disconnected.");
-    assert_eq!(wait_for(&mut reader, "message_apps")["slack"]["state"], "disconnected");
-    writer.write_all(b"{\"type\":\"message_apps_start\"}\n").unwrap();
-    assert_ne!(wait_for(&mut reader, "message_apps")["slack"]["state"], "disconnected");
+    assert_eq!(
+        wait_for(&mut reader, "message_apps")["slack"]["state"],
+        "disconnected"
+    );
+    writer
+        .write_all(b"{\"type\":\"message_apps_start\"}\n")
+        .unwrap();
+    assert_ne!(
+        wait_for(&mut reader, "message_apps")["slack"]["state"],
+        "disconnected"
+    );
 
     let _ = child.kill();
     let _ = child.wait();
@@ -354,7 +437,12 @@ fn mcp_servers_can_be_added_changed_and_removed() {
     wait_for(&mut reader, "usage");
 
     let server_state = |event: &serde_json::Value| {
-        event["servers"].as_array().unwrap().iter().find(|s| s["name"] == "tmp").map(|s| s["state"].as_str().unwrap().to_string())
+        event["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "tmp")
+            .map(|s| s["state"].as_str().unwrap().to_string())
     };
     writer.write_all(b"{\"type\":\"mcp_add\",\"name\":\"tmp\",\"command_or_url\":\"false\",\"env_or_headers\":\"\"}\n").unwrap();
     wait_for_notice(&mut reader, "Added 'tmp'.");
@@ -363,18 +451,33 @@ fn mcp_servers_can_be_added_changed_and_removed() {
     let config = std::fs::read_to_string(dir.join(".minerve/mcp.json")).unwrap();
     assert!(config.contains("\"tmp\""), "saved to mcp.json: {config}");
 
-    writer.write_all(b"{\"type\":\"mcp_disconnect\",\"name\":\"tmp\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"mcp_disconnect\",\"name\":\"tmp\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "Disconnected 'tmp'.");
-    assert_eq!(server_state(&wait_for(&mut reader, "mcp_servers")).as_deref(), Some("disconnected"));
-    writer.write_all(b"{\"type\":\"mcp_connect\",\"name\":\"tmp\"}\n").unwrap();
+    assert_eq!(
+        server_state(&wait_for(&mut reader, "mcp_servers")).as_deref(),
+        Some("disconnected")
+    );
+    writer
+        .write_all(b"{\"type\":\"mcp_connect\",\"name\":\"tmp\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "Connecting 'tmp'.");
-    assert_ne!(server_state(&wait_for(&mut reader, "mcp_servers")).as_deref(), Some("disconnected"));
+    assert_ne!(
+        server_state(&wait_for(&mut reader, "mcp_servers")).as_deref(),
+        Some("disconnected")
+    );
 
-    writer.write_all(b"{\"type\":\"mcp_remove\",\"name\":\"tmp\"}\n").unwrap();
+    writer
+        .write_all(b"{\"type\":\"mcp_remove\",\"name\":\"tmp\"}\n")
+        .unwrap();
     wait_for_notice(&mut reader, "Removed 'tmp'.");
     assert_eq!(server_state(&wait_for(&mut reader, "mcp_servers")), None);
     let config = std::fs::read_to_string(dir.join(".minerve/mcp.json")).unwrap_or_default();
-    assert!(!config.contains("\"tmp\""), "removed from mcp.json: {config}");
+    assert!(
+        !config.contains("\"tmp\""),
+        "removed from mcp.json: {config}"
+    );
 
     let _ = child.kill();
     let _ = child.wait();

@@ -147,17 +147,26 @@ impl ModelPicker {
             Paragraph::new(self.filter.as_str()).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!(" Model: type to filter | Tab: {} ", self.provider_filter_label()))
+                    .title(format!(
+                        " Model: type to filter | Tab: {} ",
+                        self.provider_filter_label()
+                    ))
                     .border_style(Style::default().fg(Color::Cyan)),
             ),
             filter_area,
         );
         // The filter box cursor sits after the typed text.
         let cursor_x = filter_area.x + 1 + self.filter.chars().count() as u16;
-        frame.set_cursor_position((cursor_x.min(filter_area.right().saturating_sub(2)), filter_area.y + 1));
+        frame.set_cursor_position((
+            cursor_x.min(filter_area.right().saturating_sub(2)),
+            filter_area.y + 1,
+        ));
 
         let items: Vec<ListItem> = match self.body_message(rows) {
-            Some(message) => vec![ListItem::new(Line::styled(message, Style::default().fg(Color::Gray)))],
+            Some(message) => vec![ListItem::new(Line::styled(
+                message,
+                Style::default().fg(Color::Gray),
+            ))],
             None => rows.iter().map(|row| self.row_item(row)).collect(),
         };
         let mut state = ListState::default().with_selected(if rows.is_empty() {
@@ -166,7 +175,11 @@ impl ModelPicker {
             Some(self.selected)
         });
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_stateful_widget(list, list_area, &mut state);
 
@@ -203,10 +216,17 @@ impl ModelPicker {
     }
 
     fn row_item(&self, row: &PickerRow) -> ListItem<'static> {
-        let marker = if row.model_id == self.current_model { "* " } else { "  " };
+        let marker = if row.model_id == self.current_model {
+            "* "
+        } else {
+            "  "
+        };
         let mut spans = vec![Span::raw(marker), Span::raw(row.model_id.clone())];
         if row.recent {
-            spans.push(Span::styled("  recent", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                "  recent",
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         ListItem::new(Line::from(spans))
     }
@@ -242,9 +262,15 @@ mod tests {
 
     #[test]
     fn recent_models_come_first_then_the_rest() {
-        let picker = picker_with(&["openrouter:x/one", "openrouter:y/two", "openrouter:z/three"], "");
+        let picker = picker_with(
+            &["openrouter:x/one", "openrouter:y/two", "openrouter:z/three"],
+            "",
+        );
         let rows = picker.visible_rows(&recent_with(&["openrouter:z/three"]));
-        assert_eq!(ids(&rows), ["openrouter:z/three", "openrouter:x/one", "openrouter:y/two"]);
+        assert_eq!(
+            ids(&rows),
+            ["openrouter:z/three", "openrouter:x/one", "openrouter:y/two"]
+        );
         assert!(rows[0].recent);
         assert!(!rows[1].recent);
     }
@@ -252,19 +278,35 @@ mod tests {
     #[test]
     fn lists_follow_provider_order_whatever_order_they_arrive_in() {
         let mut picker = ModelPicker::new(String::from("current"), ALL.to_vec());
-        picker.lists.push((Provider::Anthropic, Ok(vec![String::from("anthropic:claude")])));
-        picker.lists.push((Provider::OpenRouter, Ok(vec![String::from("openrouter:a/b")])));
+        picker.lists.push((
+            Provider::Anthropic,
+            Ok(vec![String::from("anthropic:claude")]),
+        ));
+        picker.lists.push((
+            Provider::OpenRouter,
+            Ok(vec![String::from("openrouter:a/b")]),
+        ));
         let rows = picker.visible_rows(&recent_with(&[]));
         assert_eq!(ids(&rows), ["openrouter:a/b", "anthropic:claude"]);
     }
 
     #[test]
     fn typing_a_provider_name_finds_its_models() {
-        let models = ["openai:gpt-4o", "openrouter:meta/llama", "anthropic:claude-haiku-4-5"];
+        let models = [
+            "openai:gpt-4o",
+            "openrouter:meta/llama",
+            "anthropic:claude-haiku-4-5",
+        ];
         let picker = picker_with(&models, "anthropic");
-        assert_eq!(ids(&picker.visible_rows(&recent_with(&[]))), ["anthropic:claude-haiku-4-5"]);
+        assert_eq!(
+            ids(&picker.visible_rows(&recent_with(&[]))),
+            ["anthropic:claude-haiku-4-5"]
+        );
         let picker = picker_with(&models, "OPENROUTER");
-        assert_eq!(ids(&picker.visible_rows(&recent_with(&[]))), ["openrouter:meta/llama"]);
+        assert_eq!(
+            ids(&picker.visible_rows(&recent_with(&[]))),
+            ["openrouter:meta/llama"]
+        );
     }
 
     #[test]
@@ -280,11 +322,19 @@ mod tests {
     #[test]
     fn provider_filter_combines_with_the_text_filter() {
         let mut picker = picker_with(
-            &["openai:gpt-4o", "openai:gpt-3", "openrouter:openai/gpt-4o", "anthropic:claude"],
+            &[
+                "openai:gpt-4o",
+                "openai:gpt-3",
+                "openrouter:openai/gpt-4o",
+                "anthropic:claude",
+            ],
             "gpt",
         );
         picker.provider_filter = Some(Provider::OpenAi);
-        assert_eq!(ids(&picker.visible_rows(&recent_with(&[]))), ["openai:gpt-4o", "openai:gpt-3"]);
+        assert_eq!(
+            ids(&picker.visible_rows(&recent_with(&[]))),
+            ["openai:gpt-4o", "openai:gpt-3"]
+        );
         picker.provider_filter = Some(Provider::Anthropic);
         assert!(picker.visible_rows(&recent_with(&[])).is_empty());
     }
@@ -299,9 +349,17 @@ mod tests {
     #[test]
     fn failed_list_does_not_hide_the_others() {
         let mut picker = ModelPicker::new(String::from("current"), ALL.to_vec());
-        picker.lists.push((Provider::OpenRouter, Err(String::from("401"))));
-        picker.lists.push((Provider::Anthropic, Ok(vec![String::from("anthropic:claude")])));
-        assert_eq!(ids(&picker.visible_rows(&recent_with(&[]))), ["anthropic:claude"]);
+        picker
+            .lists
+            .push((Provider::OpenRouter, Err(String::from("401"))));
+        picker.lists.push((
+            Provider::Anthropic,
+            Ok(vec![String::from("anthropic:claude")]),
+        ));
+        assert_eq!(
+            ids(&picker.visible_rows(&recent_with(&[]))),
+            ["anthropic:claude"]
+        );
         assert_eq!(picker.load_errors(), ["cannot load OpenRouter models: 401"]);
     }
 

@@ -48,6 +48,10 @@ impl ConnectionReporter {
     }
 
     pub fn set(&self, connection: Connection) {
-        self.status.lock().unwrap().connections.insert(self.transport.to_string(), connection);
+        self.status
+            .lock()
+            .unwrap()
+            .connections
+            .insert(self.transport.to_string(), connection);
     }
 }

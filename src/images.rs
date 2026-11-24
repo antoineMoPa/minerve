@@ -21,7 +21,8 @@ fn images_dir() -> PathBuf {
 
 fn new_image_path() -> Result<PathBuf, String> {
     let dir = images_dir();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {}", dir.display(), err))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("cannot create {}: {}", dir.display(), err))?;
     Ok(dir.join(format!("{}.png", uuid::Uuid::new_v4())))
 }
 
@@ -29,17 +30,26 @@ fn new_image_path() -> Result<PathBuf, String> {
 /// `MAX_IMAGE_EDGE_PX`, otherwise a downscaled PNG copy in `~/.minerve/images`.
 /// The returned path is absolute, so a resumed session finds it from any directory.
 pub fn image_to_send(path: &Path) -> Result<PathBuf, String> {
-    let path = std::fs::canonicalize(path).map_err(|err| format!("cannot open {}: {}", path.display(), err))?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|err| format!("cannot open {}: {}", path.display(), err))?;
     if image_media_type(&path).is_none() {
-        return Err(format!("{} is not an image file (png, jpg, gif or webp)", path.display()));
+        return Err(format!(
+            "{} is not an image file (png, jpg, gif or webp)",
+            path.display()
+        ));
     }
-    let (width, height) =
-        image::image_dimensions(&path).map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
+    let (width, height) = image::image_dimensions(&path)
+        .map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
     if width.max(height) <= MAX_IMAGE_EDGE_PX {
         return Ok(path);
     }
-    let image = image::open(&path).map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
-    let downscaled = image.resize(MAX_IMAGE_EDGE_PX, MAX_IMAGE_EDGE_PX, image::imageops::FilterType::Triangle);
+    let image = image::open(&path)
+        .map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
+    let downscaled = image.resize(
+        MAX_IMAGE_EDGE_PX,
+        MAX_IMAGE_EDGE_PX,
+        image::imageops::FilterType::Triangle,
+    );
     let copy = new_image_path()?;
     downscaled
         .save(&copy)
@@ -51,7 +61,9 @@ pub fn image_to_send(path: &Path) -> Result<PathBuf, String> {
 /// `Ok(None)` when the clipboard holds no image. Reads the clipboard with `osascript`, so macOS only.
 pub fn paste_clipboard_image() -> Result<Option<PathBuf>, String> {
     if !cfg!(target_os = "macos") {
-        return Err(String::from("pasting an image needs macOS; drag the image file onto the terminal instead"));
+        return Err(String::from(
+            "pasting an image needs macOS; drag the image file onto the terminal instead",
+        ));
     }
     let info = run_osascript(&["clipboard info"])?;
     if !info.contains("PNGf") {
@@ -70,7 +82,8 @@ pub fn paste_clipboard_image() -> Result<Option<PathBuf>, String> {
     let to_send = image_to_send(&saved)?;
     if to_send != saved {
         // Only the downscaled copy is kept.
-        std::fs::remove_file(&saved).map_err(|err| format!("cannot remove {}: {}", saved.display(), err))?;
+        std::fs::remove_file(&saved)
+            .map_err(|err| format!("cannot remove {}: {}", saved.display(), err))?;
     }
     Ok(Some(to_send))
 }
@@ -80,7 +93,9 @@ fn run_osascript(lines: &[&str]) -> Result<String, String> {
     for line in lines {
         command.arg("-e").arg(line);
     }
-    let output = command.output().map_err(|err| format!("cannot run osascript: {}", err))?;
+    let output = command
+        .output()
+        .map_err(|err| format!("cannot run osascript: {}", err))?;
     if !output.status.success() {
         return Err(format!(
             "osascript failed: {}",
@@ -141,17 +156,24 @@ mod tests {
         let mut pasted = PastedImages::default();
         assert_eq!(pasted.attach(PathBuf::from("/a.png")), "[Image #1]");
         assert_eq!(pasted.attach(PathBuf::from("/b.png")), "[Image #2]");
-        assert_eq!(pasted.take_referenced("look at [Image #2]"), vec![PathBuf::from("/b.png")]);
+        assert_eq!(
+            pasted.take_referenced("look at [Image #2]"),
+            vec![PathBuf::from("/b.png")]
+        );
         assert_eq!(pasted.attach(PathBuf::from("/c.png")), "[Image #1]");
     }
 
     #[test]
     fn small_image_is_sent_as_is_and_large_one_is_downscaled() {
-        let dir = std::env::temp_dir().join(format!("minerve-images-test-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("minerve-images-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let small = dir.join("small.png");
         image::RgbImage::new(10, 20).save(&small).unwrap();
-        assert_eq!(image_to_send(&small).unwrap(), std::fs::canonicalize(&small).unwrap());
+        assert_eq!(
+            image_to_send(&small).unwrap(),
+            std::fs::canonicalize(&small).unwrap()
+        );
 
         let large = dir.join("large.png");
         image::RgbImage::new(3136, 100).save(&large).unwrap();
@@ -168,10 +190,19 @@ mod tests {
         let file = dir.join("shot.PNG");
         std::fs::write(&file, b"x").unwrap();
         let escaped = file.display().to_string().replace(' ', "\\ ");
-        assert_eq!(pasted_image_path(&format!("{} ", escaped)), Some(file.clone()));
-        assert_eq!(pasted_image_path(&format!("'{}'", file.display())), Some(file.clone()));
+        assert_eq!(
+            pasted_image_path(&format!("{} ", escaped)),
+            Some(file.clone())
+        );
+        assert_eq!(
+            pasted_image_path(&format!("'{}'", file.display())),
+            Some(file.clone())
+        );
         assert_eq!(pasted_image_path("hello world"), None);
-        assert_eq!(pasted_image_path(&format!("{}\n{}", escaped, escaped)), None);
+        assert_eq!(
+            pasted_image_path(&format!("{}\n{}", escaped, escaped)),
+            None
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

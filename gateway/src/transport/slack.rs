@@ -22,7 +22,7 @@ use super::{Transport, TransportError};
 use crate::engine::config::SlackTokens;
 use crate::engine::log::log;
 use crate::engine::status::{Connection, ConnectionReporter};
-use crate::engine::types::{Capabilities, Overflow, ConversationKey, InboundMessage, MessageRef};
+use crate::engine::types::{Capabilities, ConversationKey, InboundMessage, MessageRef, Overflow};
 
 const API: &str = "https://slack.com/api";
 const SEEN_EVENTS: usize = 200;
@@ -83,7 +83,13 @@ pub struct Slack {
 
 impl Slack {
     pub fn new(tokens: SlackTokens, icon_url: String) -> Self {
-        Self { app_token: tokens.app_token, bot_token: tokens.bot_token, icon_url, http: reqwest::Client::new(), seen_events: Mutex::new(VecDeque::new()) }
+        Self {
+            app_token: tokens.app_token,
+            bot_token: tokens.bot_token,
+            icon_url,
+            http: reqwest::Client::new(),
+            seen_events: Mutex::new(VecDeque::new()),
+        }
     }
 
     async fn call(&self, method: &str, token: &str, body: Value) -> Result<Value, TransportError> {
@@ -99,15 +105,25 @@ impl Slack {
         if response["ok"] == true {
             Ok(response)
         } else {
-            Err(Box::new(SlackApiError(format!("slack {}: {}", method, response["error"].as_str().unwrap_or("unknown error")))))
+            Err(Box::new(SlackApiError(format!(
+                "slack {}: {}",
+                method,
+                response["error"].as_str().unwrap_or("unknown error")
+            ))))
         }
     }
 
     async fn whoami(&self) -> Result<Identity, TransportError> {
         let me = self.call("auth.test", &self.bot_token, json!({})).await?;
         Ok(Identity {
-            team_id: me["team_id"].as_str().ok_or("auth.test without team_id")?.to_string(),
-            bot_user_id: me["user_id"].as_str().ok_or("auth.test without user_id")?.to_string(),
+            team_id: me["team_id"]
+                .as_str()
+                .ok_or("auth.test without team_id")?
+                .to_string(),
+            bot_user_id: me["user_id"]
+                .as_str()
+                .ok_or("auth.test without user_id")?
+                .to_string(),
             team_name: me["team"].as_str().unwrap_or_default().to_string(),
             bot_name: me["user"].as_str().unwrap_or_default().to_string(),
         })
@@ -135,24 +151,43 @@ impl Slack {
         reporter: &ConnectionReporter,
         connected: &mut bool,
     ) -> Result<(), TransportError> {
-        let opened = self.call("apps.connections.open", &self.app_token, json!({})).await?;
-        let url = opened["url"].as_str().ok_or("apps.connections.open without url")?;
+        let opened = self
+            .call("apps.connections.open", &self.app_token, json!({}))
+            .await?;
+        let url = opened["url"]
+            .as_str()
+            .ok_or("apps.connections.open without url")?;
         let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
         while let Some(frame) = socket.next().await {
-            let Message::Text(text) = frame? else { continue };
+            let Message::Text(text) = frame? else {
+                continue;
+            };
             let envelope: Value = serde_json::from_str(&text)?;
             if let Some(envelope_id) = envelope["envelope_id"].as_str() {
-                socket.send(Message::text(json!({ "envelope_id": envelope_id }).to_string())).await?;
+                socket
+                    .send(Message::text(
+                        json!({ "envelope_id": envelope_id }).to_string(),
+                    ))
+                    .await?;
             }
             match envelope["type"].as_str() {
                 Some("hello") => {
                     *connected = true;
-                    reporter.set(Connection::Connected { workspace: me.team_name.clone(), bot: me.bot_name.clone() });
+                    reporter.set(Connection::Connected {
+                        workspace: me.team_name.clone(),
+                        bot: me.bot_name.clone(),
+                    });
                 }
                 Some("disconnect") => return Ok(()),
                 Some("events_api") => {
-                    let first = envelope["payload"]["event_id"].as_str().map(|id| self.first_delivery(id)).unwrap_or(true);
-                    if let Some(message) = first.then(|| parse_event(&envelope["payload"], me)).flatten() {
+                    let first = envelope["payload"]["event_id"]
+                        .as_str()
+                        .map(|id| self.first_delivery(id))
+                        .unwrap_or(true);
+                    if let Some(message) = first
+                        .then(|| parse_event(&envelope["payload"], me))
+                        .flatten()
+                    {
                         if inbound.send(message).await.is_err() {
                             return Ok(());
                         }
@@ -190,7 +225,11 @@ pub fn parse_event(payload: &Value, me: &Identity) -> Option<InboundMessage> {
     }
     let sender_id = event["user"].as_str()?.to_string();
     let mention = format!("<@{}>", bot_user_id);
-    let text = event["text"].as_str()?.replace(&mention, "").trim().to_string();
+    let text = event["text"]
+        .as_str()?
+        .replace(&mention, "")
+        .trim()
+        .to_string();
     if text.is_empty() {
         return None;
     }
@@ -223,14 +262,22 @@ impl Transport for Slack {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { max_len: 3500, can_edit: true, overflow: Overflow::Chunk }
+        Capabilities {
+            max_len: 3500,
+            can_edit: true,
+            overflow: Overflow::Chunk,
+        }
     }
 
     fn format(&self, text: &str) -> String {
         to_mrkdwn(text)
     }
 
-    async fn run(&self, inbound: mpsc::Sender<InboundMessage>, reporter: ConnectionReporter) -> Result<(), TransportError> {
+    async fn run(
+        &self,
+        inbound: mpsc::Sender<InboundMessage>,
+        reporter: ConnectionReporter,
+    ) -> Result<(), TransportError> {
         reporter.set(Connection::Connecting);
         let mut failures = 0u32;
         // Bad tokens are not worth retrying: report them and stop. A network that is down (a
@@ -279,13 +326,20 @@ impl Transport for Slack {
             body["thread_ts"] = json!(thread);
         }
         let response = self.call("chat.postMessage", &self.bot_token, body).await?;
-        let ts = response["ts"].as_str().ok_or("chat.postMessage without ts")?;
-        Ok(MessageRef { key: to.clone(), id: ts.to_string() })
+        let ts = response["ts"]
+            .as_str()
+            .ok_or("chat.postMessage without ts")?;
+        Ok(MessageRef {
+            key: to.clone(),
+            id: ts.to_string(),
+        })
     }
 
     async fn edit(&self, message: &MessageRef, text: &str) -> Result<(), TransportError> {
         let body = json!({ "channel": message.key.channel, "ts": message.id, "text": text });
-        self.call("chat.update", &self.bot_token, body).await.map(|_| ())
+        self.call("chat.update", &self.bot_token, body)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -294,7 +348,12 @@ mod tests {
     use super::*;
 
     fn me() -> Identity {
-        Identity { team_id: "T1".into(), bot_user_id: "UBOT".into(), team_name: "Acme".into(), bot_name: "bot".into() }
+        Identity {
+            team_id: "T1".into(),
+            bot_user_id: "UBOT".into(),
+            team_name: "Acme".into(),
+            bot_name: "bot".into(),
+        }
     }
 
     fn payload(event: Value) -> Value {
@@ -305,10 +364,18 @@ mod tests {
     fn manifest_is_plain_json_with_the_bot_name() {
         let manifest: Value = serde_json::from_str(&manifest("antoine-bot")).unwrap();
         assert_eq!(manifest["display_information"]["name"], "antoine-bot");
-        assert_eq!(manifest["features"]["bot_user"]["display_name"], "antoine-bot");
+        assert_eq!(
+            manifest["features"]["bot_user"]["display_name"],
+            "antoine-bot"
+        );
         assert_eq!(manifest["settings"]["socket_mode_enabled"], true);
-        let scopes = manifest["oauth_config"]["scopes"]["bot"].as_array().unwrap();
-        assert!(scopes.contains(&json!("chat:write.customize")), "the icon on each message needs it");
+        let scopes = manifest["oauth_config"]["scopes"]["bot"]
+            .as_array()
+            .unwrap();
+        assert!(
+            scopes.contains(&json!("chat:write.customize")),
+            "the icon on each message needs it"
+        );
     }
 
     #[test]
@@ -318,7 +385,14 @@ mod tests {
             &me(),
         )
         .unwrap();
-        assert_eq!((message.key.thread, message.text.as_str(), message.sender_id.as_str()), (None, "hi", "U1"));
+        assert_eq!(
+            (
+                message.key.thread,
+                message.text.as_str(),
+                message.sender_id.as_str()
+            ),
+            (None, "hi", "U1")
+        );
     }
 
     #[test]
@@ -328,7 +402,10 @@ mod tests {
             &me(),
         )
         .unwrap();
-        assert_eq!((message.key.thread.as_deref(), message.text.as_str()), (Some("5.5"), "do it"));
+        assert_eq!(
+            (message.key.thread.as_deref(), message.text.as_str()),
+            (Some("5.5"), "do it")
+        );
     }
 
     #[test]
@@ -343,8 +420,11 @@ mod tests {
 
     #[test]
     fn ignores_other_workspaces_and_connect_guests() {
-        let mention = |event: Value, team: &str| parse_event(&json!({"team_id": team, "event": event}), &me());
-        let event = json!({"type":"app_mention","user":"U1","channel":"C1","text":"<@UBOT> x","ts":"1"});
+        let mention = |event: Value, team: &str| {
+            parse_event(&json!({"team_id": team, "event": event}), &me())
+        };
+        let event =
+            json!({"type":"app_mention","user":"U1","channel":"C1","text":"<@UBOT> x","ts":"1"});
         assert!(mention(event.clone(), "T1").is_some());
         assert!(mention(event.clone(), "T2").is_none());
         let mut guest = event;
@@ -355,10 +435,20 @@ mod tests {
     #[test]
     fn ignores_bots_edits_and_channel_chatter() {
         let ignored = |event: Value| parse_event(&payload(event), &me()).is_none();
-        assert!(ignored(json!({"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"x","ts":"1","bot_id":"B1"})));
-        assert!(ignored(json!({"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"x","ts":"1","subtype":"message_changed"})));
-        assert!(!ignored(json!({"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"x","ts":"1","subtype":"file_share"})));
-        assert!(ignored(json!({"type":"message","channel_type":"channel","user":"U1","channel":"C1","text":"<@UBOT> x","ts":"1"})));
-        assert!(ignored(json!({"type":"app_mention","user":"U1","channel":"C1","text":"<@UBOT>","ts":"1"})));
+        assert!(ignored(
+            json!({"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"x","ts":"1","bot_id":"B1"})
+        ));
+        assert!(ignored(
+            json!({"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"x","ts":"1","subtype":"message_changed"})
+        ));
+        assert!(!ignored(
+            json!({"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"x","ts":"1","subtype":"file_share"})
+        ));
+        assert!(ignored(
+            json!({"type":"message","channel_type":"channel","user":"U1","channel":"C1","text":"<@UBOT> x","ts":"1"})
+        ));
+        assert!(ignored(
+            json!({"type":"app_mention","user":"U1","channel":"C1","text":"<@UBOT>","ts":"1"})
+        ));
     }
 }

@@ -66,8 +66,11 @@ impl SessionPicker {
         .areas(area);
 
         frame.render_widget(
-            Paragraph::new(format!(" Resume a session ({} saved)", self.sessions.len()))
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Paragraph::new(format!(" Resume a session ({} saved)", self.sessions.len())).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             title_area,
         );
 
@@ -108,7 +111,11 @@ impl SessionPicker {
 
 /// One session row: age, id prefix, then the first prompt.
 fn session_item(session: &SessionSummary, now: SystemTime) -> ListItem<'static> {
-    let age = format_age(now.duration_since(session.modified).unwrap_or_default().as_secs());
+    let age = format_age(
+        now.duration_since(session.modified)
+            .unwrap_or_default()
+            .as_secs(),
+    );
     let prompt = if session.first_prompt.is_empty() {
         String::from("(no prompt)")
     } else {

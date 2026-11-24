@@ -14,7 +14,8 @@ use ratatui::Frame;
 
 use crate::keys_file;
 use crate::provider::{
-    ApiKeys, Provider, ANTHROPIC_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR, OPENROUTER_API_KEY_ENV_VAR,
+    ApiKeys, Provider, ANTHROPIC_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
+    OPENROUTER_API_KEY_ENV_VAR,
 };
 
 const OPENROUTER_KEYS_URL: &str = "https://openrouter.ai/keys";
@@ -146,7 +147,10 @@ impl SetupModal {
     }
 
     fn move_field(&mut self, step: isize) {
-        let index = FIELDS.iter().position(|field| *field == self.field).unwrap_or(0) as isize;
+        let index = FIELDS
+            .iter()
+            .position(|field| *field == self.field)
+            .unwrap_or(0) as isize;
         let next = (index + step).rem_euclid(FIELDS.len() as isize) as usize;
         self.field = FIELDS[next];
     }
@@ -176,7 +180,10 @@ impl SetupModal {
         let lines = vec![
             Line::from("Enter API keys for your LLM providers. Each key is optional."),
             Line::from(""),
-            Line::styled(format!("OpenRouter API key  {}", OPENROUTER_KEYS_URL), label),
+            Line::styled(
+                format!("OpenRouter API key  {}", OPENROUTER_KEYS_URL),
+                label,
+            ),
             self.field_line(Provider::OpenRouter),
             Line::styled(format!("OpenAI API key      {}", OPENAI_KEYS_URL), label),
             self.field_line(Provider::OpenAi),
@@ -184,7 +191,10 @@ impl SetupModal {
             self.field_line(Provider::Anthropic),
             Line::from(""),
             Line::styled(error, Style::default().fg(Color::Red)),
-            Line::styled("Tab/arrows nav | Enter on last field saves | Esc to quit", dim),
+            Line::styled(
+                "Tab/arrows nav | Enter on last field saves | Esc to quit",
+                dim,
+            ),
         ];
         frame.render_widget(Paragraph::new(lines), inner);
 
@@ -202,7 +212,10 @@ impl SetupModal {
     /// One key input row, with a marker on the active one.
     fn field_line(&self, provider: Provider) -> Line<'static> {
         let marker = if self.field == provider { "> " } else { "  " };
-        Line::from(vec![Span::raw(marker), Span::raw(self.key_display(provider))])
+        Line::from(vec![
+            Span::raw(marker),
+            Span::raw(self.key_display(provider)),
+        ])
     }
 }
 
@@ -241,7 +254,10 @@ pub fn save(settings: &Settings) -> io::Result<PathBuf> {
 /// The keys to write: a typed key replaces the stored one, and a blank field keeps it.
 fn keys_to_store(settings: &Settings, stored: keys_file::SavedKeys) -> keys_file::SavedKeys {
     keys_file::SavedKeys {
-        openrouter_api_key: settings.openrouter_key.clone().or(stored.openrouter_api_key),
+        openrouter_api_key: settings
+            .openrouter_key
+            .clone()
+            .or(stored.openrouter_api_key),
         openai_api_key: settings.openai_key.clone().or(stored.openai_api_key),
         anthropic_api_key: settings.anthropic_key.clone().or(stored.anthropic_api_key),
         other: stored.other,
@@ -350,7 +366,10 @@ mod tests {
             openai_key: Some(String::from("sk-1")),
             ..Settings::default()
         };
-        assert_eq!(settings.env_pairs(), vec![(OPENAI_API_KEY_ENV_VAR, String::from("sk-1"))]);
+        assert_eq!(
+            settings.env_pairs(),
+            vec![(OPENAI_API_KEY_ENV_VAR, String::from("sk-1"))]
+        );
     }
 
     #[test]

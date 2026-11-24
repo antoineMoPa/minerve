@@ -30,7 +30,11 @@ enum FormField {
     EnvOrHeaders,
 }
 
-const FORM_FIELDS: [FormField; 3] = [FormField::Name, FormField::CommandOrUrl, FormField::EnvOrHeaders];
+const FORM_FIELDS: [FormField; 3] = [
+    FormField::Name,
+    FormField::CommandOrUrl,
+    FormField::EnvOrHeaders,
+];
 
 #[derive(Default)]
 struct AddServerForm {
@@ -43,7 +47,10 @@ struct AddServerForm {
 
 enum View {
     /// `selected` indexes the server rows; one past the last server is the "add a server" row.
-    List { selected: usize, confirm_remove: Option<String> },
+    List {
+        selected: usize,
+        confirm_remove: Option<String>,
+    },
     AddForm(AddServerForm),
 }
 
@@ -60,7 +67,13 @@ pub struct McpManager {
 
 impl McpManager {
     pub fn new() -> Self {
-        Self { view: View::List { selected: 0, confirm_remove: None }, message: None }
+        Self {
+            view: View::List {
+                selected: 0,
+                confirm_remove: None,
+            },
+            message: None,
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> McpManagerStep {
@@ -75,13 +88,18 @@ impl McpManager {
 
     pub fn paste(&mut self, text: &str) {
         if let View::AddForm(form) = &mut self.view {
-            form.active_text().extend(text.chars().filter(|c| !c.is_control()));
+            form.active_text()
+                .extend(text.chars().filter(|c| !c.is_control()));
         }
     }
 
     fn handle_list_key(&mut self, key: KeyEvent) -> McpManagerStep {
         let rows = mcp::server_rows();
-        let View::List { selected, confirm_remove } = &mut self.view else {
+        let View::List {
+            selected,
+            confirm_remove,
+        } = &mut self.view
+        else {
             unreachable!("list key outside the list view");
         };
         *selected = (*selected).min(rows.len());
@@ -107,7 +125,9 @@ impl McpManager {
             KeyCode::Enter | KeyCode::Char(' ') => match selected_row {
                 None => self.open_form(),
                 Some(row) => match row.connection {
-                    McpConnection::Connected(_) | McpConnection::Connecting | McpConnection::LoggingIn { .. } => {
+                    McpConnection::Connected(_)
+                    | McpConnection::Connecting
+                    | McpConnection::LoggingIn { .. } => {
                         mcp::disconnect(&row.name);
                         self.message = Some(Message::Info(format!("Disconnected '{}'.", row.name)));
                     }
@@ -149,9 +169,16 @@ impl McpManager {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let last_field = form.field_index == FORM_FIELDS.len() - 1;
         match key.code {
-            KeyCode::Esc => self.view = View::List { selected: 0, confirm_remove: None },
+            KeyCode::Esc => {
+                self.view = View::List {
+                    selected: 0,
+                    confirm_remove: None,
+                }
+            }
             KeyCode::Enter if last_field => self.save_form(),
-            KeyCode::Tab | KeyCode::Down | KeyCode::Enter => form.field_index = (form.field_index + 1) % FORM_FIELDS.len(),
+            KeyCode::Tab | KeyCode::Down | KeyCode::Enter => {
+                form.field_index = (form.field_index + 1) % FORM_FIELDS.len()
+            }
             KeyCode::BackTab | KeyCode::Up => {
                 form.field_index = (form.field_index + FORM_FIELDS.len() - 1) % FORM_FIELDS.len()
             }
@@ -178,7 +205,10 @@ impl McpManager {
             .iter()
             .position(|row| row.name == name)
             .expect("added server is listed");
-        self.view = View::List { selected, confirm_remove: None };
+        self.view = View::List {
+            selected,
+            confirm_remove: None,
+        };
         self.message = Some(Message::Info(format!(
             "Added '{}' to {}.",
             name,
@@ -188,12 +218,21 @@ impl McpManager {
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         match &self.view {
-            View::List { selected, confirm_remove } => self.draw_list(frame, area, *selected, confirm_remove.as_deref()),
+            View::List {
+                selected,
+                confirm_remove,
+            } => self.draw_list(frame, area, *selected, confirm_remove.as_deref()),
             View::AddForm(form) => draw_form(frame, area, form),
         }
     }
 
-    fn draw_list(&self, frame: &mut Frame, area: Rect, selected: usize, confirm_remove: Option<&str>) {
+    fn draw_list(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        selected: usize,
+        confirm_remove: Option<&str>,
+    ) {
         let rows = mcp::server_rows();
         let selected = selected.min(rows.len());
         let dim = Style::default().fg(Color::DarkGray);
@@ -203,7 +242,10 @@ impl McpManager {
             lines.push(server_line(row, index == selected));
         }
         let add_marker = if selected == rows.len() { "> " } else { "  " };
-        lines.push(Line::styled(format!("{}+ Add a server", add_marker), Style::default().fg(Color::Cyan)));
+        lines.push(Line::styled(
+            format!("{}+ Add a server", add_marker),
+            Style::default().fg(Color::Cyan),
+        ));
         lines.push(Line::from(""));
 
         if let Some(row) = rows.get(selected) {
@@ -211,16 +253,28 @@ impl McpManager {
             lines.push(Line::from(""));
         }
         match &self.message {
-            Some(Message::Info(text)) => lines.push(Line::styled(text.clone(), Style::default().fg(Color::Green))),
-            Some(Message::Error(text)) => lines.push(Line::styled(text.clone(), Style::default().fg(Color::Red))),
+            Some(Message::Info(text)) => lines.push(Line::styled(
+                text.clone(),
+                Style::default().fg(Color::Green),
+            )),
+            Some(Message::Error(text)) => {
+                lines.push(Line::styled(text.clone(), Style::default().fg(Color::Red)))
+            }
             None => {}
         }
 
         let hint = match confirm_remove {
             Some(name) => {
-                let source = rows.iter().find(|row| row.name == name).map(|row| row.source.label()).unwrap_or_default();
+                let source = rows
+                    .iter()
+                    .find(|row| row.name == name)
+                    .map(|row| row.source.label())
+                    .unwrap_or_default();
                 Line::styled(
-                    format!("Remove '{}' from {}? y to confirm, any other key cancels.", name, source),
+                    format!(
+                        "Remove '{}' from {}? y to confirm, any other key cancels.",
+                        name, source
+                    ),
                     Style::default().fg(Color::Yellow),
                 )
             }
@@ -240,7 +294,10 @@ impl McpManager {
 /// plus a blank row and the hint row.
 pub(crate) fn draw_modal_frame(frame: &mut Frame, area: Rect, title: &str, lines: &[Line]) -> Rect {
     let inner_width = MODAL_WIDTH.min(area.width).saturating_sub(2).max(1) as usize;
-    let wrapped_rows: usize = lines.iter().map(|line| line.width().max(1).div_ceil(inner_width)).sum();
+    let wrapped_rows: usize = lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(inner_width))
+        .sum();
     let height = (wrapped_rows as u16 + 4).min(MAX_MODAL_HEIGHT);
     let modal = centered(area, MODAL_WIDTH, height);
     frame.render_widget(Clear, modal);
@@ -270,10 +327,17 @@ fn connection_label(name: &str, connection: &McpConnection) -> (String, Color) {
 fn server_line(row: &McpServerRow, is_selected: bool) -> Line<'static> {
     let marker = if is_selected { "> " } else { "  " };
     let (label, color) = connection_label(&row.name, &row.connection);
-    let name_style = if is_selected { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() };
+    let name_style = if is_selected {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
     Line::from(vec![
         Span::raw(marker),
-        Span::styled(format!("{:<width$}", row.name, width = NAME_COLUMN_WIDTH), name_style),
+        Span::styled(
+            format!("{:<width$}", row.name, width = NAME_COLUMN_WIDTH),
+            name_style,
+        ),
         Span::styled(format!("{:<24}", label), Style::default().fg(color)),
         Span::styled(row.source.label(), Style::default().fg(Color::DarkGray)),
     ])
@@ -284,7 +348,9 @@ fn server_details(row: &McpServerRow) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let target = match &row.config {
         McpServerConfig::Stdio { command, args, .. } => {
-            format!("Command: {} {}", command, args.join(" ")).trim_end().to_string()
+            format!("Command: {} {}", command, args.join(" "))
+                .trim_end()
+                .to_string()
         }
         McpServerConfig::Http { url, .. } => format!("URL: {}", url),
     };
@@ -294,18 +360,30 @@ fn server_details(row: &McpServerRow) -> Vec<Line<'static>> {
             let skipped = mcp::skipped_tool_names(&row.name, server);
             if !skipped.is_empty() {
                 lines.push(Line::styled(
-                    format!("Not offered to the model (invalid function names): {}", skipped.join(", ")),
+                    format!(
+                        "Not offered to the model (invalid function names): {}",
+                        skipped.join(", ")
+                    ),
                     Style::default().fg(Color::Yellow),
                 ));
             }
         }
-        McpConnection::Failed(err) => lines.push(Line::styled(err.clone(), Style::default().fg(Color::Red))),
-        McpConnection::NeedsLogin { .. } => {
-            lines.push(Line::styled("Press Enter to log in with your browser.", Style::default().fg(Color::Yellow)))
+        McpConnection::Failed(err) => {
+            lines.push(Line::styled(err.clone(), Style::default().fg(Color::Red)))
         }
-        McpConnection::LoggingIn { authorize_url: None } => lines.push(Line::from("Preparing the login...")),
-        McpConnection::LoggingIn { authorize_url: Some(url) } => {
-            lines.push(Line::from("Waiting for the browser login. If no browser opened, visit:"));
+        McpConnection::NeedsLogin { .. } => lines.push(Line::styled(
+            "Press Enter to log in with your browser.",
+            Style::default().fg(Color::Yellow),
+        )),
+        McpConnection::LoggingIn {
+            authorize_url: None,
+        } => lines.push(Line::from("Preparing the login...")),
+        McpConnection::LoggingIn {
+            authorize_url: Some(url),
+        } => {
+            lines.push(Line::from(
+                "Waiting for the browser login. If no browser opened, visit:",
+            ));
             lines.push(Line::from(url.clone()));
         }
         McpConnection::Connecting | McpConnection::Disconnected => {}
@@ -344,11 +422,18 @@ fn draw_form(frame: &mut Frame, area: Rect, form: &AddServerForm) {
     let mut lines = Vec::new();
     for (index, field) in FORM_FIELDS.iter().enumerate() {
         lines.push(Line::styled(form_field_label(*field), label));
-        let marker = if index == form.field_index { "> " } else { "  " };
+        let marker = if index == form.field_index {
+            "> "
+        } else {
+            "  "
+        };
         lines.push(Line::from(format!("{}{}", marker, form.text(*field))));
         lines.push(Line::from(""));
     }
-    lines.push(Line::styled(form.error.clone().unwrap_or_default(), Style::default().fg(Color::Red)));
+    lines.push(Line::styled(
+        form.error.clone().unwrap_or_default(),
+        Style::default().fg(Color::Red),
+    ));
     let inner = draw_modal_frame(frame, area, " Add MCP server ", &lines);
     frame.render_widget(Paragraph::new(lines), inner);
     let hint_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
@@ -369,7 +454,10 @@ fn draw_form(frame: &mut Frame, area: Rect, form: &AddServerForm) {
 
 /// A URL makes an HTTP server whose pairs are headers; anything else is a command line whose
 /// pairs are environment variables.
-pub(crate) fn server_config_from_form(command_or_url: &str, env_or_headers: &str) -> Result<McpServerConfig, String> {
+pub(crate) fn server_config_from_form(
+    command_or_url: &str,
+    env_or_headers: &str,
+) -> Result<McpServerConfig, String> {
     let command_or_url = command_or_url.trim();
     if command_or_url.is_empty() {
         return Err(String::from("Enter a command or a URL."));
@@ -379,11 +467,21 @@ pub(crate) fn server_config_from_form(command_or_url: &str, env_or_headers: &str
         if command_or_url.contains(char::is_whitespace) {
             return Err(String::from("A URL cannot contain spaces."));
         }
-        return Ok(McpServerConfig::Http { url: command_or_url.to_string(), headers: pairs, oauth: None });
+        return Ok(McpServerConfig::Http {
+            url: command_or_url.to_string(),
+            headers: pairs,
+            oauth: None,
+        });
     }
     let mut words = split_command_line(command_or_url)?.into_iter();
-    let command = words.next().expect("non-empty command line has a first word");
-    Ok(McpServerConfig::Stdio { command, args: words.collect(), env: pairs })
+    let command = words
+        .next()
+        .expect("non-empty command line has a first word");
+    Ok(McpServerConfig::Stdio {
+        command,
+        args: words.collect(),
+        env: pairs,
+    })
 }
 
 /// `KEY=value, KEY2=value 2` into a map. Values may hold spaces and `=`, not commas.

@@ -3,6 +3,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub mod compile_typescript_project_tool;
+pub mod delete_file_tool;
+pub mod edit_tool;
 pub mod extract_structure_tool;
 pub mod get_general_context_tool;
 pub mod get_url_tool;
@@ -10,9 +13,6 @@ pub mod git_diff_cached_tool;
 pub mod git_diff_tool;
 pub mod git_status_tool;
 pub mod list_files_tool;
-pub mod compile_typescript_project_tool;
-pub mod delete_file_tool;
-pub mod edit_tool;
 pub mod read_tool;
 pub mod registry;
 pub mod run_cargo_check_tool;
@@ -141,7 +141,10 @@ pub trait Tool: Send + Sync {
                 param_name,
                 param_type
             );
-            properties.insert(param_name.to_string(), serde_json::json!({ "type": json_type }));
+            properties.insert(
+                param_name.to_string(),
+                serde_json::json!({ "type": json_type }),
+            );
             if is_required {
                 required.push(param_name.to_string());
             }

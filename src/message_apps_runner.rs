@@ -44,10 +44,18 @@ pub fn start() {
 
 fn start_gateway() -> Result<Gateway, String> {
     let config = config::load()?;
-    let minerve_bin = std::env::current_exe().map_err(|err| format!("cannot find the minerve binary: {}", err))?;
+    let minerve_bin = std::env::current_exe()
+        .map_err(|err| format!("cannot find the minerve binary: {}", err))?;
     // Turns run in the folder this minerve was started in, the one its top bar shows.
-    let workdir = std::env::current_dir().map_err(|err| format!("cannot read the current folder: {}", err))?;
-    let options = GatewayOptions { config, slack_tokens: config::load_slack_tokens(), minerve_bin, console: false, workdir };
+    let workdir = std::env::current_dir()
+        .map_err(|err| format!("cannot read the current folder: {}", err))?;
+    let options = GatewayOptions {
+        config,
+        slack_tokens: config::load_slack_tokens(),
+        minerve_bin,
+        console: false,
+        workdir,
+    };
     Gateway::start(get_global_runtime().handle(), options).map_err(|err| err.to_string())
 }
 
@@ -61,14 +69,22 @@ pub fn stop() {
 /// What the modal draws from.
 pub enum RunnerView {
     Stopped,
-    Running { status: Status, allowed: Vec<String>, workdir: PathBuf },
+    Running {
+        status: Status,
+        allowed: Vec<String>,
+        workdir: PathBuf,
+    },
     Blocked(String),
 }
 
 pub fn view() -> RunnerView {
     match &*RUNNER.lock().unwrap() {
         Runner::Stopped => RunnerView::Stopped,
-        Runner::Running(gateway) => RunnerView::Running { status: gateway.status(), allowed: gateway.allowed(), workdir: gateway.workdir() },
+        Runner::Running(gateway) => RunnerView::Running {
+            status: gateway.status(),
+            allowed: gateway.allowed(),
+            workdir: gateway.workdir(),
+        },
         Runner::Blocked(err) => RunnerView::Blocked(err.clone()),
     }
 }
@@ -82,7 +98,9 @@ pub struct TopBar {
 }
 
 pub fn top_bar() -> Option<TopBar> {
-    let Runner::Running(gateway) = &*RUNNER.lock().unwrap() else { return None };
+    let Runner::Running(gateway) = &*RUNNER.lock().unwrap() else {
+        return None;
+    };
     let status = gateway.status();
     match status.connections.get("slack") {
         Some(Connection::Connected { bot, .. }) => Some(TopBar {

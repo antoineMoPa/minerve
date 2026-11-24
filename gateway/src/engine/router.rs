@@ -42,17 +42,26 @@ impl Router {
         transports: HashMap<&'static str, Arc<dyn Transport>>,
         mut inbound: mpsc::Receiver<InboundMessage>,
     ) {
-        let mut actors: HashMap<ConversationKey, mpsc::UnboundedSender<InboundMessage>> = HashMap::new();
+        let mut actors: HashMap<ConversationKey, mpsc::UnboundedSender<InboundMessage>> =
+            HashMap::new();
         while let Some(message) = inbound.recv().await {
-            let Some(transport) = transports.get(message.key.transport.as_str()).cloned() else { continue };
-            if !self.allowlist.allows(&message.key.transport, &message.sender_id) {
+            let Some(transport) = transports.get(message.key.transport.as_str()).cloned() else {
+                continue;
+            };
+            if !self
+                .allowlist
+                .allows(&message.key.transport, &message.sender_id)
+            {
                 // Never answered, unless it is the link code: then the sender is allowed from now on.
                 if self.try_link(&message, Instant::now()) {
                     if let Err(err) = transport.send(&message.key, LINKED_REPLY).await {
                         log(format!("send to {} failed: {}", message.key, err));
                     }
                 } else {
-                    log(format!("ignored {} from unlisted sender {}", message.key, message.sender_id));
+                    log(format!(
+                        "ignored {} from unlisted sender {}",
+                        message.key, message.sender_id
+                    ));
                 }
                 continue;
             }
@@ -70,7 +79,9 @@ impl Router {
     /// then is used up; an expired one is dropped.
     pub fn try_link(&self, message: &InboundMessage, now: Instant) -> bool {
         let mut link = self.link.lock().unwrap();
-        let Some(pending) = link.as_ref() else { return false };
+        let Some(pending) = link.as_ref() else {
+            return false;
+        };
         if now >= pending.expires_at {
             *link = None;
             return false;
@@ -82,11 +93,16 @@ impl Router {
             // Posted where others can read it: the code is burnt, nobody links with it.
             *link = None;
             self.status.lock().unwrap().link = None;
-            log(format!("link code posted outside a direct message by {}; cancelled", message.sender_id));
+            log(format!(
+                "link code posted outside a direct message by {}; cancelled",
+                message.sender_id
+            ));
             return false;
         }
         *link = None;
-        let allowed = self.allowlist.add(&message.key.transport, &message.sender_id);
+        let allowed = self
+            .allowlist
+            .add(&message.key.transport, &message.sender_id);
         if let Some(path) = &self.config_path {
             let saved = config::load_from(path).and_then(|mut config| {
                 config.allowed = allowed;
@@ -96,20 +112,35 @@ impl Router {
                 log(format!("could not save the allowlist: {}", err));
             }
         }
-        log(format!("linked {}:{}", message.key.transport, message.sender_id));
-        self.status.lock().unwrap().link = Some(LinkState::Linked { member: message.sender_id.clone() });
+        log(format!(
+            "linked {}:{}",
+            message.key.transport, message.sender_id
+        ));
+        self.status.lock().unwrap().link = Some(LinkState::Linked {
+            member: message.sender_id.clone(),
+        });
         true
     }
 
     /// Writes the status snapshot, if this router has a place for it.
     pub fn publish_snapshot(&self) {
-        let Some(path) = &self.snapshot_path else { return };
+        let Some(path) = &self.snapshot_path else {
+            return;
+        };
         let status = self.status.lock().unwrap().clone();
-        let snapshot = inspect::Snapshot::from_status(&status, std::process::id(), &self.agent.workdir.display().to_string());
+        let snapshot = inspect::Snapshot::from_status(
+            &status,
+            std::process::id(),
+            &self.agent.workdir.display().to_string(),
+        );
         inspect::write(path, &snapshot);
     }
 
-    async fn conversation(self: Arc<Self>, transport: Arc<dyn Transport>, mut queue: mpsc::UnboundedReceiver<InboundMessage>) {
+    async fn conversation(
+        self: Arc<Self>,
+        transport: Arc<dyn Transport>,
+        mut queue: mpsc::UnboundedReceiver<InboundMessage>,
+    ) {
         // Set when a reply was cut, delivered to the agent with the next prompt.
         let mut pending_note: Option<String> = None;
         while let Some(message) = queue.recv().await {
@@ -126,7 +157,8 @@ impl Router {
                 None => message.text.clone(),
             };
             // Given once, when the session starts: where the agent runs, and any length limit.
-            let mut system_prompts = vec![format!("You are running in {}.", transport.display_name())];
+            let mut system_prompts =
+                vec![format!("You are running in {}.", transport.display_name())];
             system_prompts.extend(length_instruction(capabilities));
             let key = message.key.to_string();
             {
@@ -136,14 +168,18 @@ impl Router {
             }
             self.publish_snapshot();
             let before = session_cost(&session_id);
-            let result = self.agent.run_turn(&session_id, &system_prompts, &prompt).await;
+            let result = self
+                .agent
+                .run_turn(&session_id, &system_prompts, &prompt)
+                .await;
             let after = session_cost(&session_id);
             {
                 let mut status = self.status.lock().unwrap();
                 status.working -= 1;
                 status.running.remove(&key);
                 status.cost_usd += (after.usd - before.usd).max(0.0);
-                status.cost_incomplete |= after.requests_without_cost > before.requests_without_cost;
+                status.cost_incomplete |=
+                    after.requests_without_cost > before.requests_without_cost;
             }
             self.publish_snapshot();
             let reply = match result {
@@ -182,7 +218,9 @@ mod tests {
     fn router() -> Router {
         Router {
             allowlist: Allowlist::new([]),
-            sessions: SessionStore::open(std::env::temp_dir().join(format!("gw-{}.json", uuid::Uuid::new_v4()))),
+            sessions: SessionStore::open(
+                std::env::temp_dir().join(format!("gw-{}.json", uuid::Uuid::new_v4())),
+            ),
             agent: Agent::new("minerve".into(), ".".into()),
             status: SharedStatus::default(),
             link: Mutex::new(None),
@@ -193,7 +231,12 @@ mod tests {
 
     fn message(text: &str, is_direct: bool) -> InboundMessage {
         InboundMessage {
-            key: ConversationKey { transport: "slack".into(), workspace: "T1".into(), channel: "D1".into(), thread: None },
+            key: ConversationKey {
+                transport: "slack".into(),
+                workspace: "T1".into(),
+                channel: "D1".into(),
+                thread: None,
+            },
             sender_id: "U1".into(),
             text: text.into(),
             is_direct,
@@ -204,22 +247,45 @@ mod tests {
     fn the_code_links_once_and_only_in_a_direct_message() {
         let router = router();
         let now = Instant::now();
-        assert!(!router.try_link(&message("ABCD-EF23", true), now), "no code pending");
-        *router.link.lock().unwrap() = Some(PendingLink { code: "ABCD-EF23".into(), expires_at: now + LINK_TTL });
+        assert!(
+            !router.try_link(&message("ABCD-EF23", true), now),
+            "no code pending"
+        );
+        *router.link.lock().unwrap() = Some(PendingLink {
+            code: "ABCD-EF23".into(),
+            expires_at: now + LINK_TTL,
+        });
         assert!(!router.try_link(&message("nope", true), now));
         assert!(router.try_link(&message("abcd-ef23", true), now));
         assert!(router.allowlist.allows("slack", "U1"));
-        assert!(!router.try_link(&message("ABCD-EF23", true), now), "used up");
-        assert_eq!(router.status.lock().unwrap().link, Some(LinkState::Linked { member: "U1".into() }));
+        assert!(
+            !router.try_link(&message("ABCD-EF23", true), now),
+            "used up"
+        );
+        assert_eq!(
+            router.status.lock().unwrap().link,
+            Some(LinkState::Linked {
+                member: "U1".into()
+            })
+        );
     }
 
     #[test]
     fn a_code_posted_in_a_channel_is_burnt() {
         let router = router();
         let now = Instant::now();
-        *router.link.lock().unwrap() = Some(PendingLink { code: "ABCD-EF23".into(), expires_at: now + LINK_TTL });
-        assert!(!router.try_link(&message("ABCD-EF23", false), now), "a channel never links");
-        assert!(!router.try_link(&message("ABCD-EF23", true), now), "and the code is gone");
+        *router.link.lock().unwrap() = Some(PendingLink {
+            code: "ABCD-EF23".into(),
+            expires_at: now + LINK_TTL,
+        });
+        assert!(
+            !router.try_link(&message("ABCD-EF23", false), now),
+            "a channel never links"
+        );
+        assert!(
+            !router.try_link(&message("ABCD-EF23", true), now),
+            "and the code is gone"
+        );
         assert!(!router.allowlist.allows("slack", "U1"));
     }
 
@@ -227,7 +293,10 @@ mod tests {
     fn an_expired_code_links_nobody() {
         let router = router();
         let now = Instant::now();
-        *router.link.lock().unwrap() = Some(PendingLink { code: "ABCD-EF23".into(), expires_at: now });
+        *router.link.lock().unwrap() = Some(PendingLink {
+            code: "ABCD-EF23".into(),
+            expires_at: now,
+        });
         assert!(!router.try_link(&message("ABCD-EF23", true), now));
         assert!(router.link.lock().unwrap().is_none());
     }

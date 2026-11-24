@@ -1,7 +1,7 @@
-use crate::tools::{Tool, ExecuteCommandSettings};
+use crate::tools::{ExecuteCommandSettings, Tool};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Command;
-use async_trait::async_trait;
 
 pub struct CompileTypescriptProjectTool;
 

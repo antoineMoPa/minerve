@@ -24,12 +24,16 @@ pub fn handle(command: &ParentCommand, control: &ControlSocket) -> bool {
             mcp::log_in(name);
             format!("Logging in to '{name}' in your browser.")
         }),
-        ParentCommand::McpRemove { name } => known(name).and_then(|()| mcp::remove_server(name)).map(|()| format!("Removed '{name}'.")),
-        ParentCommand::McpAdd { name, command_or_url, env_or_headers } => {
-            server_config_from_form(command_or_url, env_or_headers)
-                .and_then(|config| mcp::add_server(name.trim(), config))
-                .map(|()| format!("Added '{}'.", name.trim()))
-        }
+        ParentCommand::McpRemove { name } => known(name)
+            .and_then(|()| mcp::remove_server(name))
+            .map(|()| format!("Removed '{name}'.")),
+        ParentCommand::McpAdd {
+            name,
+            command_or_url,
+            env_or_headers,
+        } => server_config_from_form(command_or_url, env_or_headers)
+            .and_then(|config| mcp::add_server(name.trim(), config))
+            .map(|()| format!("Added '{}'.", name.trim())),
         _ => return crate::serve_message_apps::handle(command, control),
     };
     let notice = outcome.unwrap_or_else(|err| err);
@@ -54,7 +58,9 @@ fn send_servers(control: &ControlSocket) {
 
 fn describe(row: &McpServerRow) -> McpServerOut {
     let target = match &row.config {
-        McpServerConfig::Stdio { command, args, .. } => format!("{command} {}", args.join(" ")).trim_end().to_string(),
+        McpServerConfig::Stdio { command, args, .. } => format!("{command} {}", args.join(" "))
+            .trim_end()
+            .to_string(),
         McpServerConfig::Http { url, .. } => url.clone(),
     };
     let (state, tools, detail) = match &row.connection {
@@ -64,14 +70,26 @@ fn describe(row: &McpServerRow) -> McpServerOut {
             let detail = if skipped.is_empty() {
                 String::new()
             } else {
-                format!("Not offered to the model (invalid function names): {}", skipped.join(", "))
+                format!(
+                    "Not offered to the model (invalid function names): {}",
+                    skipped.join(", ")
+                )
             };
             ("connected", server.tools.len() - skipped.len(), detail)
         }
         McpConnection::Failed(err) => ("failed", 0, err.clone()),
         McpConnection::NeedsLogin { .. } => ("needs_login", 0, String::new()),
-        McpConnection::LoggingIn { authorize_url } => ("logging_in", 0, authorize_url.clone().unwrap_or_default()),
+        McpConnection::LoggingIn { authorize_url } => {
+            ("logging_in", 0, authorize_url.clone().unwrap_or_default())
+        }
         McpConnection::Disconnected => ("disconnected", 0, String::new()),
     };
-    McpServerOut { name: row.name.clone(), target, source: row.source.label(), state, tools, detail }
+    McpServerOut {
+        name: row.name.clone(),
+        target,
+        source: row.source.label(),
+        state,
+        tools,
+        detail,
+    }
 }

@@ -33,7 +33,11 @@ impl ConfigSource {
     /// The file the source's servers are kept in. `None` for the command line's, which are in no file.
     pub fn path(&self) -> Option<PathBuf> {
         match self {
-            ConfigSource::User => Some(dirs::home_dir().expect("no home directory").join(USER_CONFIG_PATH)),
+            ConfigSource::User => Some(
+                dirs::home_dir()
+                    .expect("no home directory")
+                    .join(USER_CONFIG_PATH),
+            ),
             ConfigSource::Project => Some(PathBuf::from(PROJECT_CONFIG_PATH)),
             ConfigSource::CommandLine => None,
         }
@@ -112,21 +116,35 @@ impl McpServerEntry {
         match self.transport {
             TransportKind::Stdio => {
                 if self.url.is_some() || !self.headers.is_empty() || self.oauth.is_some() {
-                    return Err(format!("server '{}': url, headers and oauth need \"type\": \"http\"", server_name));
+                    return Err(format!(
+                        "server '{}': url, headers and oauth need \"type\": \"http\"",
+                        server_name
+                    ));
                 }
-                let command = self
-                    .command
-                    .ok_or_else(|| format!("server '{}': stdio server without \"command\"", server_name))?;
-                Ok(McpServerConfig::Stdio { command, args: self.args, env: self.env })
+                let command = self.command.ok_or_else(|| {
+                    format!("server '{}': stdio server without \"command\"", server_name)
+                })?;
+                Ok(McpServerConfig::Stdio {
+                    command,
+                    args: self.args,
+                    env: self.env,
+                })
             }
             TransportKind::Http => {
                 if self.command.is_some() || !self.args.is_empty() || !self.env.is_empty() {
-                    return Err(format!("server '{}': command, args and env are for stdio servers", server_name));
+                    return Err(format!(
+                        "server '{}': command, args and env are for stdio servers",
+                        server_name
+                    ));
                 }
-                let url = self
-                    .url
-                    .ok_or_else(|| format!("server '{}': http server without \"url\"", server_name))?;
-                Ok(McpServerConfig::Http { url, headers: self.headers, oauth: self.oauth })
+                let url = self.url.ok_or_else(|| {
+                    format!("server '{}': http server without \"url\"", server_name)
+                })?;
+                Ok(McpServerConfig::Http {
+                    url,
+                    headers: self.headers,
+                    oauth: self.oauth,
+                })
             }
         }
     }
@@ -163,7 +181,8 @@ fn read_config_file(path: &Path) -> Result<BTreeMap<String, McpServerConfig>, St
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let text = std::fs::read_to_string(path).map_err(|err| format!("{}: {}", path.display(), err))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|err| format!("{}: {}", path.display(), err))?;
     parse_config(&text).map_err(|err| format!("{}: {}", path.display(), err))
 }
 
@@ -178,7 +197,9 @@ pub fn load_mcp_servers(
 ) -> Result<BTreeMap<String, (McpServerConfig, ConfigSource)>, String> {
     let mut servers = BTreeMap::new();
     for source in [ConfigSource::User, ConfigSource::Project] {
-        let path = source.path().expect("the user's and the project's servers are in a file");
+        let path = source
+            .path()
+            .expect("the user's and the project's servers are in a file");
         for (name, config) in read_config_file(&path)? {
             servers.insert(name, (config, source));
         }
@@ -214,7 +235,11 @@ fn config_as_entry_json(config: &McpServerConfig) -> Value {
                 entry.insert("env".into(), json!(env));
             }
         }
-        McpServerConfig::Http { url, headers, oauth } => {
+        McpServerConfig::Http {
+            url,
+            headers,
+            oauth,
+        } => {
             entry.insert("type".into(), json!("http"));
             entry.insert("url".into(), json!(url));
             if !headers.is_empty() {
@@ -237,7 +262,8 @@ fn read_file_json(path: &Path) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({}));
     }
-    let text = std::fs::read_to_string(path).map_err(|err| format!("{}: {}", path.display(), err))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|err| format!("{}: {}", path.display(), err))?;
     serde_json::from_str(&text).map_err(|err| format!("{}: {}", path.display(), err))
 }
 
@@ -247,7 +273,11 @@ fn write_file_json(path: &Path, file: &Value) -> Result<(), String> {
 }
 
 /// Adds the server to the file's `mcpServers`. Other keys of the file are kept as they are.
-pub fn write_server_to_file(path: &Path, name: &str, config: &McpServerConfig) -> Result<(), String> {
+pub fn write_server_to_file(
+    path: &Path,
+    name: &str,
+    config: &McpServerConfig,
+) -> Result<(), String> {
     let mut file = read_file_json(path)?;
     let root = file
         .as_object_mut()
@@ -311,15 +341,27 @@ mod tests {
                 "oauth": {"clientId": "123.456", "callbackPort": 3118}}}}"#,
         )
         .unwrap();
-        let McpServerConfig::Http { oauth, .. } = &servers["slack"] else { panic!("not http") };
-        assert_eq!(oauth, &Some(OAuthClient { client_id: "123.456".into(), callback_port: Some(3118) }));
+        let McpServerConfig::Http { oauth, .. } = &servers["slack"] else {
+            panic!("not http")
+        };
+        assert_eq!(
+            oauth,
+            &Some(OAuthClient {
+                client_id: "123.456".into(),
+                callback_port: Some(3118)
+            })
+        );
         let entry = config_as_entry_json(&servers["slack"]);
-        assert_eq!(entry["oauth"], json!({"clientId": "123.456", "callbackPort": 3118}));
+        assert_eq!(
+            entry["oauth"],
+            json!({"clientId": "123.456", "callbackPort": 3118})
+        );
     }
 
     #[test]
     fn rejects_mixed_transport_fields() {
-        let err = parse_config(r#"{"mcpServers": {"fs": {"command": "x", "url": "https://x"}}}"#).unwrap_err();
+        let err = parse_config(r#"{"mcpServers": {"fs": {"command": "x", "url": "https://x"}}}"#)
+            .unwrap_err();
         assert!(err.contains("need \"type\": \"http\""), "{}", err);
     }
 
@@ -334,13 +376,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("minerve-mcp-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
-        std::fs::write(&path, r#"{"other": 1, "mcpServers": {"keep": {"command": "k"}}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"other": 1, "mcpServers": {"keep": {"command": "k"}}}"#,
+        )
+        .unwrap();
         let stdio = McpServerConfig::Stdio {
             command: "npx".into(),
             args: vec!["-y".into(), "a b".into()],
             env: BTreeMap::from([("K".into(), "v".into())]),
         };
-        let http = McpServerConfig::Http { url: "https://x/mcp".into(), headers: BTreeMap::new(), oauth: None };
+        let http = McpServerConfig::Http {
+            url: "https://x/mcp".into(),
+            headers: BTreeMap::new(),
+            oauth: None,
+        };
         write_server_to_file(&path, "s", &stdio).unwrap();
         write_server_to_file(&path, "h", &http).unwrap();
         let servers = read_config_file(&path).unwrap();
@@ -350,30 +400,44 @@ mod tests {
         remove_server_from_file(&path, "s").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"other\": 1"), "{}", text);
-        assert_eq!(read_config_file(&path).unwrap().keys().collect::<Vec<_>>(), vec!["h", "keep"]);
+        assert_eq!(
+            read_config_file(&path).unwrap().keys().collect::<Vec<_>>(),
+            vec!["h", "keep"]
+        );
         assert!(remove_server_from_file(&path, "s").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn rejects_unknown_transport() {
-        assert!(parse_config(r#"{"mcpServers": {"a": {"type": "sse", "url": "https://x"}}}"#).is_err());
+        assert!(
+            parse_config(r#"{"mcpServers": {"a": {"type": "sse", "url": "https://x"}}}"#).is_err()
+        );
     }
 
     #[test]
     fn a_command_line_config_is_json_or_a_file_and_is_kept_in_no_file() {
-        let given = r#"{"mcpServers": {"moon": {"command": "/bin/moon", "args": ["mcp"]}}}"#.to_string();
+        let given =
+            r#"{"mcpServers": {"moon": {"command": "/bin/moon", "args": ["mcp"]}}}"#.to_string();
         let servers = load_mcp_servers(&[given]).unwrap();
         let (config, source) = &servers["moon"];
         assert_eq!(
             config,
-            &McpServerConfig::Stdio { command: "/bin/moon".to_string(), args: vec!["mcp".to_string()], env: Default::default() }
+            &McpServerConfig::Stdio {
+                command: "/bin/moon".to_string(),
+                args: vec!["mcp".to_string()],
+                env: Default::default()
+            }
         );
         assert_eq!(*source, ConfigSource::CommandLine);
         assert_eq!(source.path(), None);
         assert_eq!(source.label(), "--mcp-config");
 
-        assert!(load_mcp_servers(&["/no/such/mcp.json".to_string()]).unwrap_err().contains("does not exist"));
-        assert!(load_mcp_servers(&["{nope".to_string()]).unwrap_err().starts_with("--mcp-config: "));
+        assert!(load_mcp_servers(&["/no/such/mcp.json".to_string()])
+            .unwrap_err()
+            .contains("does not exist"));
+        assert!(load_mcp_servers(&["{nope".to_string()])
+            .unwrap_err()
+            .starts_with("--mcp-config: "));
     }
 }

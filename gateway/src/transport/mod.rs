@@ -24,7 +24,11 @@ pub trait Transport: Send + Sync {
     }
     /// Owns the connection to the chat app, pushing every message it receives into `inbound`.
     /// Reports its connection state through `reporter`. Returns only when the connection is gone for good.
-    async fn run(&self, inbound: mpsc::Sender<InboundMessage>, reporter: ConnectionReporter) -> Result<(), TransportError>;
+    async fn run(
+        &self,
+        inbound: mpsc::Sender<InboundMessage>,
+        reporter: ConnectionReporter,
+    ) -> Result<(), TransportError>;
     async fn send(&self, to: &ConversationKey, text: &str) -> Result<MessageRef, TransportError>;
     /// Replaces the text of a message sent earlier. Only called when `can_edit` is set.
     async fn edit(&self, message: &MessageRef, text: &str) -> Result<(), TransportError>;

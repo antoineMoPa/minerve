@@ -8,7 +8,10 @@ use serde::Deserialize;
 
 use crate::minerve::{post_request_with_token_count, Minerve};
 use crate::provider::{ActiveModel, Provider};
-use crate::{ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest, RequestMessage, UsageAccountingRequest};
+use crate::{
+    ChatCompletionMessage, ChatCompletionMessageRole, ChatCompletionRequest, RequestMessage,
+    UsageAccountingRequest,
+};
 
 /// Turns the agent takes for one goal before the loop gives up.
 pub const MAX_GOAL_TURNS: usize = 30;
@@ -18,9 +21,15 @@ pub const MAX_GOAL_TURNS: usize = 30;
 const EVALUATOR_MODEL_IDS_BY_PROVIDER: [(Provider, &[&str]); 3] = [
     (
         Provider::OpenRouter,
-        &["openrouter:~openai/gpt-luna-latest", "openrouter:~anthropic/claude-haiku-latest"],
+        &[
+            "openrouter:~openai/gpt-luna-latest",
+            "openrouter:~anthropic/claude-haiku-latest",
+        ],
     ),
-    (Provider::OpenAi, &["openai:gpt-6-luna", "openai:gpt-4o-mini"]),
+    (
+        Provider::OpenAi,
+        &["openai:gpt-6-luna", "openai:gpt-4o-mini"],
+    ),
     (Provider::Anthropic, &["anthropic:claude-haiku-5-5"]),
 ];
 
@@ -47,15 +56,27 @@ pub struct GoalVerdict {
 
 /// How a goal loop ended.
 pub enum GoalOutcome {
-    Reached { turns: usize, evaluator_model_id: &'static str, reason: String },
+    Reached {
+        turns: usize,
+        evaluator_model_id: &'static str,
+        reason: String,
+    },
     /// `MAX_GOAL_TURNS` turns ran without the goal being reached.
     NotReached,
-    Stalled { turns: usize, evaluator_model_id: &'static str, reason: String },
+    Stalled {
+        turns: usize,
+        evaluator_model_id: &'static str,
+        reason: String,
+    },
     Cancelled,
     /// The session cost its `/budget`.
     OverBudget,
-    RequestFailed { error: String },
-    EvaluatorFailed { errors: String },
+    RequestFailed {
+        error: String,
+    },
+    EvaluatorFailed {
+        errors: String,
+    },
 }
 
 impl GoalOutcome {
@@ -103,7 +124,10 @@ pub fn continue_prompt(goal: &str, reason: &str) -> String {
 
 /// The goal and the conversation since it was given, as text for the evaluator.
 fn evaluator_input(goal: &str, messages_since_goal: &[ChatCompletionMessage]) -> String {
-    let mut text = format!("GOAL:\n{}\n\nCONVERSATION SINCE THE GOAL WAS GIVEN:\n", goal);
+    let mut text = format!(
+        "GOAL:\n{}\n\nCONVERSATION SINCE THE GOAL WAS GIVEN:\n",
+        goal
+    );
     for message in messages_since_goal {
         let content = message.content.as_deref().unwrap_or_default();
         match message.role {
@@ -121,8 +145,15 @@ fn evaluator_input(goal: &str, messages_since_goal: &[ChatCompletionMessage]) ->
                 }
             }
             ChatCompletionMessageRole::Tool => {
-                let shown: String = content.chars().take(MAX_TOOL_RESULT_CHARS_FOR_EVALUATOR).collect();
-                let cut = if shown.len() < content.len() { "\n...[cut]" } else { "" };
+                let shown: String = content
+                    .chars()
+                    .take(MAX_TOOL_RESULT_CHARS_FOR_EVALUATOR)
+                    .collect();
+                let cut = if shown.len() < content.len() {
+                    "\n...[cut]"
+                } else {
+                    ""
+                };
                 text.push_str(&format!("\n[tool result]\n{}{}\n", shown, cut));
             }
         }
@@ -136,7 +167,11 @@ fn parse_verdict(answer: &str) -> Result<GoalVerdict, String> {
 }
 
 /// Asks one evaluator model for its verdict.
-async fn ask_evaluator(minerve: &Minerve, model: &ActiveModel, input: &str) -> Result<GoalVerdict, String> {
+async fn ask_evaluator(
+    minerve: &Minerve,
+    model: &ActiveModel,
+    input: &str,
+) -> Result<GoalVerdict, String> {
     let (url, api_key) = minerve.endpoint_for(model)?;
     let messages = [
         ChatCompletionMessage::system(String::from(include_str!(
@@ -146,9 +181,13 @@ async fn ask_evaluator(minerve: &Minerve, model: &ActiveModel, input: &str) -> R
     ];
     let request = ChatCompletionRequest {
         model: model.api_model.clone(),
-        messages: messages.iter().map(RequestMessage::from_message).collect::<Result<_, _>>()?,
+        messages: messages
+            .iter()
+            .map(RequestMessage::from_message)
+            .collect::<Result<_, _>>()?,
         tools: None,
-        usage: (model.provider == Provider::OpenRouter).then_some(UsageAccountingRequest { include: true }),
+        usage: (model.provider == Provider::OpenRouter)
+            .then_some(UsageAccountingRequest { include: true }),
     };
     let response = post_request_with_token_count(
         &minerve.client,
@@ -207,14 +246,22 @@ mod tests {
     #[test]
     fn verdict_is_parsed_strictly() {
         assert_eq!(
-            parse_verdict(" {\"status\": \"not_reached\", \"reason\": \"3 lines left\"}\n").unwrap(),
-            GoalVerdict { status: GoalStatus::NotReached, reason: String::from("3 lines left") }
+            parse_verdict(" {\"status\": \"not_reached\", \"reason\": \"3 lines left\"}\n")
+                .unwrap(),
+            GoalVerdict {
+                status: GoalStatus::NotReached,
+                reason: String::from("3 lines left")
+            }
         );
         assert_eq!(
-            parse_verdict("{\"status\": \"stalled\", \"reason\": \"x\"}").unwrap().status,
+            parse_verdict("{\"status\": \"stalled\", \"reason\": \"x\"}")
+                .unwrap()
+                .status,
             GoalStatus::Stalled
         );
-        assert!(parse_verdict("```json\n{\"status\": \"reached\", \"reason\": \"x\"}\n```").is_err());
+        assert!(
+            parse_verdict("```json\n{\"status\": \"reached\", \"reason\": \"x\"}\n```").is_err()
+        );
         assert!(parse_verdict("{\"status\": \"done\", \"reason\": \"x\"}").is_err());
         assert!(parse_verdict("{\"status\": \"reached\"}").is_err());
     }

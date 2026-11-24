@@ -14,7 +14,10 @@ fn open_image(args: HashMap<String, String>) -> Result<PathBuf, String> {
 }
 
 fn attached_text(path: &Path) -> String {
-    format!("Image {} is attached after the tool results.", path.display())
+    format!(
+        "Image {} is attached after the tool results.",
+        path.display()
+    )
 }
 
 #[async_trait]
@@ -33,7 +36,11 @@ impl Tool for ViewImageTool {
         params
     }
 
-    async fn run(&self, args: HashMap<String, String>, _settings: ExecuteCommandSettings) -> String {
+    async fn run(
+        &self,
+        args: HashMap<String, String>,
+        _settings: ExecuteCommandSettings,
+    ) -> String {
         match open_image(args) {
             Ok(path) => attached_text(&path),
             Err(err) => err,

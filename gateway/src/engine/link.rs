@@ -17,7 +17,10 @@ pub struct PendingLink {
 
 impl PendingLink {
     pub fn new(now: Instant) -> Self {
-        Self { code: generate_code(), expires_at: now + LINK_TTL }
+        Self {
+            code: generate_code(),
+            expires_at: now + LINK_TTL,
+        }
     }
 
     /// The code alone, ignoring case, spaces and the dash; never after it expired.
@@ -29,12 +32,18 @@ impl PendingLink {
 /// 8 symbols (40 bits) as `XXXX-XXXX`, from the OS random generator through a v4 UUID.
 fn generate_code() -> String {
     let bytes = uuid::Uuid::new_v4().into_bytes();
-    let symbols: String = bytes[..8].iter().map(|byte| ALPHABET[(*byte as usize) % ALPHABET.len()] as char).collect();
+    let symbols: String = bytes[..8]
+        .iter()
+        .map(|byte| ALPHABET[(*byte as usize) % ALPHABET.len()] as char)
+        .collect();
     format!("{}-{}", &symbols[..4], &symbols[4..])
 }
 
 fn normalize(text: &str) -> String {
-    text.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect()
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
 }
 
 #[cfg(test)]
@@ -53,7 +62,10 @@ mod tests {
     #[test]
     fn matches_only_the_code_before_it_expires() {
         let now = Instant::now();
-        let link = PendingLink { code: "ABCD-EF23".into(), expires_at: now + LINK_TTL };
+        let link = PendingLink {
+            code: "ABCD-EF23".into(),
+            expires_at: now + LINK_TTL,
+        };
         assert!(link.matches("abcd ef23", now));
         assert!(link.matches(" ABCD-EF23\n", now));
         assert!(!link.matches("please link me ABCD-EF23", now));

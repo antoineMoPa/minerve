@@ -62,7 +62,10 @@ pub fn pid_alive(pid: u32) -> bool {
 /// Builds the report from the files in `dir` (`~/.minerve`).
 pub fn build(dir: &Path) -> Report {
     let snapshot = inspect::read(&dir.join("message-apps-status.json"));
-    let running: Vec<String> = snapshot.as_ref().map(|s| s.running.clone()).unwrap_or_default();
+    let running: Vec<String> = snapshot
+        .as_ref()
+        .map(|s| s.running.clone())
+        .unwrap_or_default();
     let threads = read_threads(dir, &running);
     let total_cost_usd = threads.iter().map(|t| t.cost_usd).sum();
     Report {
@@ -87,10 +90,11 @@ fn gateway_row(snapshot: Snapshot) -> GatewayRow {
 }
 
 fn read_threads(dir: &Path, running: &[String]) -> Vec<ThreadRow> {
-    let map: BTreeMap<String, String> = std::fs::read_to_string(dir.join("message-apps-sessions.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
+    let map: BTreeMap<String, String> =
+        std::fs::read_to_string(dir.join("message-apps-sessions.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
     let mut rows: Vec<ThreadRow> = map
         .into_iter()
         .map(|(conversation, session_id)| {
@@ -98,7 +102,11 @@ fn read_threads(dir: &Path, running: &[String]) -> Vec<ThreadRow> {
             session_row(dir, conversation, session_id, is_running)
         })
         .collect();
-    rows.sort_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd).then(a.conversation.cmp(&b.conversation)));
+    rows.sort_by(|a, b| {
+        b.cost_usd
+            .total_cmp(&a.cost_usd)
+            .then(a.conversation.cmp(&b.conversation))
+    });
     rows
 }
 
@@ -117,13 +125,19 @@ fn session_row(dir: &Path, conversation: String, session_id: String, running: bo
         tools: Vec::new(),
         updated_at: String::new(),
     };
-    let Some(session) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+    let Some(session) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
         return row;
     };
     let usage = &session["usage"];
     row.cost_usd = usage["cost_usd"].as_f64().unwrap_or(0.0);
     row.requests_without_cost = usage["requests_without_cost"].as_u64().unwrap_or(0);
-    row.updated_at = session["updated_at"].as_str().unwrap_or_default().to_string();
+    row.updated_at = session["updated_at"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let mut tools: BTreeMap<String, usize> = BTreeMap::new();
     for message in session["messages"].as_array().into_iter().flatten() {
         match message["role"].as_str() {
@@ -151,7 +165,10 @@ pub fn print(json: bool) {
     };
     let report = build(&dir);
     if json {
-        println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("report serializes")
+        );
     } else {
         print!("{}", render_text(&report));
     }
@@ -163,8 +180,15 @@ pub fn render_text(report: &Report) -> String {
     match &report.gateway {
         None => out.push_str("gateway: not running (no status snapshot)\n"),
         Some(g) => {
-            let state = if g.alive { "running" } else { "STOPPED (stale snapshot)" };
-            out.push_str(&format!("gateway: {} pid {} in {}\n", state, g.pid, g.workdir));
+            let state = if g.alive {
+                "running"
+            } else {
+                "STOPPED (stale snapshot)"
+            };
+            out.push_str(&format!(
+                "gateway: {} pid {} in {}\n",
+                state, g.pid, g.workdir
+            ));
             for (name, connection) in &g.connections {
                 out.push_str(&format!("  {}: {}\n", name, connection));
             }
@@ -172,11 +196,19 @@ pub fn render_text(report: &Report) -> String {
                 "  working now: {}  cost since start: ${:.4}{}\n",
                 g.working,
                 g.cost_usd,
-                if g.cost_incomplete { " (floor: some cost unreported)" } else { "" }
+                if g.cost_incomplete {
+                    " (floor: some cost unreported)"
+                } else {
+                    ""
+                }
             ));
         }
     }
-    out.push_str(&format!("\nthreads: {}  total stored cost: ${:.4}\n", report.threads.len(), report.total_cost_usd));
+    out.push_str(&format!(
+        "\nthreads: {}  total stored cost: ${:.4}\n",
+        report.threads.len(),
+        report.total_cost_usd
+    ));
     for t in &report.threads {
         let state = if t.running {
             "RUNNING"
@@ -186,17 +218,33 @@ pub fn render_text(report: &Report) -> String {
             "idle"
         };
         out.push_str(&format!("\n[{}] {}\n", state, t.conversation));
-        out.push_str(&format!("  session {}  updated {}\n", t.session_id, if t.updated_at.is_empty() { "-" } else { &t.updated_at }));
+        out.push_str(&format!(
+            "  session {}  updated {}\n",
+            t.session_id,
+            if t.updated_at.is_empty() {
+                "-"
+            } else {
+                &t.updated_at
+            }
+        ));
         out.push_str(&format!(
             "  cost ${:.4}{}  messages: {} user / {} assistant  tool calls: {}\n",
             t.cost_usd,
-            if t.requests_without_cost > 0 { format!(" (+{} unreported)", t.requests_without_cost) } else { String::new() },
+            if t.requests_without_cost > 0 {
+                format!(" (+{} unreported)", t.requests_without_cost)
+            } else {
+                String::new()
+            },
             t.user_messages,
             t.assistant_messages,
             t.tool_calls
         ));
         if !t.tools.is_empty() {
-            let tools: Vec<String> = t.tools.iter().map(|(name, n)| format!("{} x{}", name, n)).collect();
+            let tools: Vec<String> = t
+                .tools
+                .iter()
+                .map(|(name, n)| format!("{} x{}", name, n))
+                .collect();
             out.push_str(&format!("  tools: {}\n", tools.join(", ")));
         }
     }
@@ -234,21 +282,34 @@ mod tests {
                 {"role":"assistant","content":"done"}]}"#,
         )
         .unwrap();
-        let snapshot = Snapshot { pid: std::process::id(), running: vec!["slack:T1:C1:1.0".into()], working: 1, ..Default::default() };
+        let snapshot = Snapshot {
+            pid: std::process::id(),
+            running: vec!["slack:T1:C1:1.0".into()],
+            working: 1,
+            ..Default::default()
+        };
         inspect::write(&dir.join("message-apps-status.json"), &snapshot);
 
         let report = build(&dir);
         let g = report.gateway.clone().unwrap();
         assert!(g.alive, "our own pid is alive");
         assert_eq!(report.threads.len(), 2);
-        let s1 = report.threads.iter().find(|t| t.session_id == "s1").unwrap();
+        let s1 = report
+            .threads
+            .iter()
+            .find(|t| t.session_id == "s1")
+            .unwrap();
         assert!(s1.running);
         assert!(s1.has_session);
         assert_eq!(s1.user_messages, 1);
         assert_eq!(s1.assistant_messages, 2);
         assert_eq!(s1.tool_calls, 2);
         assert_eq!(s1.tools, vec![("run_shell_command".to_string(), 2)]);
-        let s2 = report.threads.iter().find(|t| t.session_id == "s2").unwrap();
+        let s2 = report
+            .threads
+            .iter()
+            .find(|t| t.session_id == "s2")
+            .unwrap();
         assert!(!s2.running);
         assert!(!s2.has_session);
         assert!((report.total_cost_usd - 0.25).abs() < 1e-9);

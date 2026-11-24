@@ -50,7 +50,10 @@ pub async fn fetch_model_ids(
     model_ids_from_list(provider, &body)
 }
 
-fn model_ids_from_list(provider: Provider, body: &serde_json::Value) -> Result<Vec<String>, String> {
+fn model_ids_from_list(
+    provider: Provider,
+    body: &serde_json::Value,
+) -> Result<Vec<String>, String> {
     let entries = body["data"]
         .as_array()
         .ok_or_else(|| format!("unexpected model list: {}", body))?;
@@ -71,7 +74,8 @@ mod tests {
 
     #[test]
     fn ids_get_the_provider_prefix() {
-        let body = serde_json::json!({"data": [{"id": "claude-haiku-4-5"}, {"id": "claude-opus-4-1"}]});
+        let body =
+            serde_json::json!({"data": [{"id": "claude-haiku-4-5"}, {"id": "claude-opus-4-1"}]});
         assert_eq!(
             model_ids_from_list(Provider::Anthropic, &body).unwrap(),
             ["anthropic:claude-haiku-4-5", "anthropic:claude-opus-4-1"]

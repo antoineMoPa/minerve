@@ -27,7 +27,10 @@ pub struct OpenRouterConnection {
 }
 
 /// First of `candidates` whose provider has a key, else the default model of a provider with a key.
-pub fn pick_model_with_key(candidates: impl IntoIterator<Item = String>, api_keys: &ApiKeys) -> String {
+pub fn pick_model_with_key(
+    candidates: impl IntoIterator<Item = String>,
+    api_keys: &ApiKeys,
+) -> String {
     candidates
         .into_iter()
         .find(|id| api_keys.get(route_model_id(id).0).is_some())
@@ -59,7 +62,9 @@ pub async fn fetch_context_window(
         .as_array()?
         .iter()
         .find(|entry| entry["id"].as_str() == Some(model))?;
-    entry["context_length"].as_u64().map(|tokens| tokens as usize)
+    entry["context_length"]
+        .as_u64()
+        .map(|tokens| tokens as usize)
 }
 
 /// Reads the API keys of every provider; a key missing only fails requests to its provider.
@@ -78,7 +83,8 @@ pub fn read_openrouter_connection_from_env() -> OpenRouterConnection {
 
     OpenRouterConnection {
         // The override is for tests, which point minerve at a server of their own.
-        base_url: std::env::var("MINERVE_OPENROUTER_BASE_URL").unwrap_or_else(|_| String::from(OPENROUTER_BASE_URL)),
+        base_url: std::env::var("MINERVE_OPENROUTER_BASE_URL")
+            .unwrap_or_else(|_| String::from(OPENROUTER_BASE_URL)),
         api_keys,
         model,
     }
@@ -98,12 +104,18 @@ mod tests {
     #[test]
     fn skips_recent_models_without_a_key() {
         let recent = ["openrouter:x/one", "anthropic:claude-opus-4-1"].map(String::from);
-        assert_eq!(pick_model_with_key(recent, &anthropic_only()), "anthropic:claude-opus-4-1");
+        assert_eq!(
+            pick_model_with_key(recent, &anthropic_only()),
+            "anthropic:claude-opus-4-1"
+        );
     }
 
     #[test]
     fn falls_back_to_the_default_of_a_keyed_provider() {
         let recent = ["~anthropic/claude-haiku-latest"].map(String::from);
-        assert_eq!(pick_model_with_key(recent, &anthropic_only()), "anthropic:claude-haiku-5-5");
+        assert_eq!(
+            pick_model_with_key(recent, &anthropic_only()),
+            "anthropic:claude-haiku-5-5"
+        );
     }
 }

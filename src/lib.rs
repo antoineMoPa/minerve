@@ -16,19 +16,19 @@ mod boot;
 mod budget;
 mod chat;
 mod chat_selection;
-mod goal;
 mod control_socket;
+mod goal;
 mod history;
 mod images;
 mod input_layout;
 mod keys_file;
-mod model_lists;
-mod model_picker;
 mod markdown;
 mod mcp;
 mod mcp_manager;
 mod message_apps;
 mod message_apps_runner;
+mod model_lists;
+mod model_picker;
 mod pro_tips;
 mod recent_models;
 mod serve;
@@ -36,10 +36,10 @@ mod serve_commands;
 mod serve_mcp;
 mod serve_message_apps;
 mod session_picker;
-mod token_counter;
-mod tools;
 mod tetris;
 mod threads_report;
+mod token_counter;
+mod tools;
 mod tui;
 mod ui;
 
@@ -51,8 +51,8 @@ use cli::*;
 
 mod utils;
 
-mod minerve;
 mod anthropic;
+mod minerve;
 mod openrouter;
 mod provider;
 mod session;
@@ -101,7 +101,13 @@ fn launch_tui(
 ) {
     // Slack and the other message apps are served only while this TUI is open.
     message_apps_runner::start_if_configured();
-    if let Err(err) = tui::run(openrouter_connection, start, extra_system_prompts, force_setup, control) {
+    if let Err(err) = tui::run(
+        openrouter_connection,
+        start,
+        extra_system_prompts,
+        force_setup,
+        control,
+    ) {
         eprintln!("minerve: terminal UI failed: {}", err);
     }
     message_apps_runner::stop();
@@ -188,7 +194,9 @@ where
     // Clap refuses --resume together with --session-id.
     let start = match (cli.resume.as_deref(), cli.session_id) {
         (Some(arg), _) => session::load_for_resume(arg).map(session::SessionStart::Resume),
-        (None, Some(id)) => session::check_new_session_id(&id).map(|()| session::SessionStart::NewWithId(id)),
+        (None, Some(id)) => {
+            session::check_new_session_id(&id).map(|()| session::SessionStart::NewWithId(id))
+        }
         (None, None) => Ok(session::SessionStart::New),
     };
     let start = match start {
@@ -214,7 +222,11 @@ where
     }
 
     // Connected before the TUI takes over, so a parent that named a dead socket is reported on stderr.
-    let control = match control_socket::ControlSocket::connect_from_env(if cli.serve { control_socket::SERVE_FEATURES } else { control_socket::TUI_FEATURES }) {
+    let control = match control_socket::ControlSocket::connect_from_env(if cli.serve {
+        control_socket::SERVE_FEATURES
+    } else {
+        control_socket::TUI_FEATURES
+    }) {
         Ok(control) => control,
         Err(err) => {
             eprintln!("minerve: {}", err);
@@ -223,11 +235,20 @@ where
     };
     if cli.serve {
         let Some(control) = control else {
-            eprintln!("minerve: --serve needs {}", control_socket::CONTROL_SOCKET_ENV_VAR);
+            eprintln!(
+                "minerve: --serve needs {}",
+                control_socket::CONTROL_SOCKET_ENV_VAR
+            );
             std::process::exit(2);
         };
         serve::run(openrouter_connection, start, &cli.system_prompt, control);
         return;
     }
-    launch_tui(openrouter_connection, start, &cli.system_prompt, cli.setup, control);
+    launch_tui(
+        openrouter_connection,
+        start,
+        &cli.system_prompt,
+        cli.setup,
+        control,
+    );
 }

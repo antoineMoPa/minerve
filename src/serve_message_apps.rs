@@ -31,7 +31,11 @@ pub fn handle(command: &ParentCommand, control: &ControlSocket) -> bool {
             runner::cancel_link();
             None
         }
-        ParentCommand::MessageAppsSave { bot_name, app_token, bot_token } => Some(save(bot_name, app_token, bot_token)),
+        ParentCommand::MessageAppsSave {
+            bot_name,
+            app_token,
+            bot_token,
+        } => Some(save(bot_name, app_token, bot_token)),
         ParentCommand::MessageAppsManifest { bot_name } => {
             send_manifest(bot_name.trim(), control);
             return true;
@@ -58,8 +62,14 @@ fn save(bot_name: &str, app_token: &Option<String>, bot_token: &Option<String>) 
     let result = check_form(&form).and_then(|checked| {
         // From disk: someone may have linked since the window last looked.
         let mut saved = config::load()?;
-        let icon_url = saved.slack.as_ref().and_then(|slack| slack.icon_url.clone());
-        saved.slack = Some(SlackSettings { icon_url, ..checked.settings });
+        let icon_url = saved
+            .slack
+            .as_ref()
+            .and_then(|slack| slack.icon_url.clone());
+        saved.slack = Some(SlackSettings {
+            icon_url,
+            ..checked.settings
+        });
         config::save(&saved)?;
         config::save_slack_tokens(checked.app_token.as_deref(), checked.bot_token.as_deref())?;
         Ok(saved)
@@ -67,7 +77,11 @@ fn save(bot_name: &str, app_token: &Option<String>, bot_token: &Option<String>) 
     match result {
         Ok(saved) => {
             runner::start();
-            if !saved.allowed.iter().any(|entry| entry.starts_with("slack:")) {
+            if !saved
+                .allowed
+                .iter()
+                .any(|entry| entry.starts_with("slack:"))
+            {
                 runner::start_link();
             }
             "Saved.".to_string()
@@ -86,7 +100,10 @@ fn send_manifest(bot_name: &str, control: &ControlSocket) {
         let _ = std::fs::write(path, &manifest);
     }
     crate::mcp::oauth::open_in_browser(SLACK_APPS_URL);
-    control.send(&MinerveEvent::MessageAppsManifest { manifest: &manifest, url: SLACK_APPS_URL });
+    control.send(&MinerveEvent::MessageAppsManifest {
+        manifest: &manifest,
+        url: SLACK_APPS_URL,
+    });
 }
 
 fn describe() -> MessageAppsOut {
@@ -94,8 +111,17 @@ fn describe() -> MessageAppsOut {
     let has_tokens = config::load_slack_tokens().is_some();
     let (bot_name, members) = match &loaded {
         Ok(config) => (
-            config.slack.as_ref().map(|slack| slack.bot_name.clone()).unwrap_or_default(),
-            config.allowed.iter().filter_map(|entry| entry.strip_prefix("slack:")).map(String::from).collect(),
+            config
+                .slack
+                .as_ref()
+                .map(|slack| slack.bot_name.clone())
+                .unwrap_or_default(),
+            config
+                .allowed
+                .iter()
+                .filter_map(|entry| entry.strip_prefix("slack:"))
+                .map(String::from)
+                .collect(),
         ),
         Err(_) => (String::new(), Vec::new()),
     };
@@ -120,7 +146,9 @@ fn describe() -> MessageAppsOut {
                     Some(LinkState::Waiting { code, expires_at }) => {
                         link = "waiting";
                         link_detail = code;
-                        link_seconds_left = expires_at.saturating_duration_since(Instant::now()).as_secs();
+                        link_seconds_left = expires_at
+                            .saturating_duration_since(Instant::now())
+                            .as_secs();
                     }
                     Some(LinkState::Linked { member }) => (link, link_detail) = ("linked", member),
                     None => {}
@@ -128,5 +156,14 @@ fn describe() -> MessageAppsOut {
             }
         }
     }
-    MessageAppsOut { state, detail, bot_name, has_tokens, members, link, link_detail, link_seconds_left }
+    MessageAppsOut {
+        state,
+        detail,
+        bot_name,
+        has_tokens,
+        members,
+        link,
+        link_detail,
+        link_seconds_left,
+    }
 }

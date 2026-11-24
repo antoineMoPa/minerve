@@ -104,8 +104,14 @@ mod tests {
     #[test]
     fn down_after_up_restores_the_unsent_draft() {
         let mut history = tracker(&["first", "second"]);
-        assert_eq!(history.get_previous_prompt("half typed").as_deref(), Some("second"));
-        assert_eq!(history.get_previous_prompt("second").as_deref(), Some("first"));
+        assert_eq!(
+            history.get_previous_prompt("half typed").as_deref(),
+            Some("second")
+        );
+        assert_eq!(
+            history.get_previous_prompt("second").as_deref(),
+            Some("first")
+        );
         assert_eq!(history.get_next_prompt().as_deref(), Some("second"));
         assert_eq!(history.get_next_prompt().as_deref(), Some("half typed"));
         assert_eq!(history.get_next_prompt(), None);
@@ -120,7 +126,10 @@ mod tests {
     #[test]
     fn up_stays_at_the_oldest_prompt_and_keeps_the_draft() {
         let mut history = tracker(&["only"]);
-        assert_eq!(history.get_previous_prompt("draft").as_deref(), Some("only"));
+        assert_eq!(
+            history.get_previous_prompt("draft").as_deref(),
+            Some("only")
+        );
         assert_eq!(history.get_previous_prompt("only").as_deref(), Some("only"));
         assert_eq!(history.get_next_prompt().as_deref(), Some("draft"));
     }

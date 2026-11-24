@@ -7,7 +7,8 @@
 //! Logins are kept in `~/.minerve/mcp_auth.json` (owner-only), keyed by the MCP server URL.
 
 use rmcp::transport::auth::{
-    AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore, StoredCredentials,
+    AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore,
+    StoredCredentials,
 };
 use std::collections::BTreeMap;
 
@@ -24,7 +25,9 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const CLIENT_NAME: &str = "minerve";
 
 fn auth_file() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(AUTH_FILE_PATH)
+    dirs::home_dir()
+        .expect("no home directory")
+        .join(AUTH_FILE_PATH)
 }
 
 fn read_logins() -> Result<BTreeMap<String, StoredCredentials>, String> {
@@ -32,7 +35,8 @@ fn read_logins() -> Result<BTreeMap<String, StoredCredentials>, String> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let text = std::fs::read_to_string(&path).map_err(|err| format!("{}: {}", path.display(), err))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|err| format!("{}: {}", path.display(), err))?;
     serde_json::from_str(&text).map_err(|err| format!("{}: {}", path.display(), err))
 }
 
@@ -56,7 +60,9 @@ pub struct FileCredentialStore {
 
 impl FileCredentialStore {
     pub fn new(server_url: &str) -> Self {
-        Self { server_url: server_url.to_string() }
+        Self {
+            server_url: server_url.to_string(),
+        }
     }
 }
 
@@ -88,7 +94,11 @@ pub fn forget_login(server_url: &str) -> Result<(), String> {
 }
 
 pub(crate) fn open_in_browser(url: &str) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     // The URL is also shown in `/mcp`, so a missing opener only costs a copy-paste.
     let _ = std::process::Command::new(opener)
         .arg(url)
@@ -107,14 +117,24 @@ fn callback_target(request_head: &str) -> Option<&str> {
 
 /// Answers browser requests on `listener` until the one to the callback path arrives,
 /// and returns its full URL.
-async fn wait_for_callback(listener: &TcpListener, redirect_origin: &str) -> Result<String, String> {
+async fn wait_for_callback(
+    listener: &TcpListener,
+    redirect_origin: &str,
+) -> Result<String, String> {
     loop {
         let (mut stream, _) = listener.accept().await.map_err(|err| err.to_string())?;
         let mut buffer = vec![0u8; 8192];
-        let read = stream.read(&mut buffer).await.map_err(|err| err.to_string())?;
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .map_err(|err| err.to_string())?;
         let request_head = String::from_utf8_lossy(&buffer[..read]).to_string();
         let Some(target) = callback_target(&request_head) else {
-            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
             continue;
         };
         let body = "<!doctype html><title>minerve</title>\
@@ -148,14 +168,18 @@ pub async fn log_in(
             (listener, format!("http://localhost:{}", port))
         }
         None => {
-            let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|err| err.to_string())?;
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(|err| err.to_string())?;
             let port = listener.local_addr().map_err(|err| err.to_string())?.port();
             (listener, format!("http://127.0.0.1:{}", port))
         }
     };
     let redirect_uri = format!("{}{}", redirect_origin, CALLBACK_PATH);
 
-    let mut manager = AuthorizationManager::new(server_url).await.map_err(|err| err.to_string())?;
+    let mut manager = AuthorizationManager::new(server_url)
+        .await
+        .map_err(|err| err.to_string())?;
     manager.set_credential_store(FileCredentialStore::new(server_url));
     let resolution = manager
         .resolve_metadata_from_challenge(Some(challenge))
@@ -176,9 +200,17 @@ pub async fn log_in(
     open_in_browser(&authorize_url);
     on_authorize_url(authorize_url);
 
-    let callback_url = tokio::time::timeout(LOGIN_TIMEOUT, wait_for_callback(&listener, &redirect_origin))
-        .await
-        .map_err(|_| format!("no browser login within {} minutes", LOGIN_TIMEOUT.as_secs() / 60))??;
+    let callback_url = tokio::time::timeout(
+        LOGIN_TIMEOUT,
+        wait_for_callback(&listener, &redirect_origin),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "no browser login within {} minutes",
+            LOGIN_TIMEOUT.as_secs() / 60
+        )
+    })??;
     session
         .handle_callback_url(&callback_url)
         .await

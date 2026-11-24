@@ -27,7 +27,9 @@ pub struct Snapshot {
 }
 
 pub fn default_path() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(".minerve/message-apps-status.json")
+    dirs::home_dir()
+        .expect("no home directory")
+        .join(".minerve/message-apps-status.json")
 }
 
 impl Snapshot {

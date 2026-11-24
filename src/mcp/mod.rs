@@ -30,9 +30,13 @@ pub enum McpConnection {
     Connected(Arc<McpServer>),
     Failed(String),
     /// The server answered 401. Holds its `WWW-Authenticate` header, which starts the login.
-    NeedsLogin { challenge: String },
+    NeedsLogin {
+        challenge: String,
+    },
     /// Browser login running. The URL is set once the browser is sent there.
-    LoggingIn { authorize_url: Option<String> },
+    LoggingIn {
+        authorize_url: Option<String>,
+    },
     /// Disconnected from `/mcp`. Lasts until minerve exits or the server is connected again.
     Disconnected,
 }
@@ -71,12 +75,17 @@ fn notify_change() {
 }
 
 fn tool_function_name(server_name: &str, tool_name: &str) -> String {
-    format!("{}{}{}{}", TOOL_NAME_PREFIX, server_name, TOOL_NAME_SEPARATOR, tool_name)
+    format!(
+        "{}{}{}{}",
+        TOOL_NAME_PREFIX, server_name, TOOL_NAME_SEPARATOR, tool_name
+    )
 }
 
 fn is_valid_function_name(function_name: &str) -> bool {
     function_name.len() <= MAX_TOOL_NAME_LEN
-        && function_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && function_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Names of the tools of `server_name` that cannot be function names, e.g. with a `.` or too long.
@@ -95,11 +104,22 @@ pub fn start_connecting(servers: BTreeMap<String, (McpServerConfig, ConfigSource
     let slots = servers
         .into_iter()
         .map(|(name, (config, source))| {
-            (name, McpServerSlot { config, source, connection: McpConnection::Disconnected, attempt: 0 })
+            (
+                name,
+                McpServerSlot {
+                    config,
+                    source,
+                    connection: McpConnection::Disconnected,
+                    attempt: 0,
+                },
+            )
         })
         .collect::<BTreeMap<_, _>>();
     let names: Vec<String> = slots.keys().cloned().collect();
-    let registry = Registry { slots: Mutex::new(slots), changes: watch::channel(0).0 };
+    let registry = Registry {
+        slots: Mutex::new(slots),
+        changes: watch::channel(0).0,
+    };
     if REGISTRY.set(registry).is_err() {
         panic!("mcp::start_connecting called twice");
     }
@@ -112,7 +132,9 @@ pub fn start_connecting(servers: BTreeMap<String, (McpServerConfig, ConfigSource
 pub fn connect(name: &str) {
     let (config, attempt) = {
         let mut slots = registry().slots.lock().unwrap();
-        let slot = slots.get_mut(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
+        let slot = slots
+            .get_mut(name)
+            .unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
         slot.attempt += 1;
         slot.connection = McpConnection::Connecting;
         (slot.config.clone(), slot.attempt)
@@ -120,11 +142,17 @@ pub fn connect(name: &str) {
     notify_change();
     let name = name.to_string();
     crate::get_global_runtime().spawn(async move {
-        let connection = match tokio::time::timeout(CONNECT_TIMEOUT, McpServer::connect(&config)).await {
+        let connection = match tokio::time::timeout(CONNECT_TIMEOUT, McpServer::connect(&config))
+            .await
+        {
             Ok(Ok(server)) => McpConnection::Connected(Arc::new(server)),
-            Ok(Err(ConnectError::NeedsLogin { challenge })) => McpConnection::NeedsLogin { challenge },
+            Ok(Err(ConnectError::NeedsLogin { challenge })) => {
+                McpConnection::NeedsLogin { challenge }
+            }
             Ok(Err(ConnectError::Failed(err))) => McpConnection::Failed(err),
-            Err(_) => McpConnection::Failed(format!("no answer within {}s", CONNECT_TIMEOUT.as_secs())),
+            Err(_) => {
+                McpConnection::Failed(format!("no answer within {}s", CONNECT_TIMEOUT.as_secs()))
+            }
         };
         set_connection_if_current(&name, attempt, connection);
     });
@@ -147,7 +175,9 @@ fn set_connection_if_current(name: &str, attempt: u64, connection: McpConnection
 pub fn log_in(name: &str) {
     let (url, oauth_client, challenge, attempt) = {
         let mut slots = registry().slots.lock().unwrap();
-        let slot = slots.get_mut(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
+        let slot = slots
+            .get_mut(name)
+            .unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
         let McpServerConfig::Http { url, oauth, .. } = &slot.config else {
             panic!("login of stdio MCP server '{}'", name);
         };
@@ -156,23 +186,40 @@ pub fn log_in(name: &str) {
         };
         let login = (url.clone(), oauth.clone(), challenge.clone());
         slot.attempt += 1;
-        slot.connection = McpConnection::LoggingIn { authorize_url: None };
+        slot.connection = McpConnection::LoggingIn {
+            authorize_url: None,
+        };
         (login.0, login.1, login.2, slot.attempt)
     };
     notify_change();
     let name = name.to_string();
     crate::get_global_runtime().spawn(async move {
         let show_url = |authorize_url: String| {
-            set_connection_if_current(&name, attempt, McpConnection::LoggingIn { authorize_url: Some(authorize_url) });
+            set_connection_if_current(
+                &name,
+                attempt,
+                McpConnection::LoggingIn {
+                    authorize_url: Some(authorize_url),
+                },
+            );
         };
         match oauth::log_in(&url, oauth_client.as_ref(), &challenge, show_url).await {
             Ok(()) => {
-                let still_current = registry().slots.lock().unwrap().get(&name).is_some_and(|slot| slot.attempt == attempt);
+                let still_current = registry()
+                    .slots
+                    .lock()
+                    .unwrap()
+                    .get(&name)
+                    .is_some_and(|slot| slot.attempt == attempt);
                 if still_current {
                     connect(&name);
                 }
             }
-            Err(err) => set_connection_if_current(&name, attempt, McpConnection::Failed(format!("login: {}", err))),
+            Err(err) => set_connection_if_current(
+                &name,
+                attempt,
+                McpConnection::Failed(format!("login: {}", err)),
+            ),
         }
     });
 }
@@ -181,7 +228,9 @@ pub fn log_in(name: &str) {
 pub fn disconnect(name: &str) {
     {
         let mut slots = registry().slots.lock().unwrap();
-        let slot = slots.get_mut(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
+        let slot = slots
+            .get_mut(name)
+            .unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
         slot.attempt += 1;
         slot.connection = McpConnection::Disconnected;
     }
@@ -194,10 +243,21 @@ pub fn add_server(name: &str, config: McpServerConfig) -> Result<(), String> {
     if registry().slots.lock().unwrap().contains_key(name) {
         return Err(format!("a server named '{}' already exists", name));
     }
-    config::write_server_to_file(&ConfigSource::User.path().expect("the user's servers are in a file"), name, &config)?;
+    config::write_server_to_file(
+        &ConfigSource::User
+            .path()
+            .expect("the user's servers are in a file"),
+        name,
+        &config,
+    )?;
     registry().slots.lock().unwrap().insert(
         name.to_string(),
-        McpServerSlot { config, source: ConfigSource::User, connection: McpConnection::Disconnected, attempt: 0 },
+        McpServerSlot {
+            config,
+            source: ConfigSource::User,
+            connection: McpConnection::Disconnected,
+            attempt: 0,
+        },
     );
     connect(name);
     Ok(())
@@ -207,7 +267,9 @@ pub fn add_server(name: &str, config: McpServerConfig) -> Result<(), String> {
 pub fn remove_server(name: &str) -> Result<(), String> {
     let (source, config) = {
         let slots = registry().slots.lock().unwrap();
-        let slot = slots.get(name).unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
+        let slot = slots
+            .get(name)
+            .unwrap_or_else(|| panic!("unknown MCP server '{}'", name));
         (slot.source, slot.config.clone())
     };
     // A server given on the command line is in no file: it is dropped for this run only.
@@ -286,7 +348,9 @@ impl McpServers {
                         return None;
                     }
                     let description = match &tool.description {
-                        Some(description) => format!("[MCP server {}] {}", server_name, description),
+                        Some(description) => {
+                            format!("[MCP server {}] {}", server_name, description)
+                        }
                         None => format!("[MCP server {}]", server_name),
                     };
                     Some(ChatCompletionFunctionDefinition {
@@ -303,20 +367,33 @@ impl McpServers {
 
     /// Runs the MCP tool behind `function_name`. None when no connected server has that tool.
     /// `arguments` is the JSON object the model wrote; models send an empty string for no arguments.
-    pub async fn call(&self, function_name: &str, arguments: &str) -> Option<Result<String, String>> {
+    pub async fn call(
+        &self,
+        function_name: &str,
+        arguments: &str,
+    ) -> Option<Result<String, String>> {
         let (server, tool_name) = self.servers.iter().find_map(|(server_name, server)| {
             let tool_name = function_name
                 .strip_prefix(TOOL_NAME_PREFIX)?
                 .strip_prefix(server_name.as_str())?
                 .strip_prefix(TOOL_NAME_SEPARATOR)?;
-            server.tools.iter().any(|tool| tool.name == tool_name).then_some((server, tool_name))
+            server
+                .tools
+                .iter()
+                .any(|tool| tool.name == tool_name)
+                .then_some((server, tool_name))
         })?;
         let arguments = if arguments.trim().is_empty() {
             serde_json::Map::new()
         } else {
             match serde_json::from_str(arguments) {
                 Ok(Value::Object(map)) => map,
-                Ok(other) => return Some(Err(format!("arguments must be a JSON object, got {}", other))),
+                Ok(other) => {
+                    return Some(Err(format!(
+                        "arguments must be a JSON object, got {}",
+                        other
+                    )))
+                }
                 Err(err) => return Some(Err(format!("arguments are not valid JSON: {}", err))),
             }
         };
@@ -330,8 +407,17 @@ mod tests {
 
     #[test]
     fn function_names_follow_provider_limits() {
-        assert!(is_valid_function_name(&tool_function_name("fs", "read_file")));
-        assert!(!is_valid_function_name(&tool_function_name("fs", "read.file")));
-        assert!(!is_valid_function_name(&tool_function_name("fs", &"x".repeat(60))));
+        assert!(is_valid_function_name(&tool_function_name(
+            "fs",
+            "read_file"
+        )));
+        assert!(!is_valid_function_name(&tool_function_name(
+            "fs",
+            "read.file"
+        )));
+        assert!(!is_valid_function_name(&tool_function_name(
+            "fs",
+            &"x".repeat(60)
+        )));
     }
 }

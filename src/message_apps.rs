@@ -38,7 +38,12 @@ enum Field {
     BotToken,
 }
 
-const FIELDS: [Field; 4] = [Field::BotName, Field::SlackApp, Field::AppToken, Field::BotToken];
+const FIELDS: [Field; 4] = [
+    Field::BotName,
+    Field::SlackApp,
+    Field::AppToken,
+    Field::BotToken,
+];
 
 #[derive(Default)]
 pub(crate) struct SetupForm {
@@ -62,7 +67,11 @@ enum View {
     Link,
     /// The manifest on its own screen, to select by hand when copying did not reach the clipboard.
     /// Keeps the form to go back to.
-    Manifest { form: SetupForm, text: String, scroll: u16 },
+    Manifest {
+        form: SetupForm,
+        text: String,
+        scroll: u16,
+    },
 }
 
 /// Slack's row in the list, from the config and the running gateway.
@@ -84,7 +93,12 @@ pub struct MessageApps {
 
 impl MessageApps {
     pub fn new() -> Self {
-        let mut apps = Self { view: View::List, note: None, config: MessageAppsConfig::default(), has_tokens: false };
+        let mut apps = Self {
+            view: View::List,
+            note: None,
+            config: MessageAppsConfig::default(),
+            has_tokens: false,
+        };
         apps.reload();
         apps
     }
@@ -106,9 +120,10 @@ impl MessageApps {
             RunnerView::Blocked(err) => SlackRow::Failed(err.clone()),
             RunnerView::Running { status, .. } => match status.connections.get(TRANSPORT) {
                 None | Some(Connection::Connecting) => SlackRow::Connecting,
-                Some(Connection::Connected { workspace, bot }) => {
-                    SlackRow::Connected { workspace: workspace.clone(), bot: bot.clone() }
-                }
+                Some(Connection::Connected { workspace, bot }) => SlackRow::Connected {
+                    workspace: workspace.clone(),
+                    bot: bot.clone(),
+                },
                 Some(Connection::Failed(err)) => SlackRow::Failed(err.clone()),
             },
         }
@@ -141,7 +156,9 @@ impl MessageApps {
                 runner::start();
                 self.note = None;
             }
-            (KeyCode::Char('l'), SlackRow::Connected { .. } | SlackRow::Connecting) => self.open_link(),
+            (KeyCode::Char('l'), SlackRow::Connected { .. } | SlackRow::Connecting) => {
+                self.open_link()
+            }
             (KeyCode::Char('d'), SlackRow::Connected { .. } | SlackRow::Connecting) => {
                 runner::stop();
                 self.note = Some(Note::Info(String::from("Disconnected.")));
@@ -153,7 +170,12 @@ impl MessageApps {
 
     fn open_form(&mut self) {
         let tokens = config::load_slack_tokens();
-        let bot_name = self.config.slack.as_ref().map(|slack| slack.bot_name.clone()).unwrap_or_default();
+        let bot_name = self
+            .config
+            .slack
+            .as_ref()
+            .map(|slack| slack.bot_name.clone())
+            .unwrap_or_default();
         self.view = View::Form(SetupForm {
             bot_name,
             has_app_token: tokens.is_some(),
@@ -184,8 +206,12 @@ impl MessageApps {
                 self.view = View::List;
                 self.note = None;
             }
-            KeyCode::Tab | KeyCode::Down => form.field_index = (form.field_index + 1) % FIELDS.len(),
-            KeyCode::BackTab | KeyCode::Up => form.field_index = (form.field_index + FIELDS.len() - 1) % FIELDS.len(),
+            KeyCode::Tab | KeyCode::Down => {
+                form.field_index = (form.field_index + 1) % FIELDS.len()
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.field_index = (form.field_index + FIELDS.len() - 1) % FIELDS.len()
+            }
             KeyCode::Enter | KeyCode::Char('c') if on_slack_app => self.copy_manifest(),
             KeyCode::Char('v') if on_slack_app => self.view_manifest(),
             KeyCode::Enter => self.save_form(),
@@ -210,19 +236,32 @@ impl MessageApps {
             self.note = Some(Note::Error(err));
             return;
         }
-        let View::Form(form) = std::mem::replace(&mut self.view, View::List) else { unreachable!() };
-        self.view = View::Manifest { form, text: slack::manifest(&name), scroll: 0 };
+        let View::Form(form) = std::mem::replace(&mut self.view, View::List) else {
+            unreachable!()
+        };
+        self.view = View::Manifest {
+            form,
+            text: slack::manifest(&name),
+            scroll: 0,
+        };
         // Let the terminal select text with the mouse while the manifest shows.
         crate::tui::set_mouse_capture(false);
     }
 
     fn handle_manifest_key(&mut self, key: KeyEvent) {
-        let View::Manifest { scroll, text, .. } = &mut self.view else { return };
+        let View::Manifest { scroll, text, .. } = &mut self.view else {
+            return;
+        };
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(text.lines().count() as u16),
+            KeyCode::Down | KeyCode::Char('j') => {
+                *scroll = (*scroll + 1).min(text.lines().count() as u16)
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('v') => {
-                let View::Manifest { form, .. } = std::mem::replace(&mut self.view, View::List) else { unreachable!() };
+                let View::Manifest { form, .. } = std::mem::replace(&mut self.view, View::List)
+                else {
+                    unreachable!()
+                };
                 self.view = View::Form(form);
                 crate::tui::set_mouse_capture(true);
             }
@@ -239,12 +278,17 @@ impl MessageApps {
         }
         let manifest = slack::manifest(name);
         copy_to_clipboard(&manifest);
-        let path = dirs::home_dir().expect("no home directory").join(MANIFEST_FILE);
+        let path = dirs::home_dir()
+            .expect("no home directory")
+            .join(MANIFEST_FILE);
         let saved = std::fs::write(&path, &manifest).is_ok();
         crate::mcp::oauth::open_in_browser(SLACK_APPS_URL);
         // The URL stays in the note: the way in when no browser opened.
         self.note = Some(Note::Info(if saved {
-            format!("Manifest copied (also in ~/{}). Opened {}", MANIFEST_FILE, SLACK_APPS_URL)
+            format!(
+                "Manifest copied (also in ~/{}). Opened {}",
+                MANIFEST_FILE, SLACK_APPS_URL
+            )
         } else {
             format!("Manifest copied. Opened {}", SLACK_APPS_URL)
         }));
@@ -268,17 +312,28 @@ impl MessageApps {
             }
         };
         // The form has no icon field: keep an icon set by hand in the file.
-        let icon_url = config.slack.as_ref().and_then(|slack| slack.icon_url.clone());
-        config.slack = Some(SlackSettings { icon_url, ..checked.settings });
-        let saved = config::save(&config)
-            .and_then(|()| config::save_slack_tokens(checked.app_token.as_deref(), checked.bot_token.as_deref()));
+        let icon_url = config
+            .slack
+            .as_ref()
+            .and_then(|slack| slack.icon_url.clone());
+        config.slack = Some(SlackSettings {
+            icon_url,
+            ..checked.settings
+        });
+        let saved = config::save(&config).and_then(|()| {
+            config::save_slack_tokens(checked.app_token.as_deref(), checked.bot_token.as_deref())
+        });
         if let Err(err) = saved {
             self.note = Some(Note::Error(err));
             return;
         }
         self.reload();
         runner::start();
-        let linked = self.config.allowed.iter().any(|entry| entry.starts_with("slack:"));
+        let linked = self
+            .config
+            .allowed
+            .iter()
+            .any(|entry| entry.starts_with("slack:"));
         if !linked && runner::start_link().is_some() {
             self.view = View::Link;
             self.note = None;
@@ -302,10 +357,14 @@ impl MessageApps {
                 runner::cancel_link();
                 self.view = View::List;
             }
-            (KeyCode::Char('l'), Some(LinkState::Waiting { expires_at, .. })) if Instant::now() >= expires_at => {
+            (KeyCode::Char('l'), Some(LinkState::Waiting { expires_at, .. }))
+                if Instant::now() >= expires_at =>
+            {
                 self.open_link()
             }
-            (KeyCode::Char('c'), Some(LinkState::Waiting { code, expires_at })) if Instant::now() < expires_at => {
+            (KeyCode::Char('c'), Some(LinkState::Waiting { code, expires_at }))
+                if Instant::now() < expires_at =>
+            {
                 copy_to_clipboard(&code);
                 self.note = Some(Note::Info(String::from("Code copied.")));
             }
@@ -330,7 +389,11 @@ impl MessageApps {
             SlackRow::NotSetUp => ("not set up", Color::DarkGray, String::new()),
             SlackRow::Disconnected => ("disconnected", Color::DarkGray, String::new()),
             SlackRow::Connecting => ("connecting...", Color::Yellow, String::new()),
-            SlackRow::Connected { workspace, bot } => ("connected", Color::Green, format!("{} · @{}", workspace, bot)),
+            SlackRow::Connected { workspace, bot } => (
+                "connected",
+                Color::Green,
+                format!("{} · @{}", workspace, bot),
+            ),
             SlackRow::Failed(_) => ("failed", Color::Red, String::new()),
         };
         let mut lines = vec![
@@ -338,7 +401,14 @@ impl MessageApps {
                 Span::raw("> "),
                 Span::styled("slack   ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(label, Style::default().fg(color)),
-                Span::styled(if detail.is_empty() { String::new() } else { format!("   {}", detail) }, dim),
+                Span::styled(
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!("   {}", detail)
+                    },
+                    dim,
+                ),
             ]),
             Line::from(""),
         ];
@@ -363,14 +433,19 @@ impl MessageApps {
                 lines.push(Line::from(format!("  Workdir   {}", tilde_path(workdir))));
             }
             if let (RunnerView::Running { status, .. }, SlackRow::Connected { .. }) = (view, &row) {
-                lines.push(Line::from(format!("  Served    {} conversations", status.conversations)));
+                lines.push(Line::from(format!(
+                    "  Served    {} conversations",
+                    status.conversations
+                )));
             }
             lines.push(Line::from(""));
         }
         push_note(&mut lines, &self.note);
         let hint = match row {
             SlackRow::NotSetUp => "Enter set up | Esc close",
-            SlackRow::Connected { .. } | SlackRow::Connecting => "e edit | l link an account | d disconnect | Esc close",
+            SlackRow::Connected { .. } | SlackRow::Connecting => {
+                "e edit | l link an account | d disconnect | Esc close"
+            }
             SlackRow::Disconnected => "e edit | Enter connect | Esc close",
             SlackRow::Failed(_) => "e edit | Enter retry | Esc close",
         };
@@ -380,12 +455,14 @@ impl MessageApps {
     fn draw_form(&self, frame: &mut Frame, area: Rect, form: &SetupForm) {
         let dim = Style::default().fg(Color::DarkGray);
         let bold = Style::default().add_modifier(Modifier::BOLD);
-        let label = |text: &str| Span::styled(format!("{:<width$}", text, width = LABEL_WIDTH), bold);
-        let token = |typed: &str, saved: bool, placeholder: &'static str| match (typed.is_empty(), saved) {
-            (false, _) => Span::raw(mask_token(typed)),
-            (true, true) => Span::styled("saved · type to replace", dim),
-            (true, false) => Span::styled(placeholder, dim),
-        };
+        let label =
+            |text: &str| Span::styled(format!("{:<width$}", text, width = LABEL_WIDTH), bold);
+        let token =
+            |typed: &str, saved: bool, placeholder: &'static str| match (typed.is_empty(), saved) {
+                (false, _) => Span::raw(mask_token(typed)),
+                (true, true) => Span::styled("saved · type to replace", dim),
+                (true, false) => Span::styled(placeholder, dim),
+            };
         let on_slack_app = FIELDS[form.field_index] == Field::SlackApp;
         let copy_style = match on_slack_app {
             true => Style::default().fg(Color::Black).bg(Color::Cyan),
@@ -401,11 +478,19 @@ impl MessageApps {
             // Slack's own names, and where its pages show each token.
             Line::from(vec![
                 label("App-Level Token"),
-                token(&form.app_token, form.has_app_token, "xapp-…  Basic Information → App-Level Tokens, scope connections:write"),
+                token(
+                    &form.app_token,
+                    form.has_app_token,
+                    "xapp-…  Basic Information → App-Level Tokens, scope connections:write",
+                ),
             ]),
             Line::from(vec![
                 label("Bot OAuth Token"),
-                token(&form.bot_token, form.has_bot_token, "xoxb-…  Install App → Bot User OAuth Token"),
+                token(
+                    &form.bot_token,
+                    form.has_bot_token,
+                    "xoxb-…  Install App → Bot User OAuth Token",
+                ),
             ]),
             Line::from(""),
         ];
@@ -433,7 +518,12 @@ impl MessageApps {
             RunnerView::Running { status, .. } => {
                 let bot = match status.connections.get(TRANSPORT) {
                     Some(Connection::Connected { bot, .. }) => bot.clone(),
-                    _ => self.config.slack.as_ref().map(|slack| slack.bot_name.clone()).unwrap_or_default(),
+                    _ => self
+                        .config
+                        .slack
+                        .as_ref()
+                        .map(|slack| slack.bot_name.clone())
+                        .unwrap_or_default(),
                 };
                 (status.link.clone(), bot)
             }
@@ -441,7 +531,13 @@ impl MessageApps {
         };
         // A code is no use while Slack is down: say why instead.
         if let SlackRow::Failed(err) = self.row(view) {
-            let lines = vec![Line::styled(format!("Slack is not connected: {}", err), Style::default().fg(Color::Red)), Line::from("")];
+            let lines = vec![
+                Line::styled(
+                    format!("Slack is not connected: {}", err),
+                    Style::default().fg(Color::Red),
+                ),
+                Line::from(""),
+            ];
             draw_with_hint(frame, area, " Link your slack account ", lines, "Esc back");
             return;
         }
@@ -456,14 +552,25 @@ impl MessageApps {
                 let lines = vec![
                     Line::from(vec![
                         Span::raw("Send this to "),
-                        Span::styled(format!("@{}", bot), Style::default().add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            format!("@{}", bot),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
                         Span::raw(" in a DM:"),
                     ]),
                     Line::from(""),
                     Line::from(vec![
                         Span::raw("      "),
-                        Span::styled(code, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("      expires in {}:{:02}", left / 60, left % 60), dim),
+                        Span::styled(
+                            code,
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("      expires in {}:{:02}", left / 60, left % 60),
+                            dim,
+                        ),
                     ]),
                     Line::from(""),
                     Line::styled(waiting, dim),
@@ -476,14 +583,23 @@ impl MessageApps {
             Some(LinkState::Linked { member }) => {
                 let lines = vec![
                     Line::from(vec![
-                        Span::styled(format!("Linked to {}.", member), Style::default().fg(Color::Green)),
+                        Span::styled(
+                            format!("Linked to {}.", member),
+                            Style::default().fg(Color::Green),
+                        ),
                         Span::styled(" The code is used up.", dim),
                     ]),
                     Line::from(""),
                 ];
                 (lines, "Enter done")
             }
-            _ => (vec![Line::styled("The code expired.", Style::default().fg(Color::Yellow)), Line::from("")], "l new code | Esc back"),
+            _ => (
+                vec![
+                    Line::styled("The code expired.", Style::default().fg(Color::Yellow)),
+                    Line::from(""),
+                ],
+                "l new code | Esc back",
+            ),
         };
         draw_with_hint(frame, area, " Link your slack account ", lines, hint);
     }
@@ -513,24 +629,41 @@ pub(crate) fn check_form(form: &SetupForm) -> Result<CheckedForm, String> {
     check_bot_name(bot_name)?;
     let app_token = check_token(&form.app_token, form.has_app_token, "xapp-", "app")?;
     let bot_token = check_token(&form.bot_token, form.has_bot_token, "xoxb-", "bot")?;
-    Ok(CheckedForm { settings: SlackSettings { bot_name: bot_name.to_string(), icon_url: None }, app_token, bot_token })
+    Ok(CheckedForm {
+        settings: SlackSettings {
+            bot_name: bot_name.to_string(),
+            icon_url: None,
+        },
+        app_token,
+        bot_token,
+    })
 }
 
 /// Slack's rule for a bot's display name, so the manifest is accepted.
 pub(crate) fn check_bot_name(name: &str) -> Result<(), String> {
-    let valid = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.';
+    let valid =
+        |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.';
     if name.is_empty() || !name.chars().all(valid) {
-        return Err(String::from("Bot name: lowercase letters, digits, - _ . only, e.g. antoine-bot."));
+        return Err(String::from(
+            "Bot name: lowercase letters, digits, - _ . only, e.g. antoine-bot.",
+        ));
     }
     Ok(())
 }
 
-fn check_token(typed: &str, saved: bool, prefix: &str, kind: &str) -> Result<Option<String>, String> {
+fn check_token(
+    typed: &str,
+    saved: bool,
+    prefix: &str,
+    kind: &str,
+) -> Result<Option<String>, String> {
     let typed = typed.trim();
     match (typed.is_empty(), saved) {
         (true, true) => Ok(None),
         (true, false) => Err(format!("Paste the {} token ({}…).", kind, prefix)),
-        (false, _) if !typed.starts_with(prefix) => Err(format!("The {} token starts with {}", kind, prefix)),
+        (false, _) if !typed.starts_with(prefix) => {
+            Err(format!("The {} token starts with {}", kind, prefix))
+        }
         (false, _) => Ok(Some(typed.to_string())),
     }
 }
@@ -543,7 +676,11 @@ fn mask_token(token: &str) -> String {
 }
 
 fn slack_members(allowed: &[String]) -> Vec<String> {
-    allowed.iter().filter_map(|entry| entry.strip_prefix("slack:")).map(String::from).collect()
+    allowed
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("slack:"))
+        .map(String::from)
+        .collect()
 }
 
 pub(crate) fn tilde_path(path: &std::path::Path) -> String {
@@ -556,8 +693,13 @@ pub(crate) fn tilde_path(path: &std::path::Path) -> String {
 
 fn push_note(lines: &mut Vec<Line<'static>>, note: &Option<Note>) {
     match note {
-        Some(Note::Info(text)) => lines.push(Line::styled(text.clone(), Style::default().fg(Color::Green))),
-        Some(Note::Error(text)) => lines.push(Line::styled(text.clone(), Style::default().fg(Color::Red))),
+        Some(Note::Info(text)) => lines.push(Line::styled(
+            text.clone(),
+            Style::default().fg(Color::Green),
+        )),
+        Some(Note::Error(text)) => {
+            lines.push(Line::styled(text.clone(), Style::default().fg(Color::Red)))
+        }
         None => {}
     }
 }
@@ -574,21 +716,47 @@ fn draw_manifest(frame: &mut Frame, area: Rect, text: &str, scroll: u16) {
     let dim = Style::default().fg(Color::DarkGray);
     frame.render_widget(Clear, area);
     let total = text.lines().count() as u16;
-    let body = Rect::new(area.x, area.y + 2, area.width, area.height.saturating_sub(4));
+    let body = Rect::new(
+        area.x,
+        area.y + 2,
+        area.width,
+        area.height.saturating_sub(4),
+    );
     let scroll = scroll.min(total.saturating_sub(body.height));
-    let header = format!("Slack manifest · select it with the mouse · also in ~/{}", MANIFEST_FILE);
-    frame.render_widget(Paragraph::new(Line::styled(header, dim)), Rect::new(area.x, area.y, area.width, 1));
+    let header = format!(
+        "Slack manifest · select it with the mouse · also in ~/{}",
+        MANIFEST_FILE
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(header, dim)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
     frame.render_widget(Paragraph::new(text.to_string()).scroll((scroll, 0)), body);
     let hint_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    frame.render_widget(Paragraph::new(Line::styled("↑↓ scroll | Esc back", dim)), hint_area);
+    frame.render_widget(
+        Paragraph::new(Line::styled("↑↓ scroll | Esc back", dim)),
+        hint_area,
+    );
 }
 
 /// Draws the modal with `hint` on its last row; returns the inside.
-fn draw_with_hint(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>, hint: &str) -> Rect {
+fn draw_with_hint(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    hint: &str,
+) -> Rect {
     let inner = draw_modal_frame(frame, area, title, &lines);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     let hint_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
-    frame.render_widget(Paragraph::new(Line::styled(hint.to_string(), Style::default().fg(Color::DarkGray))), hint_area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            hint.to_string(),
+            Style::default().fg(Color::DarkGray),
+        )),
+        hint_area,
+    );
     inner
 }
 
@@ -614,7 +782,11 @@ mod tests {
 
     #[test]
     fn blank_tokens_keep_saved_ones_and_are_required_otherwise() {
-        let mut blank = SetupForm { app_token: String::new(), bot_token: String::new(), ..form() };
+        let mut blank = SetupForm {
+            app_token: String::new(),
+            bot_token: String::new(),
+            ..form()
+        };
         assert!(check_form(&blank).is_err());
         blank.has_app_token = true;
         blank.has_bot_token = true;
@@ -624,8 +796,16 @@ mod tests {
 
     #[test]
     fn rejects_swapped_tokens_and_bad_names() {
-        assert!(check_form(&SetupForm { app_token: "xoxb-2".into(), ..form() }).is_err());
-        assert!(check_form(&SetupForm { bot_name: "Antoine Bot".into(), ..form() }).is_err());
+        assert!(check_form(&SetupForm {
+            app_token: "xoxb-2".into(),
+            ..form()
+        })
+        .is_err());
+        assert!(check_form(&SetupForm {
+            bot_name: "Antoine Bot".into(),
+            ..form()
+        })
+        .is_err());
     }
 
     #[test]
@@ -643,6 +823,9 @@ mod tests {
 
     #[test]
     fn only_slack_members_are_listed() {
-        assert_eq!(slack_members(&["slack:U1".into(), "telegram:9".into()]), vec!["U1"]);
+        assert_eq!(
+            slack_members(&["slack:U1".into(), "telegram:9".into()]),
+            vec!["U1"]
+        );
     }
 }

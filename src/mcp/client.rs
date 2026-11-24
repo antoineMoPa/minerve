@@ -5,7 +5,9 @@ use super::oauth::FileCredentialStore;
 use rmcp::model::{CallToolRequestParams, Tool};
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceExt};
 use rmcp::transport::auth::{AuthClient, AuthorizationManager};
-use rmcp::transport::streamable_http_client::{StreamableHttpClientTransportConfig, StreamableHttpError};
+use rmcp::transport::streamable_http_client::{
+    StreamableHttpClientTransportConfig, StreamableHttpError,
+};
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde::Deserialize;
 use serde_json::Value;
@@ -13,7 +15,9 @@ use std::collections::{BTreeMap, HashMap};
 
 pub enum ConnectError {
     /// The server answered 401: it needs a browser login. Holds its `WWW-Authenticate` header.
-    NeedsLogin { challenge: String },
+    NeedsLogin {
+        challenge: String,
+    },
     Failed(String),
 }
 
@@ -44,18 +48,26 @@ fn auth_challenge(error: &ClientInitializeError) -> Option<String> {
     None
 }
 
-fn header_map(headers: &BTreeMap<String, String>) -> Result<HashMap<http::HeaderName, http::HeaderValue>, String> {
+fn header_map(
+    headers: &BTreeMap<String, String>,
+) -> Result<HashMap<http::HeaderName, http::HeaderValue>, String> {
     headers
         .iter()
         .map(|(name, value)| {
-            let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|err| format!("header '{}': {}", name, err))?;
-            let header_value = http::HeaderValue::from_str(value).map_err(|err| format!("header '{}': {}", name, err))?;
+            let header_name = http::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|err| format!("header '{}': {}", name, err))?;
+            let header_value = http::HeaderValue::from_str(value)
+                .map_err(|err| format!("header '{}': {}", name, err))?;
             Ok((header_name, header_value))
         })
         .collect()
 }
 
-async fn connect_stdio(command: &str, args: &[String], env: &BTreeMap<String, String>) -> Result<RunningService<RoleClient, ()>, ConnectError> {
+async fn connect_stdio(
+    command: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+) -> Result<RunningService<RoleClient, ()>, ConnectError> {
     let mut process = tokio::process::Command::new(command);
     process.args(args).envs(env);
     // Its stderr is dropped: inherited, it would draw over the TUI.
@@ -69,19 +81,38 @@ async fn connect_stdio(command: &str, args: &[String], env: &BTreeMap<String, St
 /// Servers with a configured `Authorization` header use it as is. Others get rmcp's OAuth
 /// client, which sends the stored login when there is one; without one, the 401 of a server
 /// that needs a login becomes `ConnectError::NeedsLogin`.
-async fn connect_http(url: &str, headers: &BTreeMap<String, String>) -> Result<RunningService<RoleClient, ()>, ConnectError> {
-    let has_authorization_header = headers.keys().any(|name| name.eq_ignore_ascii_case("authorization"));
-    let transport_config = StreamableHttpClientTransportConfig::with_uri(url.to_string()).custom_headers(header_map(headers)?);
+async fn connect_http(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+) -> Result<RunningService<RoleClient, ()>, ConnectError> {
+    let has_authorization_header = headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case("authorization"));
+    let transport_config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
+        .custom_headers(header_map(headers)?);
     let http_client = reqwest_rmcp::Client::new();
     let result = if has_authorization_header {
-        ().serve(StreamableHttpClientTransport::with_client(http_client, transport_config)).await
+        ().serve(StreamableHttpClientTransport::with_client(
+            http_client,
+            transport_config,
+        ))
+        .await
     } else {
-        let mut manager = AuthorizationManager::new(url).await.map_err(|err| err.to_string())?;
+        let mut manager = AuthorizationManager::new(url)
+            .await
+            .map_err(|err| err.to_string())?;
         manager.set_credential_store(FileCredentialStore::new(url));
         // Loads the stored login, if any, so requests carry its token.
-        manager.initialize_from_store().await.map_err(|err| err.to_string())?;
+        manager
+            .initialize_from_store()
+            .await
+            .map_err(|err| err.to_string())?;
         let auth_client = AuthClient::new(http_client, manager);
-        ().serve(StreamableHttpClientTransport::with_client(auth_client, transport_config)).await
+        ().serve(StreamableHttpClientTransport::with_client(
+            auth_client,
+            transport_config,
+        ))
+        .await
     };
     result.map_err(|err| match auth_challenge(&err) {
         Some(challenge) if !has_authorization_header => ConnectError::NeedsLogin { challenge },
@@ -92,32 +123,61 @@ async fn connect_http(url: &str, headers: &BTreeMap<String, String>) -> Result<R
 impl McpServer {
     pub async fn connect(config: &McpServerConfig) -> Result<Self, ConnectError> {
         let service = match config {
-            McpServerConfig::Stdio { command, args, env } => connect_stdio(command, args, env).await?,
+            McpServerConfig::Stdio { command, args, env } => {
+                connect_stdio(command, args, env).await?
+            }
             McpServerConfig::Http { url, headers, .. } => connect_http(url, headers).await?,
         };
-        let tools = service.list_all_tools().await.map_err(|err| format!("tools/list: {}", err))?;
+        let tools = service
+            .list_all_tools()
+            .await
+            .map_err(|err| format!("tools/list: {}", err))?;
         Ok(Self { service, tools })
     }
 
     /// Runs a tool and returns its output as text for the model.
     /// A tool reporting `isError` still answers Ok: the model reads the error and can retry.
-    pub async fn call_tool(&self, tool_name: &str, arguments: serde_json::Map<String, Value>) -> Result<String, String> {
+    pub async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<String, String> {
         let params = CallToolRequestParams::new(tool_name.to_string()).with_arguments(arguments);
-        let result = self.service.call_tool(params).await.map_err(|err| err.to_string())?;
+        let result = self
+            .service
+            .call_tool(params)
+            .await
+            .map_err(|err| err.to_string())?;
         let content = serde_json::to_value(&result.content).expect("tool content serializes");
         let text = content_as_text(content.as_array().expect("tool content is a list"));
-        Ok(if result.is_error == Some(true) { format!("Error: {}", text) } else { text })
+        Ok(if result.is_error == Some(true) {
+            format!("Error: {}", text)
+        } else {
+            text
+        })
     }
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ToolContent {
-    Text { text: String },
-    Image { #[serde(rename = "mimeType")] mime_type: String },
-    Audio { #[serde(rename = "mimeType")] mime_type: String },
-    ResourceLink { uri: String },
-    Resource { resource: EmbeddedResource },
+    Text {
+        text: String,
+    },
+    Image {
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    Audio {
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    ResourceLink {
+        uri: String,
+    },
+    Resource {
+        resource: EmbeddedResource,
+    },
 }
 
 #[derive(Deserialize)]
@@ -131,17 +191,23 @@ struct EmbeddedResource {
 fn content_as_text(blocks: &[Value]) -> String {
     blocks
         .iter()
-        .map(|block| match serde_json::from_value::<ToolContent>(block.clone()) {
-            Ok(ToolContent::Text { text }) => text,
-            Ok(ToolContent::Image { mime_type }) => format!("[image ({}) not shown]", mime_type),
-            Ok(ToolContent::Audio { mime_type }) => format!("[audio ({}) not shown]", mime_type),
-            Ok(ToolContent::ResourceLink { uri }) => format!("[resource link: {}]", uri),
-            Ok(ToolContent::Resource { resource }) => match &resource.text {
-                Some(text) => format!("[resource {}]\n{}", resource.uri, text),
-                None => format!("[binary resource {} not shown]", resource.uri),
+        .map(
+            |block| match serde_json::from_value::<ToolContent>(block.clone()) {
+                Ok(ToolContent::Text { text }) => text,
+                Ok(ToolContent::Image { mime_type }) => {
+                    format!("[image ({}) not shown]", mime_type)
+                }
+                Ok(ToolContent::Audio { mime_type }) => {
+                    format!("[audio ({}) not shown]", mime_type)
+                }
+                Ok(ToolContent::ResourceLink { uri }) => format!("[resource link: {}]", uri),
+                Ok(ToolContent::Resource { resource }) => match &resource.text {
+                    Some(text) => format!("[resource {}]\n{}", resource.uri, text),
+                    None => format!("[binary resource {} not shown]", resource.uri),
+                },
+                Err(_) => block.to_string(),
             },
-            Err(_) => block.to_string(),
-        })
+        )
         .collect::<Vec<_>>()
         .join("\n")
 }

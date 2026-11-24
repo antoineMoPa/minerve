@@ -111,12 +111,25 @@ pub fn osc52_copy(text: &str) -> String {
 pub fn copy_with_system_tool(text: &str) -> bool {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let tools: &[(&str, &[&str])] = &[("pbcopy", &[]), ("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+    let tools: &[(&str, &[&str])] = &[
+        ("pbcopy", &[]),
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+    ];
     tools.iter().any(|(tool, args)| {
-        let Ok(mut child) = Command::new(tool).args(*args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+        let Ok(mut child) = Command::new(tool)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
             return false;
         };
-        let written = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        let written = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
         child.wait().is_ok_and(|status| status.success()) && written
     })
 }
@@ -161,20 +174,38 @@ mod tests {
 
     #[test]
     fn selection_follows_reading_order_even_when_dragged_backwards() {
-        let forward = ChatSelection { anchor: (2, 1), cursor: (4, 3), chat_top: 0 };
-        let backward = ChatSelection { anchor: (4, 3), cursor: (2, 1), chat_top: 0 };
+        let forward = ChatSelection {
+            anchor: (2, 1),
+            cursor: (4, 3),
+            chat_top: 0,
+        };
+        let backward = ChatSelection {
+            anchor: (4, 3),
+            cursor: (2, 1),
+            chat_top: 0,
+        };
         for selection in [forward, backward] {
             assert!(selection.contains(2, 1));
-            assert!(!selection.contains(1, 1), "before the start column on the first row");
+            assert!(
+                !selection.contains(1, 1),
+                "before the start column on the first row"
+            );
             assert!(selection.contains(0, 2), "middle rows are whole");
             assert!(selection.contains(4, 3));
-            assert!(!selection.contains(5, 3), "after the end column on the last row");
+            assert!(
+                !selection.contains(5, 3),
+                "after the end column on the last row"
+            );
         }
     }
 
     #[test]
     fn single_row_selection_is_bounded_on_both_sides() {
-        let selection = ChatSelection { anchor: (3, 0), cursor: (6, 0), chat_top: 0 };
+        let selection = ChatSelection {
+            anchor: (3, 0),
+            cursor: (6, 0),
+            chat_top: 0,
+        };
         assert!(selection.contains(3, 0) && selection.contains(6, 0));
         assert!(!selection.contains(2, 0) && !selection.contains(7, 0));
     }
@@ -192,7 +223,11 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         buffer.set_string(0, 0, "hello", Style::default());
         buffer.set_string(0, 1, "world", Style::default());
-        let selection = ChatSelection { anchor: (1, 0), cursor: (2, 1), chat_top: 0 };
+        let selection = ChatSelection {
+            anchor: (1, 0),
+            cursor: (2, 1),
+            chat_top: 0,
+        };
         assert_eq!(selected_text(&buffer, area, &selection), "ello\nwor");
     }
 

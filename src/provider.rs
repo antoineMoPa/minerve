@@ -90,7 +90,9 @@ impl ApiKeys {
             openrouter: std::env::var(OPENROUTER_API_KEY_ENV_VAR)
                 .ok()
                 .or(saved.openrouter_api_key),
-            openai: std::env::var(OPENAI_API_KEY_ENV_VAR).ok().or(saved.openai_api_key),
+            openai: std::env::var(OPENAI_API_KEY_ENV_VAR)
+                .ok()
+                .or(saved.openai_api_key),
             anthropic: std::env::var(ANTHROPIC_API_KEY_ENV_VAR)
                 .ok()
                 .or(saved.anthropic_api_key),

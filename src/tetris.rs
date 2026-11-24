@@ -53,7 +53,12 @@ struct Piece {
 
 impl Piece {
     fn spawn(kind: usize) -> Self {
-        Self { kind, x: WIDTH as i32 / 2, y: 1, offsets: SHAPES[kind] }
+        Self {
+            kind,
+            x: WIDTH as i32 / 2,
+            y: 1,
+            offsets: SHAPES[kind],
+        }
     }
 
     fn cells(&self) -> [(i32, i32); 4] {
@@ -61,7 +66,10 @@ impl Piece {
     }
 
     fn rotated(&self) -> Self {
-        Self { offsets: self.offsets.map(|(dx, dy)| (-dy, dx)), ..*self }
+        Self {
+            offsets: self.offsets.map(|(dx, dy)| (-dy, dx)),
+            ..*self
+        }
     }
 }
 
@@ -126,7 +134,9 @@ impl Tetris {
     }
 
     fn fall_interval(&self) -> Duration {
-        let ms = 800u64.saturating_sub(70 * u64::from(self.level() - 1)).max(100);
+        let ms = 800u64
+            .saturating_sub(70 * u64::from(self.level() - 1))
+            .max(100);
         Duration::from_millis(ms)
     }
 
@@ -139,7 +149,11 @@ impl Tetris {
     }
 
     fn try_move(&mut self, dx: i32, dy: i32) -> bool {
-        let moved = Piece { x: self.piece.x + dx, y: self.piece.y + dy, ..self.piece };
+        let moved = Piece {
+            x: self.piece.x + dx,
+            y: self.piece.y + dy,
+            ..self.piece
+        };
         if self.fits(&moved) {
             self.piece = moved;
             true
@@ -151,7 +165,10 @@ impl Tetris {
     fn rotate(&mut self) {
         let turned = self.piece.rotated();
         for kick in ROTATION_KICKS {
-            let candidate = Piece { x: turned.x + kick, ..turned };
+            let candidate = Piece {
+                x: turned.x + kick,
+                ..turned
+            };
             if self.fits(&candidate) {
                 self.piece = candidate;
                 return;
@@ -243,10 +260,24 @@ impl Tetris {
             return;
         }
 
-        let [_, rows, _] = Layout::vertical([Constraint::Min(0), Constraint::Length(board_h), Constraint::Min(0)]).areas(area);
-        let [_, centre, _] = Layout::horizontal([Constraint::Min(0), Constraint::Length(total_w), Constraint::Min(0)]).areas(rows);
-        let [board_area, _, panel] =
-            Layout::horizontal([Constraint::Length(board_w), Constraint::Length(2), Constraint::Length(panel_w)]).areas(centre);
+        let [_, rows, _] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(board_h),
+            Constraint::Min(0),
+        ])
+        .areas(area);
+        let [_, centre, _] = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(total_w),
+            Constraint::Min(0),
+        ])
+        .areas(rows);
+        let [board_area, _, panel] = Layout::horizontal([
+            Constraint::Length(board_w),
+            Constraint::Length(2),
+            Constraint::Length(panel_w),
+        ])
+        .areas(centre);
 
         // Locked cells plus the falling piece, drawn as one grid.
         let mut grid = self.board;

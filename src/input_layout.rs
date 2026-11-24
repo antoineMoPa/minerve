@@ -24,7 +24,11 @@ impl InputLayout {
     /// Cursor (char index) for a click at (cell column, row): the rightmost cursor position on
     /// that row at or left of the click. A click below the last row lands on the last row.
     pub fn cursor_at_cell(&self, col: u16, row: u16) -> usize {
-        let last_row = self.cursor_cells.last().expect("one cursor position per char, plus the end").1;
+        let last_row = self
+            .cursor_cells
+            .last()
+            .expect("one cursor position per char, plus the end")
+            .1;
         let row = row.min(last_row);
         self.cursor_cells
             .iter()
@@ -97,7 +101,11 @@ mod tests {
         let mut last = String::new();
         while x < end_x {
             last = buffer[(x, y)].symbol().to_string();
-            x += last.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>().max(1) as u16;
+            x += last
+                .chars()
+                .map(|c| c.width().unwrap_or(0))
+                .sum::<usize>()
+                .max(1) as u16;
         }
         assert_eq!(x, end_x, "cursor lands inside a wide char");
         last
@@ -143,7 +151,11 @@ mod tests {
                 if last == " " {
                     continue;
                 }
-                assert_eq!(symbol_before_cursor(&typed, width), last, "width {width}, typed {typed:?}");
+                assert_eq!(
+                    symbol_before_cursor(&typed, width),
+                    last,
+                    "width {width}, typed {typed:?}"
+                );
             }
         }
     }
@@ -171,7 +183,11 @@ mod tests {
             let layout = layout_input(text, width);
             for cursor in 0..=text.chars().count() {
                 let (col, row) = layout.cursor_cell(cursor);
-                assert_eq!(layout.cursor_at_cell(col, row), cursor, "width {width}, cursor {cursor}");
+                assert_eq!(
+                    layout.cursor_at_cell(col, row),
+                    cursor,
+                    "width {width}, cursor {cursor}"
+                );
             }
         }
     }

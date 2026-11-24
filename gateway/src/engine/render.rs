@@ -8,9 +8,17 @@ pub fn chunk(text: &str, max_len: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut rest = text.trim();
     while rest.chars().count() > max_len {
-        let limit = rest.char_indices().nth(max_len).map(|(i, _)| i).unwrap_or(rest.len());
+        let limit = rest
+            .char_indices()
+            .nth(max_len)
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
         // One char past the limit, so a break right at the limit counts.
-        let window_end = rest.char_indices().nth(max_len + 1).map(|(i, _)| i).unwrap_or(rest.len());
+        let window_end = rest
+            .char_indices()
+            .nth(max_len + 1)
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
         let window = &rest[..window_end];
         let cut = window
             .rfind("\n\n")
@@ -34,7 +42,11 @@ pub fn balance_fences(chunks: Vec<String>) -> Vec<String> {
     chunks
         .into_iter()
         .map(|piece| {
-            let mut piece = if open { format!("```\n{}", piece) } else { piece };
+            let mut piece = if open {
+                format!("```\n{}", piece)
+            } else {
+                piece
+            };
             open = piece.matches("```").count() % 2 == 1;
             if open {
                 piece.push_str("\n```");
@@ -53,7 +65,11 @@ pub fn truncate(text: &str, max_len: usize) -> String {
         return text.to_string();
     }
     let keep = max_len.saturating_sub(TRUNCATION_MARK.chars().count());
-    let end = text.char_indices().nth(keep).map(|(i, _)| i).unwrap_or(text.len());
+    let end = text
+        .char_indices()
+        .nth(keep)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
     format!("{}{}", text[..end].trim_end(), TRUNCATION_MARK)
 }
 
@@ -69,7 +85,10 @@ pub fn plan_reply(reply: &str, caps: Capabilities) -> (Vec<String>, Option<Strin
             (vec![truncate(reply, caps.max_len)], Some(note))
         }
         // Room for the fence `balance_fences` may add at each end.
-        _ => (balance_fences(chunk(reply, caps.max_len.saturating_sub(8).max(1))), None),
+        _ => (
+            balance_fences(chunk(reply, caps.max_len.saturating_sub(8).max(1))),
+            None,
+        ),
     }
 }
 
@@ -104,7 +123,11 @@ mod tests {
     }
 
     fn caps(overflow: Overflow) -> Capabilities {
-        Capabilities { max_len: 20, can_edit: false, overflow }
+        Capabilities {
+            max_len: 20,
+            can_edit: false,
+            overflow,
+        }
     }
 
     #[test]
@@ -120,13 +143,22 @@ mod tests {
         let (pieces, note) = plan_reply(&"b".repeat(100), caps(Overflow::Truncate));
         assert_eq!(pieces.len(), 1);
         assert!(note.unwrap().contains("100 chars"));
-        assert_eq!(plan_reply("fits", caps(Overflow::Truncate)), (vec!["fits".to_string()], None));
+        assert_eq!(
+            plan_reply("fits", caps(Overflow::Truncate)),
+            (vec!["fits".to_string()], None)
+        );
     }
 
     #[test]
     fn a_code_block_split_across_chunks_stays_a_code_block() {
-        let chunks = balance_fences(vec!["text\n```\nline 1".into(), "line 2\n```\nafter".into()]);
-        assert_eq!(chunks, vec!["text\n```\nline 1\n```", "```\nline 2\n```\nafter"]);
+        let chunks = balance_fences(vec![
+            "text\n```\nline 1".into(),
+            "line 2\n```\nafter".into(),
+        ]);
+        assert_eq!(
+            chunks,
+            vec!["text\n```\nline 1\n```", "```\nline 2\n```\nafter"]
+        );
     }
 
     #[test]

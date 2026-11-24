@@ -76,7 +76,20 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Optional abilities, told to the parent in `hello`. Only `--serve` acts on these commands,
 /// so the terminal app advertises none.
-pub const SERVE_FEATURES: &[&str] = &["serve", "cancel", "new_session", "intro", "goal", "models", "sessions", "api_keys", "mcp", "message_apps", "images", "budget"];
+pub const SERVE_FEATURES: &[&str] = &[
+    "serve",
+    "cancel",
+    "new_session",
+    "intro",
+    "goal",
+    "models",
+    "sessions",
+    "api_keys",
+    "mcp",
+    "message_apps",
+    "images",
+    "budget",
+];
 pub const TUI_FEATURES: &[&str] = &[];
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,24 +103,68 @@ pub enum AgentState {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MinerveEvent<'a> {
     /// `cwd`: the folder minerve works in, for a window to show.
-    Hello { version: u32, minerve_version: &'static str, features: &'static [&'static str], cwd: String },
-    Session { session_id: &'a str },
-    State { state: AgentState },
-    Message { message: &'a ChatCompletionMessage },
-    History { session_id: &'a str, messages: &'a [ChatCompletionMessage] },
+    Hello {
+        version: u32,
+        minerve_version: &'static str,
+        features: &'static [&'static str],
+        cwd: String,
+    },
+    Session {
+        session_id: &'a str,
+    },
+    State {
+        state: AgentState,
+    },
+    Message {
+        message: &'a ChatCompletionMessage,
+    },
+    History {
+        session_id: &'a str,
+        messages: &'a [ChatCompletionMessage],
+    },
     // Sent by `--serve` only, see the module docs.
-    Transcript { messages: &'a [(String, String)] },
-    Status { status: &'a str },
-    Notice { notice: &'a str },
-    Usage { summary: &'a str },
-    Intro { fps: u32, caption: &'a str, frames: &'a [&'static str], tips: &'a [&'static str] },
-    Models { current: &'a str, recent: &'a [String], lists: &'a [ModelListOut] },
-    Sessions { sessions: &'a [SessionOut] },
-    ApiKeys { openrouter: bool, openai: bool, anthropic: bool },
-    McpServers { servers: &'a [McpServerOut] },
-    MessageApps { slack: &'a MessageAppsOut },
+    Transcript {
+        messages: &'a [(String, String)],
+    },
+    Status {
+        status: &'a str,
+    },
+    Notice {
+        notice: &'a str,
+    },
+    Usage {
+        summary: &'a str,
+    },
+    Intro {
+        fps: u32,
+        caption: &'a str,
+        frames: &'a [&'static str],
+        tips: &'a [&'static str],
+    },
+    Models {
+        current: &'a str,
+        recent: &'a [String],
+        lists: &'a [ModelListOut],
+    },
+    Sessions {
+        sessions: &'a [SessionOut],
+    },
+    ApiKeys {
+        openrouter: bool,
+        openai: bool,
+        anthropic: bool,
+    },
+    McpServers {
+        servers: &'a [McpServerOut],
+    },
+    MessageApps {
+        slack: &'a MessageAppsOut,
+    },
     /// The Slack app manifest, answering `message_apps_manifest`.
-    MessageAppsManifest { manifest: &'a str, url: &'static str },
+    MessageAppsManifest {
+        manifest: &'a str,
+        url: &'static str,
+    },
 }
 
 /// Slack in `/message-apps`. `state` is not_set_up, disconnected, connecting, connected or failed;
@@ -166,9 +223,15 @@ pub enum ScrollTarget {
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ParentCommand {
-    Scroll { to: ScrollTarget },
-    ScrollBy { lines: i64 },
-    InsertText { text: String },
+    Scroll {
+        to: ScrollTarget,
+    },
+    ScrollBy {
+        lines: i64,
+    },
+    InsertText {
+        text: String,
+    },
     Submit {
         text: String,
         /// Image files attached to the prompt (needs the `images` feature).
@@ -179,27 +242,57 @@ pub enum ParentCommand {
     Cancel {},
     NewSession {},
     GetIntro {},
-    Goal { goal: String },
-    Budget { arg: String },
+    Goal {
+        goal: String,
+    },
+    Budget {
+        arg: String,
+    },
     ListModels {},
-    SetModel { model: String },
+    SetModel {
+        model: String,
+    },
     ListSessions {},
-    ResumeSession { id: String },
+    ResumeSession {
+        id: String,
+    },
     GetApiKeys {},
     MessageAppsStatus {},
-    MessageAppsSave { bot_name: String, app_token: Option<String>, bot_token: Option<String> },
+    MessageAppsSave {
+        bot_name: String,
+        app_token: Option<String>,
+        bot_token: Option<String>,
+    },
     MessageAppsStart {},
     MessageAppsStop {},
     MessageAppsLink {},
     MessageAppsCancelLink {},
-    MessageAppsManifest { bot_name: String },
+    MessageAppsManifest {
+        bot_name: String,
+    },
     ListMcp {},
-    McpConnect { name: String },
-    McpDisconnect { name: String },
-    McpLogin { name: String },
-    McpRemove { name: String },
-    McpAdd { name: String, command_or_url: String, env_or_headers: String },
-    SetApiKeys { openrouter: Option<String>, openai: Option<String>, anthropic: Option<String> },
+    McpConnect {
+        name: String,
+    },
+    McpDisconnect {
+        name: String,
+    },
+    McpLogin {
+        name: String,
+    },
+    McpRemove {
+        name: String,
+    },
+    McpAdd {
+        name: String,
+        command_or_url: String,
+        env_or_headers: String,
+    },
+    SetApiKeys {
+        openrouter: Option<String>,
+        openai: Option<String>,
+        anthropic: Option<String>,
+    },
 }
 
 pub struct ControlSocket {
@@ -221,12 +314,16 @@ impl ControlSocket {
                 err
             )
         })?;
-        let socket = Self { writer: Mutex::new(stream) };
+        let socket = Self {
+            writer: Mutex::new(stream),
+        };
         socket.send(&MinerveEvent::Hello {
             version: PROTOCOL_VERSION,
             minerve_version: env!("CARGO_PKG_VERSION"),
             features,
-            cwd: std::env::current_dir().map(|dir| dir.display().to_string()).unwrap_or_default(),
+            cwd: std::env::current_dir()
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_default(),
         });
         Ok(Some(socket))
     }
@@ -282,7 +379,10 @@ mod tests {
 
     #[test]
     fn events_are_tagged_by_type() {
-        let state = serde_json::to_string(&MinerveEvent::State { state: AgentState::WaitingForInput }).unwrap();
+        let state = serde_json::to_string(&MinerveEvent::State {
+            state: AgentState::WaitingForInput,
+        })
+        .unwrap();
         assert_eq!(state, r#"{"type":"state","state":"waiting_for_input"}"#);
         let hello = serde_json::to_string(&MinerveEvent::Hello {
             version: 1,
@@ -298,11 +398,26 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
-        let intro = serde_json::to_string(&MinerveEvent::Intro { fps: 24, caption: "c", frames: &["f"], tips: &["t"] }).unwrap();
-        assert_eq!(intro, r#"{"type":"intro","fps":24,"caption":"c","frames":["f"],"tips":["t"]}"#);
+        let intro = serde_json::to_string(&MinerveEvent::Intro {
+            fps: 24,
+            caption: "c",
+            frames: &["f"],
+            tips: &["t"],
+        })
+        .unwrap();
+        assert_eq!(
+            intro,
+            r#"{"type":"intro","fps":24,"caption":"c","frames":["f"],"tips":["t"]}"#
+        );
         let messages = [("user".to_string(), "hi".to_string())];
-        let transcript = serde_json::to_string(&MinerveEvent::Transcript { messages: &messages }).unwrap();
-        assert_eq!(transcript, r#"{"type":"transcript","messages":[["user","hi"]]}"#);
+        let transcript = serde_json::to_string(&MinerveEvent::Transcript {
+            messages: &messages,
+        })
+        .unwrap();
+        assert_eq!(
+            transcript,
+            r#"{"type":"transcript","messages":[["user","hi"]]}"#
+        );
         let status = serde_json::to_string(&MinerveEvent::Status { status: "" }).unwrap();
         assert_eq!(status, r#"{"type":"status","status":""}"#);
         let notice = serde_json::to_string(&MinerveEvent::Notice { notice: "n" }).unwrap();
@@ -314,12 +429,32 @@ mod tests {
     #[test]
     fn commands_parse_from_their_documented_lines() {
         let parse = |line: &str| serde_json::from_str::<ParentCommand>(line).unwrap();
-        assert_eq!(parse(r#"{"type":"scroll","to":"bottom"}"#), ParentCommand::Scroll { to: ScrollTarget::Bottom });
-        assert_eq!(parse(r#"{"type":"scroll_by","lines":-5}"#), ParentCommand::ScrollBy { lines: -5 });
-        assert_eq!(parse(r#"{"type":"submit","text":"hi"}"#), ParentCommand::Submit { text: "hi".into(), images: Vec::new() });
-        assert_eq!(parse(r#"{"type":"get_history"}"#), ParentCommand::GetHistory {});
+        assert_eq!(
+            parse(r#"{"type":"scroll","to":"bottom"}"#),
+            ParentCommand::Scroll {
+                to: ScrollTarget::Bottom
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"scroll_by","lines":-5}"#),
+            ParentCommand::ScrollBy { lines: -5 }
+        );
+        assert_eq!(
+            parse(r#"{"type":"submit","text":"hi"}"#),
+            ParentCommand::Submit {
+                text: "hi".into(),
+                images: Vec::new()
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"get_history"}"#),
+            ParentCommand::GetHistory {}
+        );
         assert_eq!(parse(r#"{"type":"cancel"}"#), ParentCommand::Cancel {});
-        assert_eq!(parse(r#"{"type":"new_session"}"#), ParentCommand::NewSession {});
+        assert_eq!(
+            parse(r#"{"type":"new_session"}"#),
+            ParentCommand::NewSession {}
+        );
         assert_eq!(parse(r#"{"type":"get_intro"}"#), ParentCommand::GetIntro {});
     }
 

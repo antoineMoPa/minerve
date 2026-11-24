@@ -44,10 +44,16 @@ pub enum SessionStart {
 /// Checks an id given with `--session-id`: a UUID no saved session uses yet.
 pub fn check_new_session_id(id: &str) -> Result<(), String> {
     if !is_session_id(id) {
-        return Err(format!("invalid session id {:?}: expected a lowercase hyphenated UUID", id));
+        return Err(format!(
+            "invalid session id {:?}: expected a lowercase hyphenated UUID",
+            id
+        ));
     }
     if session_path(id).exists() {
-        return Err(format!("session {} already exists: resume it with --resume={}", id, id));
+        return Err(format!(
+            "session {} already exists: resume it with --resume={}",
+            id, id
+        ));
     }
     Ok(())
 }

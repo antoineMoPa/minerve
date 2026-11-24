@@ -63,7 +63,8 @@ impl BootAnimation {
 
     /// When the clip stopped: the key press, or the natural end of the last frame.
     fn ended_at(&self) -> Option<Instant> {
-        let natural_end = self.started + Duration::from_micros(self.frames.len() as u64 * FRAME_MICROS);
+        let natural_end =
+            self.started + Duration::from_micros(self.frames.len() as u64 * FRAME_MICROS);
         (Instant::now() >= natural_end).then_some(natural_end)
     }
 

@@ -13,7 +13,10 @@ impl App {
             .filter(|provider| keys.get(*provider).is_some())
             .collect();
         for provider in keyed_providers.iter().copied() {
-            let api_key = keys.get(provider).expect("filtered on key presence").to_string();
+            let api_key = keys
+                .get(provider)
+                .expect("filtered on key presence")
+                .to_string();
             let minerve = self.minerve.clone();
             let ui = self.ui_tx.clone();
             crate::get_global_runtime().spawn(async move {
@@ -33,7 +36,8 @@ impl App {
     /// Opens the `/resume` picker over the saved sessions, most recent first.
     pub(super) fn open_session_picker(&mut self) {
         if self.minerve.request_in_flight.load(Ordering::SeqCst) {
-            self.status = String::from("wait for the running answer before resuming another session");
+            self.status =
+                String::from("wait for the running answer before resuming another session");
             return;
         }
         self.session_picker = Some(SessionPicker::new(crate::session::list_sessions()));
@@ -64,7 +68,8 @@ impl App {
     /// `/clear`: a fresh conversation in a new session. Refused while a turn runs, like `/resume`.
     pub(super) fn clear_conversation(&mut self) {
         if self.minerve.request_in_flight.load(Ordering::SeqCst) {
-            self.status = String::from("wait for the running answer before clearing the conversation");
+            self.status =
+                String::from("wait for the running answer before clearing the conversation");
             return;
         }
         self.minerve.start_new_session();
@@ -123,7 +128,9 @@ impl App {
                     self.status = format!("saved to {}", path.display());
                     self.setup_modal = None;
                 }
-                Err(err) => modal.set_error(format!("could not save ~/.minerve/keys.json: {}", err)),
+                Err(err) => {
+                    modal.set_error(format!("could not save ~/.minerve/keys.json: {}", err))
+                }
             },
         }
     }

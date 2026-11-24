@@ -30,13 +30,22 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(minerve_bin: PathBuf, workdir: PathBuf) -> Self {
-        Self { minerve_bin, workdir, running: Mutex::new(HashSet::new()) }
+        Self {
+            minerve_bin,
+            workdir,
+            running: Mutex::new(HashSet::new()),
+        }
     }
 
     /// Sends `prompt` in session `session_id` and returns what minerve answered to it.
     /// A session with no file yet starts with `--session-id`; minerve saves the file as it starts,
     /// so a turn that failed before that simply starts it again.
-    pub async fn run_turn(&self, session_id: &str, system_prompts: &[String], prompt: &str) -> Result<String, String> {
+    pub async fn run_turn(
+        &self,
+        session_id: &str,
+        system_prompts: &[String],
+        prompt: &str,
+    ) -> Result<String, String> {
         let path = session_file(session_id)?;
         let is_new = !path.exists();
         let mut command = Command::new(&self.minerve_bin);
@@ -94,9 +103,14 @@ impl Agent {
         }
         let output = output.map_err(|err| format!("minerve did not finish: {}", err))?;
         if !output.status.success() {
-            return Err(format!("minerve failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
+            return Err(format!(
+                "minerve failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
-        let text = std::fs::read_to_string(&path).map_err(|err| format!("could not read {}: {}", path.display(), err))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|err| format!("could not read {}: {}", path.display(), err))?;
         last_assistant_reply(&text).ok_or_else(|| "minerve produced no reply".to_string())
     }
 
@@ -134,7 +148,9 @@ pub fn session_cost(session_id: &str) -> SessionCost {
 
 /// Where minerve saves a session. Errors only when there is no home directory.
 pub fn session_file(session_id: &str) -> Result<PathBuf, String> {
-    Ok(dirs::home_dir().ok_or("no home directory")?.join(format!(".minerve/sessions/{}.json", session_id)))
+    Ok(dirs::home_dir()
+        .ok_or("no home directory")?
+        .join(format!(".minerve/sessions/{}.json", session_id)))
 }
 
 /// The last assistant text after the last user message: this turn's answer. `None` when the turn
@@ -142,12 +158,19 @@ pub fn session_file(session_id: &str) -> Result<PathBuf, String> {
 pub fn last_assistant_reply(session_json: &str) -> Option<String> {
     let session: serde_json::Value = serde_json::from_str(session_json).ok()?;
     let messages = session["messages"].as_array()?;
-    let turn_start = messages.iter().rposition(|message| message["role"] == "user").map_or(0, |i| i + 1);
+    let turn_start = messages
+        .iter()
+        .rposition(|message| message["role"] == "user")
+        .map_or(0, |i| i + 1);
     messages[turn_start..]
         .iter()
         .rev()
         .filter(|message| message["role"] == "assistant")
-        .find_map(|message| message["content"].as_str().filter(|text| !text.trim().is_empty()))
+        .find_map(|message| {
+            message["content"]
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+        })
         .map(String::from)
 }
 
@@ -177,6 +200,9 @@ mod tests {
 
     #[test]
     fn none_without_assistant_text() {
-        assert_eq!(last_assistant_reply(r#"{"messages":[{"role":"user","content":"hi"}]}"#), None);
+        assert_eq!(
+            last_assistant_reply(r#"{"messages":[{"role":"user","content":"hi"}]}"#),
+            None
+        );
     }
 }

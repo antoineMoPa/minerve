@@ -25,9 +25,15 @@ pub fn render(text: &str) -> Vec<Line<'static>> {
         }
         if raw.trim_start().starts_with("```") {
             in_code = !in_code;
-            out.push(Line::styled(raw.to_string(), Style::default().fg(Color::Yellow)));
+            out.push(Line::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Yellow),
+            ));
         } else if in_code {
-            out.push(Line::styled(raw.to_string(), Style::default().fg(Color::Yellow)));
+            out.push(Line::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Yellow),
+            ));
         } else {
             out.push(render_line(raw));
         }
@@ -128,7 +134,11 @@ fn render_table(rows: &[&str]) -> Vec<Line<'static>> {
         Line::from(spans)
     };
 
-    let mut out = vec![border("┌", "┬", "┐"), row_line(&header_cells, true), border("├", "┼", "┤")];
+    let mut out = vec![
+        border("┌", "┬", "┐"),
+        row_line(&header_cells, true),
+        border("├", "┼", "┤"),
+    ];
     for row in &body_cells {
         out.push(row_line(row, false));
     }
@@ -141,7 +151,9 @@ fn render_line(raw: &str) -> Line<'static> {
     let indent = &raw[..raw.len() - trimmed.len()];
 
     if let Some(rest) = heading(trimmed) {
-        let style = Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan);
+        let style = Style::default()
+            .add_modifier(Modifier::BOLD)
+            .fg(Color::Cyan);
         return Line::from(Span::styled(rest.to_string(), style));
     }
 
@@ -204,10 +216,7 @@ fn inline(text: &str) -> Vec<Span<'static>> {
             if let Some(end) = chars[i + 1..].iter().position(|c| *c == '`') {
                 flush(&mut plain, &mut spans, bold, italic);
                 let code: String = chars[i + 1..i + 1 + end].iter().collect();
-                spans.push(Span::styled(
-                    code,
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(code, Style::default().fg(Color::Yellow)));
                 i += end + 2;
                 continue;
             }
@@ -288,7 +297,10 @@ mod tests {
         let lines = render("```\n**raw** `x`\n```\n**after**");
         assert_eq!(text_of(&lines[1]), "**raw** `x`");
         assert_eq!(text_of(&lines[0]), "```");
-        assert!(lines[3].spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(lines[3].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
     }
 
     #[test]
@@ -308,7 +320,10 @@ mod tests {
     fn spaced_asterisks_are_literal() {
         let lines = render("2 * 3 * 4");
         assert_eq!(text_of(&lines[0]), "2 * 3 * 4");
-        assert!(!lines[0].spans.iter().any(|s| s.style.add_modifier.contains(Modifier::ITALIC)));
+        assert!(!lines[0]
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::ITALIC)));
     }
 
     #[test]
@@ -316,7 +331,10 @@ mod tests {
         let lines = render("***triple***");
         assert_eq!(text_of(&lines[0]), "triple");
         let s = &lines[0].spans[0];
-        assert!(s.style.add_modifier.contains(Modifier::BOLD | Modifier::ITALIC));
+        assert!(s
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::ITALIC));
     }
 
     #[test]

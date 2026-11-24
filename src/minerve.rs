@@ -57,8 +57,7 @@ async fn post_chat_completions(
         return Err(format!("{}: {}", status, body));
     }
 
-    serde_json::from_str(&body)
-        .map_err(|err| format!("Unexpected response ({}): {}", err, body))
+    serde_json::from_str(&body).map_err(|err| format!("Unexpected response ({}): {}", err, body))
 }
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,15 +65,15 @@ use std::sync::Mutex;
 use tokio::sync::Notify;
 
 use crate::anthropic;
+use crate::chat::PromptAuthor;
+use crate::control_socket::{AgentState, ControlSocket, MinerveEvent};
+use crate::goal;
+use crate::mcp::McpServers;
 use crate::openrouter::OpenRouterConnection;
 use crate::provider::{ActiveModel, ApiKeys, Provider};
 use crate::session::{self, SessionFile, SessionStart};
-use crate::mcp::McpServers;
 use crate::tools::registry::get_tool_registry;
 use crate::tools::utils::cap_tool_output;
-use crate::control_socket::{AgentState, ControlSocket, MinerveEvent};
-use crate::chat::PromptAuthor;
-use crate::goal;
 use crate::ui::{send_notice, send_status, update_chat_ui, UiSender};
 use crate::{
     ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole,
@@ -118,13 +117,18 @@ pub fn get_system_prompt() -> String {
 }
 
 /// Built-in tools first, then MCP server tools.
-fn get_tool_definitions(uses_cache_breakpoints: bool, mcp: &McpServers) -> Option<Vec<ChatCompletionToolDefinition>> {
+fn get_tool_definitions(
+    uses_cache_breakpoints: bool,
+    mcp: &McpServers,
+) -> Option<Vec<ChatCompletionToolDefinition>> {
     let registry = get_tool_registry();
-    let builtin_functions = registry.values().map(|tool| ChatCompletionFunctionDefinition {
-        name: tool.name().to_string(),
-        description: Some(tool.description().to_string()),
-        parameters: Some(tool.function_definition()),
-    });
+    let builtin_functions = registry
+        .values()
+        .map(|tool| ChatCompletionFunctionDefinition {
+            name: tool.name().to_string(),
+            description: Some(tool.description().to_string()),
+            parameters: Some(tool.function_definition()),
+        });
     let mut tools: Vec<ChatCompletionToolDefinition> = builtin_functions
         .chain(mcp.function_definitions())
         .map(|function| ChatCompletionToolDefinition {
@@ -274,7 +278,10 @@ pub async fn handle_tool_call(
     }
     if let Some(mcp_result) = mcp.call(tool_name, args_str).await {
         return match mcp_result {
-            Ok(output) => ToolCallResult::Success(ChatCompletionMessage::tool_result(tool_call.id.clone(), output)),
+            Ok(output) => ToolCallResult::Success(ChatCompletionMessage::tool_result(
+                tool_call.id.clone(),
+                output,
+            )),
             Err(err) => ToolCallResult::Error(format!("MCP tool '{}': {}", tool_name, err)),
         };
     }
@@ -322,7 +329,10 @@ fn drop_tool_outputs_and_images_of_previous_prompts(messages: &mut [ChatCompleti
             msg.content = Some(String::from("[cleaned from history]"));
         }
         for image in std::mem::take(&mut msg.images) {
-            let note = format!("[image {} no longer attached; open it with view_image if needed]", image.display());
+            let note = format!(
+                "[image {} no longer attached; open it with view_image if needed]",
+                image.display()
+            );
             msg.content = Some(match msg.content.take() {
                 Some(text) => format!("{}\n{}", text, note),
                 None => note,
@@ -348,7 +358,12 @@ impl Minerve {
     }
 
     /// Sets the provider keys entered in the setup modal. A None key keeps the key already held.
-    pub fn set_api_keys(&self, openrouter: Option<String>, openai: Option<String>, anthropic: Option<String>) {
+    pub fn set_api_keys(
+        &self,
+        openrouter: Option<String>,
+        openai: Option<String>,
+        anthropic: Option<String>,
+    ) {
         let mut keys = self.api_keys.lock().unwrap();
         if openrouter.is_some() {
             keys.openrouter = openrouter;
@@ -362,7 +377,12 @@ impl Minerve {
     }
 
     /// Fails when an image of the history cannot be read.
-    fn build_request(&self, model: &ActiveModel, history: &[ChatCompletionMessage], mcp: &McpServers) -> Result<ChatCompletionRequest, String> {
+    fn build_request(
+        &self,
+        model: &ActiveModel,
+        history: &[ChatCompletionMessage],
+        mcp: &McpServers,
+    ) -> Result<ChatCompletionRequest, String> {
         Ok(ChatCompletionRequest {
             model: model.api_model.clone(),
             messages: build_request_messages(history, model.uses_cache_breakpoints)?,
@@ -375,14 +395,22 @@ impl Minerve {
     /// URL and key of the API the model is served from. Fails when that provider has no key set.
     pub(crate) fn endpoint_for(&self, model: &ActiveModel) -> Result<(String, String), String> {
         let url = model.provider.request_url(&self.base_url);
-        let api_key = self.api_keys.lock().unwrap().for_provider(model.provider)?.to_string();
+        let api_key = self
+            .api_keys
+            .lock()
+            .unwrap()
+            .for_provider(model.provider)?
+            .to_string();
         Ok((url, api_key))
     }
 }
 
 /// Breakpoints, when the model needs them, go after the system prompt and on the latest
 /// message, like opencode does: the next request reads everything up to there from cache.
-fn build_request_messages(history: &[ChatCompletionMessage], uses_cache_breakpoints: bool) -> Result<Vec<RequestMessage>, String> {
+fn build_request_messages(
+    history: &[ChatCompletionMessage],
+    uses_cache_breakpoints: bool,
+) -> Result<Vec<RequestMessage>, String> {
     let history = crate::chat::with_tool_images_in_user_messages(
         crate::chat::with_placeholder_results_for_unanswered_tool_calls(history),
     );
@@ -522,7 +550,10 @@ impl Minerve {
     pub fn send_history_to_control(&self) {
         let session_id = self.current_session_id();
         let messages = self.messages.lock().unwrap();
-        self.send_control_event(&MinerveEvent::History { session_id: &session_id, messages: &messages });
+        self.send_control_event(&MinerveEvent::History {
+            session_id: &session_id,
+            messages: &messages,
+        });
     }
 
     /// Starts a new session, or continues a saved one.
@@ -564,8 +595,12 @@ impl Minerve {
         if save_now {
             minerve.save_session();
         }
-        minerve.send_control_event(&MinerveEvent::Session { session_id: &minerve.current_session_id() });
-        minerve.send_control_event(&MinerveEvent::State { state: AgentState::WaitingForInput });
+        minerve.send_control_event(&MinerveEvent::Session {
+            session_id: &minerve.current_session_id(),
+        });
+        minerve.send_control_event(&MinerveEvent::State {
+            state: AgentState::WaitingForInput,
+        });
         minerve
     }
 
@@ -594,7 +629,8 @@ impl Minerve {
     /// `/budget <arg>`: sets, drops or shows the budget, and says which.
     pub fn budget_command(&self, arg: &str) -> String {
         let reports_cost = self.active_model().provider == Provider::OpenRouter;
-        self.budget.command(arg, self.token_counter.current_cost_usd(), reports_cost)
+        self.budget
+            .command(arg, self.token_counter.current_cost_usd(), reports_cost)
     }
 
     /// The notice to pause with, once the session cost the budget.
@@ -629,7 +665,9 @@ impl Minerve {
         self.token_counter.restore(&UsageSnapshot::default());
         *self.messages.lock().unwrap() = new_session_messages(&self.extra_system_prompts);
         *self.session_id.lock().unwrap() = uuid::Uuid::new_v4().to_string();
-        self.send_control_event(&MinerveEvent::Session { session_id: &self.current_session_id() });
+        self.send_control_event(&MinerveEvent::Session {
+            session_id: &self.current_session_id(),
+        });
     }
 
     /// Continues another saved session: its messages, id and usage replace the current ones.
@@ -638,14 +676,18 @@ impl Minerve {
         self.token_counter.restore(&file.usage);
         *self.messages.lock().unwrap() = file.messages;
         *self.session_id.lock().unwrap() = file.id;
-        self.send_control_event(&MinerveEvent::Session { session_id: &self.current_session_id() });
+        self.send_control_event(&MinerveEvent::Session {
+            session_id: &self.current_session_id(),
+        });
     }
 
     /// Marks a turn as running and adds the user's prompt to the conversation.
     fn start_turn(&self, prompt: ChatCompletionMessage, ui: &UiSender) {
         self.request_in_flight.store(true, Ordering::SeqCst);
         self.cancel_requested.store(false, Ordering::SeqCst);
-        self.send_control_event(&MinerveEvent::State { state: AgentState::Working });
+        self.send_control_event(&MinerveEvent::State {
+            state: AgentState::Working,
+        });
         self.add_prompt(prompt, ui);
         send_status(ui, "working...");
     }
@@ -660,7 +702,9 @@ impl Minerve {
     fn end_turn(&self, ui: &UiSender) {
         self.save_session();
         self.request_in_flight.store(false, Ordering::SeqCst);
-        self.send_control_event(&MinerveEvent::State { state: AgentState::WaitingForInput });
+        self.send_control_event(&MinerveEvent::State {
+            state: AgentState::WaitingForInput,
+        });
         send_status(ui, "");
     }
 
@@ -700,7 +744,10 @@ impl Minerve {
             let cancelled = self.cancel_notify.notified();
             tokio::pin!(cancelled);
             cancelled.as_mut().enable();
-            let chat_result = match self.endpoint_for(&model).and_then(|endpoint| Ok((endpoint, request?))) {
+            let chat_result = match self
+                .endpoint_for(&model)
+                .and_then(|endpoint| Ok((endpoint, request?)))
+            {
                 Err(err) => Some(Err(err)),
                 Ok(_) if cancel_requested.load(Ordering::SeqCst) => None,
                 Ok(((url, api_key), request)) => {
@@ -763,8 +810,17 @@ impl Minerve {
     }
 
     /// Sends a prompt typed by the user, with the image files pasted into it.
-    pub fn chat_with_arc(self: Arc<Self>, user_input: String, images: Vec<PathBuf>, ui: UiSender, is_headless: bool) {
-        self.start_turn(ChatCompletionMessage::user_with_images(user_input, images), &ui);
+    pub fn chat_with_arc(
+        self: Arc<Self>,
+        user_input: String,
+        images: Vec<PathBuf>,
+        ui: UiSender,
+        is_headless: bool,
+    ) {
+        self.start_turn(
+            ChatCompletionMessage::user_with_images(user_input, images),
+            &ui,
+        );
         crate::get_global_runtime().spawn(async move {
             // A failed request is already shown in the chat.
             let _ = self.run_turn(&ui, is_headless).await;
@@ -801,7 +857,10 @@ impl Minerve {
                     outcome = goal::GoalOutcome::Cancelled;
                     break;
                 }
-                send_status(&ui, format!("goal: evaluating turn {}/{}...", turn, goal::MAX_GOAL_TURNS));
+                send_status(
+                    &ui,
+                    format!("goal: evaluating turn {}/{}...", turn, goal::MAX_GOAL_TURNS),
+                );
                 {
                     let messages = self.messages.lock().unwrap();
                     goal_messages.extend_from_slice(&messages[copied_until..]);
@@ -823,22 +882,28 @@ impl Minerve {
                 };
                 match verdict.status {
                     goal::GoalStatus::Reached => {
-                        outcome = goal::GoalOutcome::Reached { turns: turn, evaluator_model_id, reason: verdict.reason };
+                        outcome = goal::GoalOutcome::Reached {
+                            turns: turn,
+                            evaluator_model_id,
+                            reason: verdict.reason,
+                        };
                         break;
                     }
                     goal::GoalStatus::Stalled => {
-                        outcome = goal::GoalOutcome::Stalled { turns: turn, evaluator_model_id, reason: verdict.reason };
+                        outcome = goal::GoalOutcome::Stalled {
+                            turns: turn,
+                            evaluator_model_id,
+                            reason: verdict.reason,
+                        };
                         break;
                     }
-                    goal::GoalStatus::NotReached => {
-                        self.add_prompt(
-                            ChatCompletionMessage::authored_prompt(
-                                PromptAuthor::GoalEvaluator,
-                                goal::continue_prompt(&goal, &verdict.reason),
-                            ),
-                            &ui,
-                        )
-                    }
+                    goal::GoalStatus::NotReached => self.add_prompt(
+                        ChatCompletionMessage::authored_prompt(
+                            PromptAuthor::GoalEvaluator,
+                            goal::continue_prompt(&goal, &verdict.reason),
+                        ),
+                        &ui,
+                    ),
                 }
             }
             send_notice(&ui, outcome.notice());
@@ -854,7 +919,10 @@ mod tests {
     #[test]
     fn a_new_prompt_drops_earlier_images_and_names_them() {
         let mut messages = vec![
-            ChatCompletionMessage::user_with_images(String::from("look [Image #1]"), vec![PathBuf::from("/a.png")]),
+            ChatCompletionMessage::user_with_images(
+                String::from("look [Image #1]"),
+                vec![PathBuf::from("/a.png")],
+            ),
             ChatCompletionMessage {
                 images: vec![PathBuf::from("/b.png")],
                 ..ChatCompletionMessage::tool_result(String::from("1"), String::from("attached"))

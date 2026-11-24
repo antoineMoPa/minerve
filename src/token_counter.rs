@@ -68,12 +68,17 @@ impl TokenCounter {
 
     /// Replaces the totals with the saved ones. Used when a session is resumed.
     pub fn restore(&self, usage: &UsageSnapshot) {
-        self.prompt_tokens.store(usage.prompt_tokens, Ordering::SeqCst);
-        self.cached_prompt_tokens.store(usage.cached_prompt_tokens, Ordering::SeqCst);
-        self.completion_tokens.store(usage.completion_tokens, Ordering::SeqCst);
+        self.prompt_tokens
+            .store(usage.prompt_tokens, Ordering::SeqCst);
+        self.cached_prompt_tokens
+            .store(usage.cached_prompt_tokens, Ordering::SeqCst);
+        self.completion_tokens
+            .store(usage.completion_tokens, Ordering::SeqCst);
         *self.cost_usd.lock().unwrap() = usage.cost_usd;
-        self.requests_without_cost.store(usage.requests_without_cost, Ordering::SeqCst);
-        self.last_prompt_tokens.store(usage.last_prompt_tokens, Ordering::SeqCst);
+        self.requests_without_cost
+            .store(usage.requests_without_cost, Ordering::SeqCst);
+        self.last_prompt_tokens
+            .store(usage.last_prompt_tokens, Ordering::SeqCst);
     }
 
     pub fn increment_prompt(&self, count: usize) {
@@ -164,9 +169,10 @@ impl TokenCounter {
                 format_tokens(window),
                 last_prompt as f64 * 100.0 / window as f64
             )),
-            None if last_prompt > 0 => {
-                summary.push_str(&format!(" | Context: {} tokens", format_tokens(last_prompt)))
-            }
+            None if last_prompt > 0 => summary.push_str(&format!(
+                " | Context: {} tokens",
+                format_tokens(last_prompt)
+            )),
             None => {}
         }
         summary
@@ -183,7 +189,9 @@ mod tests {
         counter.add_request_cost(None);
         assert!(counter.format_usage_summary().contains("Cost: n/a"));
         counter.add_request_cost(Some(0.01));
-        assert!(counter.format_usage_summary().contains("Cost: $0.0100 + n/a"));
+        assert!(counter
+            .format_usage_summary()
+            .contains("Cost: $0.0100 + n/a"));
         let counter = TokenCounter::new();
         counter.add_request_cost(Some(0.01));
         assert!(counter.format_usage_summary().ends_with("Cost: $0.0100"));
@@ -196,7 +204,11 @@ mod tests {
         counter.set_last_prompt_tokens(250_000);
         counter.set_context_window(1_000_000);
         let summary = counter.format_usage_summary();
-        assert!(summary.ends_with("| Context: 250.0k / 1.0m tokens (25.0%)"), "{}", summary);
+        assert!(
+            summary.ends_with("| Context: 250.0k / 1.0m tokens (25.0%)"),
+            "{}",
+            summary
+        );
     }
 
     #[test]
@@ -238,7 +250,11 @@ mod tests {
         resumed.restore(&loaded);
         assert_eq!(resumed.snapshot(), saved);
         let summary = resumed.format_usage_summary();
-        assert!(summary.contains("Sent: 1.2k (33% cached) | Received: 300 | Cost: $0.2500 + n/a"), "{}", summary);
+        assert!(
+            summary.contains("Sent: 1.2k (33% cached) | Received: 300 | Cost: $0.2500 + n/a"),
+            "{}",
+            summary
+        );
         assert!(summary.ends_with("| Context: 900 tokens"), "{}", summary);
     }
 

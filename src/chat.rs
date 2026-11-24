@@ -115,7 +115,9 @@ pub fn with_placeholder_results_for_unanswered_tool_calls(
             continue;
         };
         let mut answered = Vec::new();
-        while index < history.len() && matches!(history[index].role, ChatCompletionMessageRole::Tool) {
+        while index < history.len()
+            && matches!(history[index].role, ChatCompletionMessageRole::Tool)
+        {
             if let Some(id) = &history[index].tool_call_id {
                 answered.push(id.clone());
             }
@@ -137,7 +139,9 @@ pub fn with_placeholder_results_for_unanswered_tool_calls(
 /// OpenAI takes only text in tool messages. Images of tool results are moved, for the request
 /// only, to a user message right after the run of tool messages they belong to. Anthropic
 /// merges that message with the tool results, so it works there too.
-pub fn with_tool_images_in_user_messages(history: Vec<ChatCompletionMessage>) -> Vec<ChatCompletionMessage> {
+pub fn with_tool_images_in_user_messages(
+    history: Vec<ChatCompletionMessage>,
+) -> Vec<ChatCompletionMessage> {
     let mut out = Vec::with_capacity(history.len());
     let mut pending_images: Vec<PathBuf> = Vec::new();
     for mut message in history {
@@ -157,8 +161,17 @@ pub fn with_tool_images_in_user_messages(history: Vec<ChatCompletionMessage>) ->
 }
 
 fn tool_images_message(images: Vec<PathBuf>) -> ChatCompletionMessage {
-    let paths: Vec<String> = images.iter().map(|path| path.display().to_string()).collect();
-    ChatCompletionMessage::user_with_images(format!("Images opened by the tool calls above: {}", paths.join(", ")), images)
+    let paths: Vec<String> = images
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    ChatCompletionMessage::user_with_images(
+        format!(
+            "Images opened by the tool calls above: {}",
+            paths.join(", ")
+        ),
+        images,
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,7 +287,10 @@ impl Serialize for RequestImage {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry("url", &format!("data:{};base64,{}", self.media_type, self.base64_data))?;
+        map.serialize_entry(
+            "url",
+            &format!("data:{};base64,{}", self.media_type, self.base64_data),
+        )?;
         map.end()
     }
 }
@@ -282,9 +298,14 @@ impl Serialize for RequestImage {
 impl RequestImage {
     /// Reads and encodes an image file. Fails when the file cannot be read or is not an image.
     pub fn read(path: &Path) -> Result<Self, String> {
-        let media_type = image_media_type(path)
-            .ok_or_else(|| format!("{} is not an image file (png, jpg, gif or webp)", path.display()))?;
-        let bytes = std::fs::read(path).map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
+        let media_type = image_media_type(path).ok_or_else(|| {
+            format!(
+                "{} is not an image file (png, jpg, gif or webp)",
+                path.display()
+            )
+        })?;
+        let bytes = std::fs::read(path)
+            .map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
         Ok(Self {
             media_type,
             base64_data: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -313,7 +334,10 @@ impl RequestMessage {
                 });
             }
             if let Some(text) = &message.content {
-                parts.push(RequestPart::Text { text: text.clone(), cache_control: None });
+                parts.push(RequestPart::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                });
             }
             Some(RequestContent::Parts(parts))
         };
@@ -328,12 +352,19 @@ impl RequestMessage {
     /// Puts the breakpoint on the last content part.
     pub fn add_cache_breakpoint(&mut self) {
         let mut parts = match self.content.take() {
-            Some(RequestContent::Text(text)) => vec![RequestPart::Text { text, cache_control: None }],
+            Some(RequestContent::Text(text)) => vec![RequestPart::Text {
+                text,
+                cache_control: None,
+            }],
             Some(RequestContent::Parts(parts)) => parts,
             None => panic!("cache breakpoint on a message without content"),
         };
-        match parts.last_mut().expect("cache breakpoint on a message without content parts") {
-            RequestPart::Text { cache_control, .. } | RequestPart::ImageUrl { cache_control, .. } => {
+        match parts
+            .last_mut()
+            .expect("cache breakpoint on a message without content parts")
+        {
+            RequestPart::Text { cache_control, .. }
+            | RequestPart::ImageUrl { cache_control, .. } => {
                 *cache_control = Some(EPHEMERAL_CACHE_CONTROL);
             }
         }
@@ -390,7 +421,8 @@ mod tests {
 
     #[test]
     fn image_part_is_a_data_url_in_the_chat_completions_shape() {
-        let image = std::env::temp_dir().join(format!("minerve-chat-test-{}.jpg", uuid::Uuid::new_v4()));
+        let image =
+            std::env::temp_dir().join(format!("minerve-chat-test-{}.jpg", uuid::Uuid::new_v4()));
         std::fs::write(&image, [1u8, 2, 3]).unwrap();
         let mut message = RequestMessage::from_message(&ChatCompletionMessage::user_with_images(
             String::from("what is this?"),
@@ -412,7 +444,10 @@ mod tests {
 
     #[test]
     fn missing_image_fails_the_request_with_its_path() {
-        let message = ChatCompletionMessage::user_with_images(String::from("hi"), vec![PathBuf::from("/nope/x.png")]);
+        let message = ChatCompletionMessage::user_with_images(
+            String::from("hi"),
+            vec![PathBuf::from("/nope/x.png")],
+        );
         let err = RequestMessage::from_message(&message).unwrap_err();
         assert!(err.contains("/nope/x.png"), "{}", err);
     }
@@ -421,7 +456,8 @@ mod tests {
     fn tool_images_follow_the_run_of_tool_results() {
         let mut call = ChatCompletionMessage::assistant(String::new());
         call.tool_calls = Some(vec![]);
-        let mut with_image = ChatCompletionMessage::tool_result(String::from("1"), String::from("attached"));
+        let mut with_image =
+            ChatCompletionMessage::tool_result(String::from("1"), String::from("attached"));
         with_image.images = vec![PathBuf::from("/a.png")];
         let history = vec![
             call,
@@ -439,7 +475,8 @@ mod tests {
 
     #[test]
     fn messages_saved_before_images_still_load() {
-        let message: ChatCompletionMessage = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        let message: ChatCompletionMessage =
+            serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
         assert!(message.images.is_empty());
         assert!(!serde_json::to_string(&message).unwrap().contains("images"));
     }

@@ -71,7 +71,9 @@ mod tests {
         for step in 0..500 {
             let shown = tips.visible_text(start + TYPING_STEP * step);
             assert!(
-                PRO_TIPS.iter().any(|text| format!("Pro tip: {text}").starts_with(&shown)),
+                PRO_TIPS
+                    .iter()
+                    .any(|text| format!("Pro tip: {text}").starts_with(&shown)),
                 "{shown:?} is not a prefix of any tip"
             );
         }
@@ -101,6 +103,9 @@ mod tests {
         let mut tips = ProTips::new(start);
         tips.restart_idle_delay(start + IDLE_DELAY / 2);
         assert_eq!(tips.visible_text(start + IDLE_DELAY + TYPING_STEP * 5), "");
-        assert_eq!(tips.visible_text(start + IDLE_DELAY / 2 + IDLE_DELAY + TYPING_STEP * 3), "Pro");
+        assert_eq!(
+            tips.visible_text(start + IDLE_DELAY / 2 + IDLE_DELAY + TYPING_STEP * 3),
+            "Pro"
+        );
     }
 }

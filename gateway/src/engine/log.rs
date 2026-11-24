@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 pub fn log_path() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(".minerve/message-apps.log")
+    dirs::home_dir()
+        .expect("no home directory")
+        .join(".minerve/message-apps.log")
 }
 
 pub fn log(line: impl AsRef<str>) {
@@ -21,7 +23,11 @@ fn log_to(path: &Path, line: &str, max_bytes: u64) {
     if std::fs::metadata(path).is_ok_and(|meta| meta.len() >= max_bytes) {
         let _ = std::fs::rename(path, rotated_path(path));
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(file, "{} {}", seconds_since_epoch(), line);
     }
 }
@@ -55,12 +61,17 @@ mod tests {
         log_to(&path, "third", 20);
         let current = std::fs::read_to_string(&path).unwrap();
         let old = std::fs::read_to_string(rotated_path(&path)).unwrap();
-        assert!(current.ends_with(" third\n") && !current.contains("first"), "{current}");
+        assert!(
+            current.ends_with(" third\n") && !current.contains("first"),
+            "{current}"
+        );
         assert!(old.contains("first") && old.contains("second"), "{old}");
         log_to(&path, &"x".repeat(30), 20);
         log_to(&path, "fifth", 20);
         // The older rotated file is replaced, never stacked up.
-        assert!(!std::fs::read_to_string(rotated_path(&path)).unwrap().contains("first"));
+        assert!(!std::fs::read_to_string(rotated_path(&path))
+            .unwrap()
+            .contains("first"));
         assert!(!dir.join("message-apps.log.2").exists());
         let _ = std::fs::remove_dir_all(dir);
     }

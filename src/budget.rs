@@ -26,7 +26,9 @@ pub fn parse(arg: &str) -> Result<BudgetCommand, String> {
     }
     match arg.trim_start_matches('$').trim().parse::<f64>() {
         Ok(usd) if usd.is_finite() && usd > 0.0 => Ok(BudgetCommand::Set(usd)),
-        _ => Err(format!("Usage: /budget <usd>, e.g. /budget 2, or /budget off. `{arg}` is not an amount.")),
+        _ => Err(format!(
+            "Usage: /budget <usd>, e.g. /budget 2, or /budget off. `{arg}` is not an amount."
+        )),
     }
 }
 

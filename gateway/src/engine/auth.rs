@@ -14,11 +14,16 @@ pub struct Allowlist {
 
 impl Allowlist {
     pub fn new(entries: impl IntoIterator<Item = String>) -> Self {
-        Self { allowed: Mutex::new(entries.into_iter().collect()) }
+        Self {
+            allowed: Mutex::new(entries.into_iter().collect()),
+        }
     }
 
     pub fn allows(&self, transport: &str, sender_id: &str) -> bool {
-        self.allowed.lock().unwrap().contains(&entry(transport, sender_id))
+        self.allowed
+            .lock()
+            .unwrap()
+            .contains(&entry(transport, sender_id))
     }
 
     /// Adds a sender and returns every entry, to be saved.
