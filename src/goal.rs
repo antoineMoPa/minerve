@@ -188,6 +188,8 @@ async fn ask_evaluator(
         tools: None,
         usage: (model.provider == Provider::OpenRouter)
             .then_some(UsageAccountingRequest { include: true }),
+        // The evaluator shares no prompt with the session, so it has no cache to stay close to.
+        session_id: None,
     };
     let response = post_request_with_token_count(
         &minerve.client,

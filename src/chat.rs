@@ -381,6 +381,10 @@ pub struct ChatCompletionRequest {
     /// OpenRouter only; OpenAI and Anthropic reject the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageAccountingRequest>,
+    /// OpenRouter only: keeps every request of a session on the provider that holds its prompt
+    /// cache, instead of the one OpenRouter would pick per request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

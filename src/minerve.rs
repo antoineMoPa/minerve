@@ -406,6 +406,7 @@ impl Minerve {
             tools: get_tool_definitions(model.uses_cache_breakpoints, mcp),
             usage: (model.provider == Provider::OpenRouter)
                 .then_some(UsageAccountingRequest { include: true }),
+            session_id: (model.provider == Provider::OpenRouter).then(|| self.current_session_id()),
         })
     }
 
@@ -944,6 +945,10 @@ impl Minerve {
 #[cfg(test)]
 #[path = "minerve_stop_tests.rs"]
 mod stop_tests;
+
+#[cfg(test)]
+#[path = "minerve_request_tests.rs"]
+mod request_tests;
 
 #[cfg(test)]
 mod tests {

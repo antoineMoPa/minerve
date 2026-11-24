@@ -300,6 +300,7 @@ mod tests {
             messages,
             tools: None,
             usage: None,
+            session_id: None,
         }
     }
 
