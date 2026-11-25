@@ -54,6 +54,9 @@ pub struct Minerve {
     control: Option<Arc<ControlSocket>>,
     /// `/budget`: the session's cost that pauses it. See `budget`.
     pub budget: crate::budget::Budget,
+    /// Ids of models that rejected an image this session; their requests carry text notes instead.
+    /// See `image_fallback`.
+    text_only_model_ids: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Role label in the chat transcript of the prompts the `/goal` evaluator sends.
@@ -318,6 +321,14 @@ impl Minerve {
         history: &[ChatCompletionMessage],
         mcp: &McpServers,
     ) -> Result<ChatCompletionRequest, String> {
+        let text_only_history;
+        let history = if self.text_only_model_ids.lock().unwrap().contains(&model.id) {
+            text_only_history =
+                crate::image_fallback::replace_images_with_text_notes(history.to_vec());
+            &text_only_history[..]
+        } else {
+            history
+        };
         Ok(ChatCompletionRequest {
             model: model.api_model.clone(),
             messages: build_request_messages(history, model.uses_cache_breakpoints)?,
@@ -520,6 +531,7 @@ impl Minerve {
             extra_system_prompts: extra_system_prompts.to_vec(),
             control,
             budget: Default::default(),
+            text_only_model_ids: Mutex::new(Default::default()),
         };
         if save_now {
             minerve.save_session();
@@ -672,8 +684,8 @@ impl Minerve {
                 break;
             }
 
-            // Show working indicator at start of each loop iteration
-            send_status(ui, "working...");
+            // Says what the turn waits for, not just that it is busy.
+            send_status(ui, format!("waiting for {}...", model.api_model));
 
             let request = {
                 let msgs = messages.lock().unwrap();
@@ -738,6 +750,16 @@ impl Minerve {
 
                     update_chat_ui(ui, get_ui_messages(&messages.lock().unwrap()));
                 }
+                Some(Err(req_err)) if self.mark_text_only_if_images_rejected(&model, &req_err) => {
+                    send_notice(
+                        ui,
+                        format!(
+                            "{} takes no image input: images are sent as text notes from now on.",
+                            model.id
+                        ),
+                    );
+                    should_continue = true;
+                }
                 Some(Err(req_err)) => {
                     let error_msg = format!("Request Error: {}", req_err);
                     self.add_assistant_message_with_update_ui(error_msg, ui);
@@ -746,6 +768,18 @@ impl Minerve {
             }
         }
         Ok(())
+    }
+
+    /// Remembers the model as text-only when its request failed on an image, so the request is
+    /// retried without images instead of ending the turn. False when retrying would not help.
+    fn mark_text_only_if_images_rejected(&self, model: &ActiveModel, error: &str) -> bool {
+        crate::image_fallback::is_image_input_unsupported_error(error)
+            && crate::image_fallback::has_any_image(&self.messages.lock().unwrap())
+            && self
+                .text_only_model_ids
+                .lock()
+                .unwrap()
+                .insert(model.id.clone())
     }
 
     /// Ends the turn once no queued message is left: those `run_turn` did not take are answered first.

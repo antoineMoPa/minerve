@@ -19,6 +19,7 @@ mod chat_selection;
 mod control_socket;
 mod goal;
 mod history;
+mod image_fallback;
 mod images;
 mod input_layout;
 mod keys_file;

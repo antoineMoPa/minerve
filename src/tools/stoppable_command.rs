@@ -6,6 +6,10 @@
 
 use std::ffi::OsStr;
 use std::process::{Output, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// A command in its own process group, killed as a group when its run is dropped.
 pub struct StoppableCommand {
@@ -39,14 +43,59 @@ impl StoppableCommand {
     }
 
     /// Runs the command to its end. Dropping this future kills the command's process group.
+    /// Returns once the command exits, even if something it left in the background still holds
+    /// its stdout or stderr open (`server &`): output written after `OUTPUT_GRACE` is not read.
     pub async fn output(&mut self) -> std::io::Result<Output> {
-        let child = self.command.spawn()?;
+        let mut child = self.command.spawn()?;
         let mut group = ProcessGroupKilledOnDrop { id: child.id() };
-        let output = child.wait_with_output().await;
+        let stdout = spawn_pipe_reader(child.stdout.take());
+        let stderr = spawn_pipe_reader(child.stderr.take());
+        let status = child.wait().await?;
         // Ended by itself: whatever it left in the background stays, as with a shell.
         group.id = None;
-        output
+        Ok(Output {
+            status,
+            stdout: collect_pipe_output(stdout).await,
+            stderr: collect_pipe_output(stderr).await,
+        })
     }
+}
+
+/// How long the output of an exited command is still read, for pipes a background child keeps open.
+const OUTPUT_GRACE: Duration = Duration::from_millis(300);
+
+struct PipeReader {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// Reads a pipe to its end in the background, keeping what was read so far.
+fn spawn_pipe_reader(pipe: Option<impl AsyncRead + Unpin + Send + 'static>) -> PipeReader {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let sink = bytes.clone();
+    let task = tokio::spawn(async move {
+        let Some(mut pipe) = pipe else { return };
+        let mut chunk = [0u8; 8192];
+        while let Ok(read) = pipe.read(&mut chunk).await {
+            if read == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&chunk[..read]);
+        }
+    });
+    PipeReader { bytes, task }
+}
+
+/// What the pipe gave until it closed, or until `OUTPUT_GRACE` passed.
+async fn collect_pipe_output(mut reader: PipeReader) -> Vec<u8> {
+    if tokio::time::timeout(OUTPUT_GRACE, &mut reader.task)
+        .await
+        .is_err()
+    {
+        reader.task.abort();
+    }
+    let bytes = std::mem::take(&mut *reader.bytes.lock().unwrap());
+    bytes
 }
 
 struct ProcessGroupKilledOnDrop {
@@ -74,6 +123,31 @@ mod tests {
     async fn returns_the_output_of_a_command_that_ends() {
         let output = StoppableCommand::shell("echo hi").output().await.unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout), "hi\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn returns_when_the_shell_exits_even_if_a_background_child_holds_its_output() {
+        let started = Instant::now();
+        let output = StoppableCommand::shell("sleep 5 & echo hi")
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hi\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_output_larger_than_a_pipe_buffer() {
+        let output = StoppableCommand::shell("head -c 200000 /dev/zero")
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.stdout.len(), 200000);
     }
 
     #[cfg(unix)]
