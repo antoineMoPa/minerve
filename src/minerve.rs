@@ -630,7 +630,7 @@ impl Minerve {
             state: AgentState::Working,
         });
         self.add_prompt(prompt, ui);
-        send_status(ui, "working...");
+        send_status(ui, "starting turn...");
     }
 
     /// Adds a user-role message, written by the user or by minerve (see `PromptAuthor`).

@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// "42s", or "3m05s" past a minute.
+fn format_elapsed_seconds(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{}s", seconds)
+    } else {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    }
+}
+
 impl App {
     /// Draws the boot overlay in `area`: a dotted ring around the centered video, and the
     /// current video frame. Only non-blank video characters are written, so the rest of the UI
@@ -212,7 +221,8 @@ impl App {
             &self.minerve.token_counter.format_usage_summary(),
         );
         frame.render_widget(
-            Paragraph::new(self.status.as_str()).style(Style::default().fg(Color::Magenta)),
+            Paragraph::new(self.format_status_with_elapsed_time())
+                .style(Style::default().fg(Color::Magenta)),
             status_area,
         );
 
@@ -225,6 +235,19 @@ impl App {
         if self.boot.is_some() {
             self.draw_boot_overlay(frame, chat_area);
         }
+    }
+
+    /// The status line, with how long minerve's step has lasted once it passes a few seconds:
+    /// "waiting for claude-sonnet... 42s" tells a slow model from a stuck tool.
+    fn format_status_with_elapsed_time(&self) -> String {
+        let Some((status, since)) = &self.minerve_status_since else {
+            return self.status.clone();
+        };
+        let elapsed = since.elapsed().as_secs();
+        if status != &self.status || status.is_empty() || elapsed < 3 {
+            return self.status.clone();
+        }
+        format!("{} {}", self.status, format_elapsed_seconds(elapsed))
     }
 
     pub(super) fn draw_chat(&mut self, frame: &mut Frame, area: Rect) {

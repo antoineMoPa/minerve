@@ -91,6 +91,9 @@ struct App {
     /// Copy of the chat as last reported by `Minerve`.
     transcript: Vec<(String, String)>,
     status: String,
+    /// When minerve sent the status it shows, to show how long a step has been going on.
+    /// Statuses the TUI writes itself ("3 queued") get no timer.
+    minerve_status_since: Option<(String, Instant)>,
     input: String,
     /// Cursor position in chars, not bytes.
     cursor: usize,
@@ -227,6 +230,7 @@ pub fn run(
         history: HistoryTracker::new(),
         transcript,
         status: String::new(),
+        minerve_status_since: None,
         input: String::new(),
         cursor: 0,
         scroll_up: 0,
@@ -591,7 +595,10 @@ impl App {
     fn handle_ui_event(&mut self, event: UiEvent) {
         match event {
             UiEvent::Transcript(messages) => self.transcript = messages,
-            UiEvent::Status(status) => self.status = status,
+            UiEvent::Status(status) => {
+                self.minerve_status_since = Some((status.clone(), Instant::now()));
+                self.status = status;
+            }
             UiEvent::ModelList(provider, result) => {
                 if let Some(picker) = self.model_picker.as_mut() {
                     picker.lists.push((provider, result));
