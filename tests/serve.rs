@@ -468,6 +468,61 @@ fn a_shell_command_that_fails_is_told_to_the_model_which_keeps_working() {
     }
 }
 
+/// A message sent while a turn runs does not wait for the turn to end: the model reads it with
+/// the result of the tool call that was running.
+#[test]
+fn a_message_sent_during_a_tool_call_goes_to_the_model_with_its_result() {
+    let (url, requests) = start_model_running_shell_command("sleep 1");
+    let dir = std::env::temp_dir().join(format!("minerve-serve-queue-{}", std::process::id()));
+    let (mut child, stream) = start_with_model_at(&dir, &url);
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    let hello = wait_for(&mut reader, "hello");
+    assert!(hello["features"].to_string().contains("\"queue\""));
+    wait_for(&mut reader, "usage");
+
+    writer
+        .write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n")
+        .unwrap();
+    assert_eq!(wait_for(&mut reader, "state")["state"], "working");
+    for text in ["use tabs", "and add tests", "taken back"] {
+        writeln!(writer, r#"{{"type":"submit","text":"{text}"}}"#).unwrap();
+    }
+    writer
+        .write_all(b"{\"type\":\"unqueue_newest\"}\n")
+        .unwrap();
+
+    let mut sent_counts = Vec::new();
+    loop {
+        let event = read_event(&mut reader);
+        match event["type"].as_str() {
+            Some("queued_sent") => sent_counts.push(event["count"].as_u64().unwrap()),
+            Some("state") => break,
+            Some("notice") => panic!("unexpected notice: {event}"),
+            _ => {}
+        }
+    }
+    // Both went together, once, and the turn ended by itself after them.
+    assert_eq!(sent_counts, [2]);
+
+    let requests = requests.lock().unwrap();
+    let posts: Vec<&String> = requests
+        .iter()
+        .filter(|request| request.starts_with("POST"))
+        .collect();
+    assert_eq!(posts.len(), 3);
+    assert!(!posts[0].contains("use tabs"));
+    // One user message, after the result of the call that was running.
+    let result_at = posts[1].find("\"role\":\"tool\"").unwrap();
+    let message_at = posts[1].find(r"use tabs\n\nand add tests").unwrap();
+    assert!(result_at < message_at, "{}", posts[1]);
+    assert!(!posts[2].contains("taken back"));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A turn ends by itself and its chat shows `expected` when the model's server answers
 /// `status_line` and `body`.
 fn assert_turn_answered_with_ends_showing(
@@ -536,11 +591,14 @@ fn submit_runs_a_turn_and_cancel_ends_it() {
     let transcript = wait_for(&mut reader, "transcript");
     assert!(transcript["messages"].to_string().contains("hello there"));
 
-    // A second submit while the turn runs is refused, not queued.
+    // A second submit while the turn runs waits for it. Taken back, as minerve-gui does before
+    // a stop, it starts no turn once the first one is stopped.
     writer
         .write_all(b"{\"type\":\"submit\",\"text\":\"again\"}\n")
         .unwrap();
-    wait_for_notice(&mut reader, "busy");
+    writer
+        .write_all(b"{\"type\":\"unqueue_newest\"}\n")
+        .unwrap();
 
     writer.write_all(b"{\"type\":\"cancel\"}\n").unwrap();
     assert_eq!(wait_for(&mut reader, "state")["state"], "waiting_for_input");

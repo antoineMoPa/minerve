@@ -40,6 +40,29 @@ pub fn cap_tool_output(output: String) -> String {
     )
 }
 
+/// A shell command shown in the status line is cut at this many characters.
+const MAX_STATUS_COMMAND_CHARS: usize = 120;
+
+/// The status line while a tool call runs. A shell command is shown itself (its first line, cut
+/// when long), so the user sees what is running; other tools are named.
+pub fn describe_running_tool_call(tool_name: &str, arguments_json: &str) -> String {
+    let command = (tool_name == "run_shell_command")
+        .then(|| serde_json::from_str::<serde_json::Value>(arguments_json).ok())
+        .flatten()
+        .and_then(|arguments| Some(arguments.get("command")?.as_str()?.trim().to_string()))
+        .filter(|command| !command.is_empty());
+    let Some(command) = command else {
+        return format!("Running tool: {}", tool_name);
+    };
+    let first_line = command.lines().next().unwrap_or_default();
+    let shown: String = first_line.chars().take(MAX_STATUS_COMMAND_CHARS).collect();
+    if shown.len() < command.len() {
+        format!("Running `{}…`", shown)
+    } else {
+        format!("Running `{}`", shown)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,6 +88,31 @@ mod tests {
         assert_eq!(
             truncate(short, 2000),
             format!("{}\n...[truncated]", "a".repeat(1999))
+        );
+    }
+
+    #[test]
+    fn a_running_shell_command_is_shown_and_other_tools_are_named() {
+        assert_eq!(
+            describe_running_tool_call("run_shell_command", r#"{"command":"cargo test"}"#),
+            "Running `cargo test`"
+        );
+        assert_eq!(
+            describe_running_tool_call("run_shell_command", r#"{"command":"é\necho two"}"#),
+            "Running `é…`"
+        );
+        let long = format!(r#"{{"command":"{}"}}"#, "x".repeat(200));
+        assert_eq!(
+            describe_running_tool_call("run_shell_command", &long),
+            format!("Running `{}…`", "x".repeat(120))
+        );
+        assert_eq!(
+            describe_running_tool_call("run_shell_command", "not json"),
+            "Running tool: run_shell_command"
+        );
+        assert_eq!(
+            describe_running_tool_call("read", r#"{"command":"x"}"#),
+            "Running tool: read"
         );
     }
 }

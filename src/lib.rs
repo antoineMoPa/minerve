@@ -30,6 +30,7 @@ mod message_apps_runner;
 mod model_lists;
 mod model_picker;
 mod pro_tips;
+mod prompt_queue;
 mod recent_models;
 mod serve;
 mod serve_commands;

@@ -77,7 +77,7 @@ impl App {
         self.scroll_up = 0;
         self.notices.clear();
         self.pending_command_output.clear();
-        self.queued_prompts.clear();
+        self.queued_goals.clear();
         self.chat_selection = None;
         self.status = String::from("started a new conversation");
     }
@@ -90,7 +90,7 @@ impl App {
                 self.scroll_up = 0;
                 self.notices.clear();
                 self.pending_command_output.clear();
-                self.queued_prompts.clear();
+                self.queued_goals.clear();
                 self.status = format!("resumed session {}", id);
                 self.session_picker = None;
             }

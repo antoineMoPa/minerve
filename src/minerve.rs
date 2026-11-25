@@ -18,7 +18,7 @@ use crate::openrouter::OpenRouterConnection;
 use crate::provider::{ActiveModel, ApiKeys, Provider};
 use crate::session::{self, SessionFile, SessionStart};
 use crate::tools::registry::get_tool_registry;
-use crate::tools::utils::cap_tool_output;
+use crate::tools::utils::{cap_tool_output, describe_running_tool_call};
 use crate::ui::{send_notice, send_status, update_chat_ui, UiSender};
 use crate::{
     ChatCompletionFunctionDefinition, ChatCompletionMessage, ChatCompletionMessageRole,
@@ -42,6 +42,8 @@ pub struct Minerve {
     pub request_in_flight: Arc<AtomicBool>,
     /// Set by `cancel_turn`; checked before each request and tool call of the running turn.
     pub cancel_requested: Arc<AtomicBool>,
+    /// Messages sent while a turn runs, oldest first. See `prompt_queue`.
+    pub(crate) queued_prompts: Mutex<Vec<crate::prompt_queue::QueuedPrompt>>,
     /// Wakes a request that is waiting for the API when the turn is cancelled.
     pub cancel_notify: Arc<Notify>,
     pub token_counter: Arc<TokenCounter>,
@@ -228,7 +230,7 @@ pub async fn handle_tool_call(
     let args_str = &tool_call.function.arguments;
 
     if let Some(ui) = &ui {
-        send_status(ui, format!("Running tool: {}", tool_name));
+        send_status(ui, describe_running_tool_call(tool_name, args_str));
     }
     if let Some(mcp_result) = mcp.call(tool_name, args_str).await {
         return match mcp_result {
@@ -512,6 +514,7 @@ impl Minerve {
             model: Mutex::new(ActiveModel::new(openrouter_connection.model)),
             request_in_flight: Arc::new(AtomicBool::new(false)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
+            queued_prompts: Mutex::new(Vec::new()),
             cancel_notify: Arc::new(Notify::new()),
             token_counter,
             extra_system_prompts: extra_system_prompts.to_vec(),
@@ -626,7 +629,7 @@ impl Minerve {
         update_chat_ui(ui, get_ui_messages(&self.messages.lock().unwrap()));
     }
 
-    fn end_turn(&self, ui: &UiSender) {
+    pub(crate) fn end_turn(&self, ui: &UiSender) {
         self.save_session();
         self.request_in_flight.store(false, Ordering::SeqCst);
         self.send_control_event(&MinerveEvent::State {
@@ -636,6 +639,7 @@ impl Minerve {
     }
 
     /// Requests and tool calls until the model answers without tool calls or the turn is cancelled.
+    /// Messages queued meanwhile are added after the tool calls of each answer, see `prompt_queue`.
     /// Fails with the error of a request that failed; it is also added to the chat.
     async fn run_turn(&self, ui: &UiSender, is_headless: bool) -> Result<(), String> {
         let messages = self.messages.clone();
@@ -723,6 +727,15 @@ impl Minerve {
                         .await;
                     }
 
+                    // After the tool results, which must directly follow the assistant message.
+                    // A stopped turn leaves them for `end_turn_or_take_queued_prompts`.
+                    if !cancel_requested.load(Ordering::SeqCst) {
+                        if let Some(prompt) = self.take_queued_prompts_as_one_message() {
+                            self.push_message(prompt);
+                            should_continue = true;
+                        }
+                    }
+
                     update_chat_ui(ui, get_ui_messages(&messages.lock().unwrap()));
                 }
                 Some(Err(req_err)) => {
@@ -733,6 +746,14 @@ impl Minerve {
             }
         }
         Ok(())
+    }
+
+    /// Ends the turn once no queued message is left: those `run_turn` did not take are answered first.
+    async fn end_turn_after_answering_queued_prompts(&self, ui: &UiSender, is_headless: bool) {
+        while let Some(prompt) = self.end_turn_or_take_queued_prompts(ui) {
+            self.add_prompt(prompt, ui);
+            let _ = self.run_turn(ui, is_headless).await;
+        }
     }
 
     /// Sends a prompt typed by the user, with the image files pasted into it.
@@ -750,7 +771,8 @@ impl Minerve {
         crate::get_global_runtime().spawn(async move {
             // A failed request is already shown in the chat.
             let _ = self.run_turn(&ui, is_headless).await;
-            self.end_turn(&ui);
+            self.end_turn_after_answering_queued_prompts(&ui, is_headless)
+                .await;
         });
     }
 
@@ -833,7 +855,8 @@ impl Minerve {
                 }
             }
             send_notice(&ui, outcome.notice());
-            self.end_turn(&ui);
+            self.end_turn_after_answering_queued_prompts(&ui, false)
+                .await;
         });
     }
 }

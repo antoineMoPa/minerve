@@ -7,7 +7,7 @@
 //! Both directions carry one JSON object per line, told apart by `type`.
 //!
 //! minerve → parent ([`MinerveEvent`]):
-//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget"],"cwd":"/home/me/project"}`
+//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget","queue"],"cwd":"/home/me/project"}`
 //!   first, once. `features` names the commands this minerve accepts beyond the original ones, so
 //!   a parent sends a newer command only when it is listed (an unknown command stops the reader).
 //! - `{"type":"session","session_id":"…"}` after `hello`, and again when `/resume` switches session.
@@ -30,6 +30,10 @@
 //! `--serve` also answers these (each listed in `hello.features`):
 //! - `{"type":"submit","text":"…","images":["/abs/a.png"]}` (`images`) attaches image files; `[Image #N]` tokens in the text are left as typed.
 //! - `{"type":"goal","goal":"…"}` (`goal`) keeps taking turns until an evaluator judges the goal reached.
+//! - `{"type":"submit",…}` while a turn runs (`queue`) is not refused: the message waits and is added to the
+//!   conversation, with the others waiting, as one user message after the tool calls the turn is running
+//!   (or as the turn would end). minerve then sends `{"type":"queued_sent","count":2}`: the 2 oldest went.
+//!   `{"type":"unqueue_newest"}` (`queue`) takes the newest waiting message out, if the turn did not take it yet.
 //! - `{"type":"budget","arg":"2"}` (`budget`) runs `/budget <arg>`; minerve answers with a `notice`.
 //! - `{"type":"list_models"}` (`models`) answered by `models`: `{"current":"…","recent":[…],"lists":[{"provider":"OpenRouter","models":[…],"error":null}]}`.
 //! - `{"type":"set_model","model":"…"}` (`models`).
@@ -89,6 +93,7 @@ pub const SERVE_FEATURES: &[&str] = &[
     "message_apps",
     "images",
     "budget",
+    "queue",
 ];
 pub const TUI_FEATURES: &[&str] = &[];
 
@@ -134,6 +139,10 @@ pub enum MinerveEvent<'a> {
     },
     Usage {
         summary: &'a str,
+    },
+    /// The `count` oldest queued messages were added to the conversation.
+    QueuedSent {
+        count: usize,
     },
     Intro {
         fps: u32,
@@ -242,6 +251,7 @@ pub enum ParentCommand {
     Cancel {},
     NewSession {},
     GetIntro {},
+    UnqueueNewest {},
     Goal {
         goal: String,
     },
@@ -394,7 +404,7 @@ mod tests {
         assert_eq!(
             hello,
             format!(
-                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget"],"cwd":"/w"}}"#,
+                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget","queue"],"cwd":"/w"}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );

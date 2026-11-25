@@ -372,12 +372,17 @@ impl App {
             lines.push(Line::default());
         }
 
-        // Prompts sent during a turn, waiting for it to end.
-        for queued in &self.queued_prompts {
-            let (title, text) = match queued {
-                super::QueuedPrompt::Message { content, .. } => ("You (queued):", content.clone()),
-                super::QueuedPrompt::Goal(goal) => ("Goal (queued):", goal.clone()),
-            };
+        // Messages sent during a turn, waiting for its next request; then the goals waiting for its end.
+        let queued_messages = self.minerve.list_queued_prompt_texts();
+        let queued = queued_messages
+            .into_iter()
+            .map(|text| ("You (queued):", text))
+            .chain(
+                self.queued_goals
+                    .iter()
+                    .map(|goal| ("Goal (queued):", goal.clone())),
+            );
+        for (title, text) in queued {
             lines.push(Line::styled(
                 title,
                 Style::default()

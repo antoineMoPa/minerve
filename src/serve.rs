@@ -12,6 +12,7 @@ use crate::control_socket::{ControlSocket, MinerveEvent, ParentCommand};
 use crate::minerve::Minerve;
 use crate::openrouter::OpenRouterConnection;
 use crate::pro_tips;
+use crate::prompt_queue::QueuedPrompt;
 use crate::serve_commands::Extras;
 use crate::session::SessionStart;
 use crate::setup;
@@ -70,16 +71,21 @@ pub fn run(
                 extras.on_model_list(provider, result, &minerve, &control)
             }
             UiEvent::ParentCommand(command) => match command {
+                // While a turn runs, the message waits for the turn's next request.
                 ParentCommand::Submit { text, images } => {
-                    if minerve.request_in_flight.load(Ordering::SeqCst) {
-                        control.send(&MinerveEvent::Notice {
-                            notice: "busy: a turn is running",
-                        });
-                    } else {
-                        minerve
-                            .clone()
-                            .chat_with_arc(text, images, tx.clone(), false);
+                    if let Err(prompt) =
+                        minerve.queue_prompt_for_running_turn(QueuedPrompt { text, images })
+                    {
+                        minerve.clone().chat_with_arc(
+                            prompt.text,
+                            prompt.images,
+                            tx.clone(),
+                            false,
+                        );
                     }
+                }
+                ParentCommand::UnqueueNewest {} => {
+                    minerve.unqueue_newest_prompt();
                 }
                 ParentCommand::Cancel {} => minerve.cancel_turn(),
                 ParentCommand::NewSession {} => {
