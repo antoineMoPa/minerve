@@ -24,9 +24,22 @@ impl StoppableCommand {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // Its own group, so the children of a shell line can be killed with it.
+        // No prompt can wait for an answer nobody gives.
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        // Its own session: its own group, so the children of a shell line can be killed with it,
+        // and no controlling terminal. In a mere background group of minerve's terminal, a command
+        // touching /dev/tty (a password prompt, `read < /dev/tty`) was stopped by SIGTTIN/SIGTTOU
+        // and never ended; without a terminal, opening /dev/tty fails at once.
         #[cfg(unix)]
-        command.process_group(0);
+        // SAFETY: setsid is async-signal-safe and touches no memory of this process.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         Self { command }
     }
 
@@ -139,6 +152,22 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_reading_the_terminal_ends_instead_of_being_stopped() {
+        let started = Instant::now();
+        let output = tokio::time::timeout(
+            Duration::from_secs(3),
+            StoppableCommand::shell("read x < /dev/tty && echo read").output(),
+        )
+        .await
+        .expect("the command was stopped waiting for the terminal")
+        .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[tokio::test]
