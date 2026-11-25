@@ -274,27 +274,6 @@ pub async fn handle_tool_call(
     }
 }
 
-/// Called when a new prompt is added. Tool results and images of earlier prompts are dropped
-/// then, never during a run of tool calls, so every request of a run extends the previous one
-/// and hits the prompt cache. The agent can open a dropped image again with `view_image`.
-fn drop_tool_outputs_and_images_of_previous_prompts(messages: &mut [ChatCompletionMessage]) {
-    for msg in messages.iter_mut() {
-        if let ChatCompletionMessageRole::Tool = msg.role {
-            msg.content = Some(String::from("[cleaned from history]"));
-        }
-        for image in std::mem::take(&mut msg.images) {
-            let note = format!(
-                "[image {} no longer attached; open it with view_image if needed]",
-                image.display()
-            );
-            msg.content = Some(match msg.content.take() {
-                Some(text) => format!("{}\n{}", text, note),
-                None => note,
-            });
-        }
-    }
-}
-
 impl Minerve {
     /// Model the next turn will use. A turn reads it once when it starts.
     pub fn active_model(&self) -> ActiveModel {
@@ -640,8 +619,9 @@ impl Minerve {
     }
 
     /// Adds a user-role message, written by the user or by minerve (see `PromptAuthor`).
+    /// History is append-only: never rewrite earlier messages (e.g. pruning tool outputs),
+    /// it breaks the prompt cache prefix and every request pays full price again.
     fn add_prompt(&self, prompt: ChatCompletionMessage, ui: &UiSender) {
-        drop_tool_outputs_and_images_of_previous_prompts(&mut self.messages.lock().unwrap());
         self.push_message(prompt);
         update_chat_ui(ui, get_ui_messages(&self.messages.lock().unwrap()));
     }
@@ -865,32 +845,3 @@ mod stop_tests;
 #[cfg(test)]
 #[path = "minerve_request_tests.rs"]
 mod request_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_new_prompt_drops_earlier_images_and_names_them() {
-        let mut messages = vec![
-            ChatCompletionMessage::user_with_images(
-                String::from("look [Image #1]"),
-                vec![PathBuf::from("/a.png")],
-            ),
-            ChatCompletionMessage {
-                images: vec![PathBuf::from("/b.png")],
-                ..ChatCompletionMessage::tool_result(String::from("1"), String::from("attached"))
-            },
-        ];
-        drop_tool_outputs_and_images_of_previous_prompts(&mut messages);
-        assert!(messages.iter().all(|m| m.images.is_empty()));
-        assert_eq!(
-            messages[0].content.as_deref(),
-            Some("look [Image #1]\n[image /a.png no longer attached; open it with view_image if needed]")
-        );
-        assert_eq!(
-            messages[1].content.as_deref(),
-            Some("[cleaned from history]\n[image /b.png no longer attached; open it with view_image if needed]")
-        );
-    }
-}

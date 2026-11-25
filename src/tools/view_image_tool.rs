@@ -27,7 +27,7 @@ impl Tool for ViewImageTool {
     }
 
     fn description(&self) -> &'static str {
-        "Look at an image file (png, jpg, gif or webp), such as a screenshot. Large images are scaled down. Images pasted in earlier prompts are no longer attached; open them again with this tool when needed."
+        "Look at an image file (png, jpg, gif or webp), such as a screenshot. Large images are scaled down."
     }
 
     fn parameters(&self) -> HashMap<&'static str, &'static str> {
