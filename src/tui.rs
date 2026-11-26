@@ -58,6 +58,7 @@ const WHEEL_STEP: usize = 3;
 /// Slash commands offered by the `/` menu: (name, one-line description).
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/about", "describe Minerve"),
+    ("/version", "show the Minerve version"),
     ("/model", "switch models and providers"),
     (
         "/goal",
@@ -82,6 +83,17 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/matrix", "falling letters; any key to leave"),
     ("/tetris", "play a mini Tetris; esc to leave"),
 ];
+
+/// A single `/word` that no command matches. `/Users/me/x.rs` is a path, so it is not one.
+fn is_unknown_slash_command(input: &str) -> bool {
+    let Some(name) = input.strip_prefix('/') else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.contains('/')
+        && !input.contains(char::is_whitespace)
+        && !SLASH_COMMANDS.iter().any(|(command, _)| command.starts_with(input))
+}
 
 struct App {
     minerve: Arc<Minerve>,
@@ -577,6 +589,9 @@ impl App {
             "/goal" => self.notices.push(String::from(
                 "Usage: /goal <goal>. Minerve keeps working, turn after turn, until an evaluator model judges the goal reached. Esc stops it.",
             )),
+            "/version" => self
+                .notices
+                .push(format!("minerve {}", env!("CARGO_PKG_VERSION"))),
             "/about" => {
                 // Skip the `# Minerve` heading and blank lines: the first real sentence is the description.
                 let first_line = include_str!("../README.md")
@@ -769,6 +784,16 @@ impl App {
                 return;
             }
         }
+        // An unknown `/word` is a typo, not a prompt: it would wait behind the running turn.
+        if !self.input_pasted && is_unknown_slash_command(self.input.trim()) {
+            let word = self.input.trim().to_string();
+            self.history.add_prompt(word.clone());
+            self.notices
+                .push(format!("{word} is not a command. Type / to see them."));
+            self.input.clear();
+            self.cursor = 0;
+            return;
+        }
         let content = self.input.clone();
         self.history.add_prompt(content.clone());
 
@@ -863,5 +888,21 @@ impl App {
         if let Some(matrix) = self.matrix.as_mut() {
             matrix.stop();
         }
+    }
+}
+
+#[cfg(test)]
+mod slash_command_tests {
+    use super::is_unknown_slash_command;
+
+    #[test]
+    fn only_a_single_unmatched_slash_word_is_unknown() {
+        assert!(is_unknown_slash_command("/versoin"));
+        assert!(!is_unknown_slash_command("/version"));
+        assert!(!is_unknown_slash_command("/vers"));
+        assert!(!is_unknown_slash_command("/Users/me/x.rs"));
+        assert!(!is_unknown_slash_command("/foo fix this"));
+        assert!(!is_unknown_slash_command("/"));
+        assert!(!is_unknown_slash_command("hello"));
     }
 }
