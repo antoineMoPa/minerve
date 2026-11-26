@@ -90,7 +90,11 @@ pub fn save_session(
         usage,
     };
     let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
-    fs::write(session_path(id), json)
+    // Written whole then renamed: a crash mid-write never leaves a cut file that cannot resume.
+    let path = session_path(id);
+    let partial = path.with_extension("json.partial");
+    fs::write(&partial, json)?;
+    fs::rename(&partial, &path)
 }
 
 /// True when `id` is a UUID written the way `save_session` names files: lowercase, hyphenated.

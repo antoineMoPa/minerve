@@ -305,7 +305,7 @@ mod tests {
     }
 
     fn from(message: ChatCompletionMessage) -> RequestMessage {
-        RequestMessage::from_message(&message).unwrap()
+        RequestMessage::from_message(&message)
     }
 
     #[test]

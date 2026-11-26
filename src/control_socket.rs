@@ -7,7 +7,7 @@
 //! Both directions carry one JSON object per line, told apart by `type`.
 //!
 //! minerve → parent ([`MinerveEvent`]):
-//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget","queue"],"cwd":"/home/me/project"}`
+//! - `{"type":"hello","version":1,"minerve_version":"0.7.0","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget","queue","skip_tool_call"],"cwd":"/home/me/project"}`
 //!   first, once. `features` names the commands this minerve accepts beyond the original ones, so
 //!   a parent sends a newer command only when it is listed (an unknown command stops the reader).
 //! - `{"type":"session","session_id":"…"}` after `hello`, and again when `/resume` switches session.
@@ -34,6 +34,8 @@
 //!   conversation, with the others waiting, as one user message after the tool calls the turn is running
 //!   (or as the turn would end). minerve then sends `{"type":"queued_sent","count":2}`: the 2 oldest went.
 //!   `{"type":"unqueue_newest"}` (`queue`) takes the newest waiting message out, if the turn did not take it yet.
+//! - `{"type":"skip_tool_call"}` (`skip_tool_call`) stops the running tool call once minerve sent
+//!   `{"type":"tool_call_skippable","skippable":true}` (8s into it); the turn goes on.
 //! - `{"type":"budget","arg":"2"}` (`budget`) runs `/budget <arg>`; minerve answers with a `notice`.
 //! - `{"type":"list_models"}` (`models`) answered by `models`: `{"current":"…","recent":[…],"lists":[{"provider":"OpenRouter","models":[…],"error":null}]}`.
 //! - `{"type":"set_model","model":"…"}` (`models`).
@@ -94,6 +96,7 @@ pub const SERVE_FEATURES: &[&str] = &[
     "images",
     "budget",
     "queue",
+    "skip_tool_call",
 ];
 pub const TUI_FEATURES: &[&str] = &[];
 
@@ -139,6 +142,10 @@ pub enum MinerveEvent<'a> {
     },
     Usage {
         summary: &'a str,
+    },
+    /// The running tool call may be skipped with `skip_tool_call`; false once it ended.
+    ToolCallSkippable {
+        skippable: bool,
     },
     /// The `count` oldest queued messages were added to the conversation.
     QueuedSent {
@@ -249,6 +256,7 @@ pub enum ParentCommand {
     },
     GetHistory {},
     Cancel {},
+    SkipToolCall {},
     NewSession {},
     GetIntro {},
     UnqueueNewest {},
@@ -404,7 +412,7 @@ mod tests {
         assert_eq!(
             hello,
             format!(
-                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget","queue"],"cwd":"/w"}}"#,
+                r#"{{"type":"hello","version":1,"minerve_version":"{}","features":["serve","cancel","new_session","intro","goal","models","sessions","api_keys","mcp","message_apps","images","budget","queue","skip_tool_call"],"cwd":"/w"}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );

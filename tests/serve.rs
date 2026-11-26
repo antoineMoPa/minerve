@@ -611,7 +611,7 @@ fn submit_runs_a_turn_and_cancel_ends_it() {
 }
 
 #[test]
-fn closing_the_socket_mid_turn_ends_minerve_and_saves_nothing() {
+fn closing_the_socket_mid_turn_ends_minerve_and_keeps_the_prompt_saved() {
     let (url, server, stop) = hanging_server();
     let dir = std::env::temp_dir().join(format!("minerve-serve-midturn-{}", std::process::id()));
     let (mut child, stream) = start_with_model_at(&dir, &url);
@@ -633,11 +633,15 @@ fn closing_the_socket_mid_turn_ends_minerve_and_saves_nothing() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    // The turn never finished, so no half-done session may be on disk to resume.
-    let saved = std::fs::read_dir(dir.join(".minerve/sessions"))
-        .map(|entries| entries.count())
-        .unwrap_or(0);
-    assert_eq!(saved, 0, "closing mid-turn must not leave a session file");
+    // Every message is saved as it comes, so a turn that broke can be read back and resumed.
+    let saved: Vec<_> = std::fs::read_dir(dir.join(".minerve/sessions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert!(std::fs::read_to_string(&saved[0])
+        .unwrap()
+        .contains("hello there"));
 
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = server.join();
@@ -753,6 +757,86 @@ fn mcp_servers_can_be_added_changed_and_removed() {
         !config.contains("\"tmp\""),
         "removed from mcp.json: {config}"
     );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The bug from a real session: the agent viewed a screenshot, then deleted it while cleaning
+/// up. Every later prompt failed with "cannot read image" before reaching the model.
+#[test]
+fn deleting_a_viewed_image_does_not_block_the_next_prompt() {
+    let dir = std::env::temp_dir().join(format!("minerve-serve-image-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let shot = dir.join("end-check.png");
+    // The smallest valid PNG: 1x1, under the downscale size, so it used to be sent by path.
+    std::fs::write(
+        &shot,
+        [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ],
+    )
+    .unwrap();
+
+    let view = serde_json::json!({"choices": [{"message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {
+            "name": "view_image",
+            "arguments": serde_json::json!({ "path": shot.display().to_string() }).to_string(),
+        }}],
+    }}]})
+    .to_string();
+    let delete = build_shell_tool_call_answer("call_2", &format!("rm -f {}", shot.display()));
+    let done = r#"{"choices":[{"message":{"role":"assistant","content":"all done"}}]}"#.to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = requests.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let request = read_whole_http_request(&mut stream);
+            let body = match request.matches("\"role\":\"tool\"").count() {
+                0 => &view,
+                1 => &delete,
+                _ => &done,
+            };
+            seen.lock().unwrap().push(request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+        }
+    });
+
+    let (mut child, stream) = start_with_model_at(&dir.join("home"), &url);
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    wait_for(&mut reader, "usage");
+
+    submit_and_wait_for_ended_turn_showing(&mut writer, &mut reader, &["all done"]);
+    assert!(!shot.exists(), "the model's rm ran");
+    // The next prompt reaches the model, still with the image it viewed.
+    submit_and_wait_for_ended_turn_showing(&mut writer, &mut reader, &["all done"]);
+
+    let requests = requests.lock().unwrap();
+    let posts: Vec<&String> = requests
+        .iter()
+        .filter(|request| request.starts_with("POST"))
+        .collect();
+    assert_eq!(posts.len(), 4, "every prompt reached the model");
+    for post in &posts[2..] {
+        assert!(post.contains("data:image/png;base64,"), "{post}");
+        assert!(!post.contains("Request Error"), "{post}");
+    }
 
     let _ = child.kill();
     let _ = child.wait();

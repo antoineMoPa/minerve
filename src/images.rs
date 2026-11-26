@@ -1,6 +1,7 @@
 //! Image files shown to the model: pasted from the clipboard, dragged onto the terminal, or
-//! opened by the `view_image` tool. Messages keep only the path; `RequestImage::read` encodes
-//! the file for each request.
+//! opened by the `view_image` tool. Messages keep only the path of a copy minerve owns in
+//! `~/.minerve/images`; `RequestImage::read` encodes it for each request. A task deleting or
+//! overwriting its screenshot so never changes or breaks the history.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,7 +12,7 @@ use crate::chat::image_media_type;
 /// full Retina screenshot would otherwise pass its 5 MB per-image limit.
 const MAX_IMAGE_EDGE_PX: u32 = 1568;
 
-/// Where pasted images and downscaled copies are written.
+/// Where pasted images and the copies of sent images are written.
 fn images_dir() -> PathBuf {
     dirs::home_dir()
         .expect("no home directory")
@@ -19,16 +20,17 @@ fn images_dir() -> PathBuf {
         .join("images")
 }
 
-fn new_image_path() -> Result<PathBuf, String> {
+fn create_new_image_path(extension: &str) -> Result<PathBuf, String> {
     let dir = images_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("cannot create {}: {}", dir.display(), err))?;
-    Ok(dir.join(format!("{}.png", uuid::Uuid::new_v4())))
+    Ok(dir.join(format!("{}.{}", uuid::Uuid::new_v4(), extension)))
 }
 
-/// The file to send for the image at `path`: the file itself when its longest edge fits
-/// `MAX_IMAGE_EDGE_PX`, otherwise a downscaled PNG copy in `~/.minerve/images`.
-/// The returned path is absolute, so a resumed session finds it from any directory.
+/// The file to send for the image at `path`: a copy in `~/.minerve/images`, downscaled to PNG
+/// when its longest edge passes `MAX_IMAGE_EDGE_PX`. A file already in that folder (a pasted
+/// image) is sent as is. The returned path is absolute, so a resumed session finds it from any
+/// directory.
 pub fn image_to_send(path: &Path) -> Result<PathBuf, String> {
     let path = std::fs::canonicalize(path)
         .map_err(|err| format!("cannot open {}: {}", path.display(), err))?;
@@ -41,7 +43,7 @@ pub fn image_to_send(path: &Path) -> Result<PathBuf, String> {
     let (width, height) = image::image_dimensions(&path)
         .map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
     if width.max(height) <= MAX_IMAGE_EDGE_PX {
-        return Ok(path);
+        return copy_image_to_images_dir(&path);
     }
     let image = image::open(&path)
         .map_err(|err| format!("cannot read image {}: {}", path.display(), err))?;
@@ -50,10 +52,33 @@ pub fn image_to_send(path: &Path) -> Result<PathBuf, String> {
         MAX_IMAGE_EDGE_PX,
         image::imageops::FilterType::Triangle,
     );
-    let copy = new_image_path()?;
+    let copy = create_new_image_path("png")?;
     downscaled
         .save(&copy)
         .map_err(|err| format!("cannot write {}: {}", copy.display(), err))?;
+    Ok(copy)
+}
+
+/// A copy of `path` in `~/.minerve/images`, or `path` itself when it is already there.
+fn copy_image_to_images_dir(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(dir) = std::fs::canonicalize(images_dir()) {
+        if path.starts_with(dir) {
+            return Ok(path.to_path_buf());
+        }
+    }
+    let extension = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| String::from("png"));
+    let copy = create_new_image_path(&extension)?;
+    std::fs::copy(path, &copy).map_err(|err| {
+        format!(
+            "cannot copy {} to {}: {}",
+            path.display(),
+            copy.display(),
+            err
+        )
+    })?;
     Ok(copy)
 }
 
@@ -69,7 +94,7 @@ pub fn paste_clipboard_image() -> Result<Option<PathBuf>, String> {
     if !info.contains("PNGf") {
         return Ok(None);
     }
-    let saved = new_image_path()?;
+    let saved = create_new_image_path("png")?;
     let write_png = format!(
         "set f to open for access POSIX file \"{}\" with write permission",
         saved.display()
@@ -164,22 +189,43 @@ mod tests {
     }
 
     #[test]
-    fn small_image_is_sent_as_is_and_large_one_is_downscaled() {
+    fn small_image_is_copied_and_large_one_is_downscaled() {
         let dir =
             std::env::temp_dir().join(format!("minerve-images-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let small = dir.join("small.png");
+        let small = dir.join("small.PNG");
         image::RgbImage::new(10, 20).save(&small).unwrap();
-        assert_eq!(
-            image_to_send(&small).unwrap(),
-            std::fs::canonicalize(&small).unwrap()
-        );
+        let small_copy = image_to_send(&small).unwrap();
+        assert!(small_copy.starts_with(std::fs::canonicalize(images_dir()).unwrap()));
+        assert_eq!(small_copy.extension().unwrap(), "png");
+        assert_eq!(image::image_dimensions(&small_copy).unwrap(), (10, 20));
+        // A copy already in the images folder is not copied again.
+        assert_eq!(image_to_send(&small_copy).unwrap(), small_copy);
+        std::fs::remove_file(small_copy).unwrap();
 
         let large = dir.join("large.png");
         image::RgbImage::new(3136, 100).save(&large).unwrap();
         let copy = image_to_send(&large).unwrap();
         assert_eq!(image::image_dimensions(&copy).unwrap(), (1568, 50));
         std::fs::remove_file(copy).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn deleting_or_overwriting_a_viewed_image_leaves_the_sent_one_unchanged() {
+        let dir =
+            std::env::temp_dir().join(format!("minerve-images-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("end-check.png");
+        image::RgbImage::new(4, 4).save(&shot).unwrap();
+        let sent = image_to_send(&shot).unwrap();
+
+        image::RgbImage::new(8, 8).save(&shot).unwrap();
+        assert_eq!(image::image_dimensions(&sent).unwrap(), (4, 4));
+        std::fs::remove_file(&shot).unwrap();
+        assert!(crate::chat::RequestImage::read(&sent).is_ok());
+
+        std::fs::remove_file(sent).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

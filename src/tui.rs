@@ -94,6 +94,8 @@ struct App {
     /// When minerve sent the status it shows, to show how long a step has been going on.
     /// Statuses the TUI writes itself ("3 queued") get no timer.
     minerve_status_since: Option<(String, Instant)>,
+    /// The running tool call has lasted long enough to be skipped with Ctrl+S.
+    tool_call_skippable: bool,
     input: String,
     /// Cursor position in chars, not bytes.
     cursor: usize,
@@ -231,6 +233,7 @@ pub fn run(
         transcript,
         status: String::new(),
         minerve_status_since: None,
+        tool_call_skippable: false,
         input: String::new(),
         cursor: 0,
         scroll_up: 0,
@@ -607,6 +610,7 @@ impl App {
             UiEvent::Notice(notice) => self.notices.push(notice),
             UiEvent::ParentCommand(command) => self.handle_parent_command(command),
             UiEvent::ParentClosed => {}
+            UiEvent::ToolCallSkippable(skippable) => self.tool_call_skippable = skippable,
         }
     }
 
@@ -668,6 +672,11 @@ impl App {
             if self.minerve.request_in_flight.load(Ordering::SeqCst) {
                 self.minerve.cancel_turn();
             }
+            return;
+        }
+
+        if ctrl && key.code == KeyCode::Char('s') && self.tool_call_skippable {
+            self.minerve.skip_tool_call();
             return;
         }
 

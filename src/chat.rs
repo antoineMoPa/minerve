@@ -314,9 +314,10 @@ impl RequestImage {
 }
 
 impl RequestMessage {
-    /// Fails when an image of the message cannot be read.
+    /// An image that cannot be read (e.g. deleted since it was viewed) becomes a text note, so one
+    /// stale image never blocks the conversation.
     /// Only user messages may carry images; see `with_tool_images_in_user_messages` for tool results.
-    pub fn from_message(message: &ChatCompletionMessage) -> Result<Self, String> {
+    pub fn from_message(message: &ChatCompletionMessage) -> Self {
         assert!(
             message.images.is_empty() || matches!(message.role, ChatCompletionMessageRole::User),
             "images on a {:?} message",
@@ -328,9 +329,15 @@ impl RequestMessage {
             // Images go before the text, as Anthropic recommends.
             let mut parts = Vec::with_capacity(message.images.len() + 1);
             for path in &message.images {
-                parts.push(RequestPart::ImageUrl {
-                    image_url: RequestImage::read(path)?,
-                    cache_control: None,
+                parts.push(match RequestImage::read(path) {
+                    Ok(image_url) => RequestPart::ImageUrl {
+                        image_url,
+                        cache_control: None,
+                    },
+                    Err(err) => RequestPart::Text {
+                        text: format!("[Image not shown: {}]", err),
+                        cache_control: None,
+                    },
                 });
             }
             if let Some(text) = &message.content {
@@ -341,12 +348,12 @@ impl RequestMessage {
             }
             Some(RequestContent::Parts(parts))
         };
-        Ok(Self {
+        Self {
             role: message.role.clone(),
             content,
             tool_calls: message.tool_calls.clone(),
             tool_call_id: message.tool_call_id.clone(),
-        })
+        }
     }
 
     /// Puts the breakpoint on the last content part.
@@ -443,8 +450,7 @@ mod tests {
         let mut message = RequestMessage::from_message(&ChatCompletionMessage::user_with_images(
             String::from("what is this?"),
             vec![image.clone()],
-        ))
-        .unwrap();
+        ));
         message.add_cache_breakpoint();
         std::fs::remove_file(&image).unwrap();
 
@@ -459,13 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_image_fails_the_request_with_its_path() {
+    fn missing_image_becomes_a_note_naming_its_path() {
         let message = ChatCompletionMessage::user_with_images(
             String::from("hi"),
             vec![PathBuf::from("/nope/x.png")],
         );
-        let err = RequestMessage::from_message(&message).unwrap_err();
-        assert!(err.contains("/nope/x.png"), "{}", err);
+        let json = serde_json::to_value(RequestMessage::from_message(&message)).unwrap();
+        let note = json["content"][0]["text"].as_str().unwrap();
+        assert!(
+            note.starts_with("[Image not shown: cannot read image /nope/x.png"),
+            "{note}"
+        );
+        assert_eq!(json["content"][1]["text"], "hi");
     }
 
     #[test]

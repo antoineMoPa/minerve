@@ -19,6 +19,9 @@ pub enum UiEvent {
     ParentCommand(crate::control_socket::ParentCommand),
     /// The parent closed the control socket. Only `--serve` acts on it.
     ParentClosed,
+    /// The running tool call has lasted long enough that the user may skip it
+    /// (`Minerve::skip_tool_call`); false once it ended.
+    ToolCallSkippable(bool),
 }
 
 pub type UiSender = Sender<UiEvent>;

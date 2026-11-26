@@ -46,6 +46,8 @@ pub struct Minerve {
     pub(crate) queued_prompts: Mutex<Vec<crate::prompt_queue::QueuedPrompt>>,
     /// Wakes a request that is waiting for the API when the turn is cancelled.
     pub cancel_notify: Arc<Notify>,
+    /// Stops the running tool call only; the turn goes on. See `skip_tool_call`.
+    skip_tool_call_notify: Arc<Notify>,
     pub token_counter: Arc<TokenCounter>,
     /// `--append-system-prompt` texts, added to every new session (see `start_new_session`).
     extra_system_prompts: Vec<String>,
@@ -169,6 +171,9 @@ fn format_tool_call_group(name: &str, count: usize) -> String {
 /// A call that fails is answered with its error, and the calls after it still run: the model
 /// reads the failure and goes on. Only a stop ends the run.
 /// Returns whether the conversation should continue with another request.
+/// How long a tool call runs before the user may skip it (`skip_tool_call`).
+const SKIPPABLE_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
+
 async fn run_tool_calls(
     tool_calls: &[ChatCompletionToolCall],
     mcp: &McpServers,
@@ -176,6 +181,7 @@ async fn run_tool_calls(
     is_headless: bool,
     cancel_requested: &AtomicBool,
     cancel_notify: &Notify,
+    skip_notify: &Notify,
     on_tool_message: &mut impl FnMut(ChatCompletionMessage),
 ) -> bool {
     let mut should_continue = true;
@@ -194,17 +200,50 @@ async fn run_tool_calls(
         let cancelled = cancel_notify.notified();
         tokio::pin!(cancelled);
         cancelled.as_mut().enable();
-        let result = tokio::select! {
-            result = handle_tool_call(tool_call, mcp, ui.clone(), is_headless) => result,
-            _ = &mut cancelled => {
-                on_tool_message(ChatCompletionMessage::tool_result(
-                    tool_call.id.clone(),
-                    String::from("Stopped: the user stopped the turn while this tool call was running."),
-                ));
-                should_continue = false;
-                continue;
+        let skipped = skip_notify.notified();
+        tokio::pin!(skipped);
+        skipped.as_mut().enable();
+        let call = handle_tool_call(tool_call, mcp, ui.clone(), is_headless);
+        tokio::pin!(call);
+        let skippable_after = tokio::time::sleep(SKIPPABLE_AFTER);
+        tokio::pin!(skippable_after);
+        let mut is_skippable = false;
+        let result = loop {
+            tokio::select! {
+                result = &mut call => break Some(result),
+                _ = &mut cancelled => {
+                    on_tool_message(ChatCompletionMessage::tool_result(
+                        tool_call.id.clone(),
+                        String::from("Stopped: the user stopped the turn while this tool call was running."),
+                    ));
+                    should_continue = false;
+                    break None;
+                }
+                _ = &mut skipped, if is_skippable => {
+                    on_tool_message(ChatCompletionMessage::tool_result(
+                        tool_call.id.clone(),
+                        format!(
+                            "Skipped: the user stopped this tool call after more than {}s; its output is lost. \
+                             The turn goes on: if it hangs, try another way.",
+                            SKIPPABLE_AFTER.as_secs()
+                        ),
+                    ));
+                    break None;
+                }
+                _ = &mut skippable_after, if !is_skippable => {
+                    is_skippable = true;
+                    if let Some(ui) = &ui {
+                        let _ = ui.send(crate::ui::UiEvent::ToolCallSkippable(true));
+                    }
+                }
             }
         };
+        if is_skippable {
+            if let Some(ui) = &ui {
+                let _ = ui.send(crate::ui::UiEvent::ToolCallSkippable(false));
+            }
+        }
+        let Some(result) = result else { continue };
         match result {
             ToolCallResult::Success(mut msg) => {
                 msg.content = msg.content.map(cap_tool_output);
@@ -314,13 +353,12 @@ impl Minerve {
         }
     }
 
-    /// Fails when an image of the history cannot be read.
     fn build_request(
         &self,
         model: &ActiveModel,
         history: &[ChatCompletionMessage],
         mcp: &McpServers,
-    ) -> Result<ChatCompletionRequest, String> {
+    ) -> ChatCompletionRequest {
         let text_only_history;
         let history = if self.text_only_model_ids.lock().unwrap().contains(&model.id) {
             text_only_history =
@@ -329,14 +367,14 @@ impl Minerve {
         } else {
             history
         };
-        Ok(ChatCompletionRequest {
+        ChatCompletionRequest {
             model: model.api_model.clone(),
-            messages: build_request_messages(history, model.uses_cache_breakpoints)?,
+            messages: build_request_messages(history, model.uses_cache_breakpoints),
             tools: get_tool_definitions(model.uses_cache_breakpoints, mcp),
             usage: (model.provider == Provider::OpenRouter)
                 .then_some(UsageAccountingRequest { include: true }),
             session_id: (model.provider == Provider::OpenRouter).then(|| self.current_session_id()),
-        })
+        }
     }
 
     /// URL and key of the API the model is served from. Fails when that provider has no key set.
@@ -357,14 +395,12 @@ impl Minerve {
 fn build_request_messages(
     history: &[ChatCompletionMessage],
     uses_cache_breakpoints: bool,
-) -> Result<Vec<RequestMessage>, String> {
+) -> Vec<RequestMessage> {
     let history = crate::chat::with_tool_images_in_user_messages(
         crate::chat::with_placeholder_results_for_unanswered_tool_calls(history),
     );
-    let mut messages: Vec<RequestMessage> = history
-        .iter()
-        .map(RequestMessage::from_message)
-        .collect::<Result<_, _>>()?;
+    let mut messages: Vec<RequestMessage> =
+        history.iter().map(RequestMessage::from_message).collect();
     if uses_cache_breakpoints {
         messages
             .first_mut()
@@ -374,7 +410,7 @@ fn build_request_messages(
             messages.last_mut().unwrap().add_cache_breakpoint();
         }
     }
-    Ok(messages)
+    messages
 }
 
 /// System messages a new session opens with. AGENTS.md files come after the default prompt and
@@ -409,7 +445,7 @@ impl Minerve {
 
             let chat_result = match self
                 .endpoint_for(&model)
-                .and_then(|endpoint| Ok((endpoint, self.build_request(&model, &history, &mcp)?)))
+                .map(|endpoint| (endpoint, self.build_request(&model, &history, &mcp)))
             {
                 Ok(((url, api_key), request)) => post_request_with_token_count(
                     &self.client,
@@ -444,6 +480,7 @@ impl Minerve {
                             is_headless,
                             &AtomicBool::new(false),
                             &Notify::new(),
+                            &Notify::new(),
                             &mut |msg| history.push(msg),
                         )
                         .await;
@@ -470,13 +507,17 @@ impl Minerve {
         update_chat_ui(ui, get_ui_messages(&self.messages.lock().unwrap()));
     }
 
-    /// Adds a message to the conversation and tells the control socket about it.
+    /// Adds a message to the conversation, tells the control socket about it and saves the
+    /// session, so its file shows a turn as it goes, e.g. to debug one that broke.
     /// Sent under the messages lock, like `send_history_to_control`, so a `history` answer
     /// either holds the message or comes before its `message` event.
     fn push_message(&self, message: ChatCompletionMessage) {
-        let mut messages = self.messages.lock().unwrap();
-        self.send_control_event(&MinerveEvent::Message { message: &message });
-        messages.push(message);
+        {
+            let mut messages = self.messages.lock().unwrap();
+            self.send_control_event(&MinerveEvent::Message { message: &message });
+            messages.push(message);
+        }
+        self.save_session();
     }
 
     pub fn send_control_event(&self, event: &MinerveEvent) {
@@ -527,6 +568,7 @@ impl Minerve {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             queued_prompts: Mutex::new(Vec::new()),
             cancel_notify: Arc::new(Notify::new()),
+            skip_tool_call_notify: Arc::new(Notify::new()),
             token_counter,
             extra_system_prompts: extra_system_prompts.to_vec(),
             control,
@@ -581,6 +623,12 @@ impl Minerve {
 
     /// Asks the running turn to stop. The request in flight is dropped, and tool calls not
     /// started yet are skipped, so the conversation stays valid for the next prompt.
+    /// Stops the tool call that has run past `SKIPPABLE_AFTER`, telling the model it was
+    /// skipped; the turn goes on. Does nothing when no tool call is skippable.
+    pub fn skip_tool_call(&self) {
+        self.skip_tool_call_notify.notify_waiters();
+    }
+
     pub fn cancel_turn(&self) {
         self.cancel_requested.store(true, Ordering::SeqCst);
         self.cancel_notify.notify_waiters();
@@ -687,6 +735,15 @@ impl Minerve {
             // Says what the turn waits for, not just that it is busy.
             send_status(ui, format!("waiting for {}...", model.api_model));
 
+            // Nothing was sent: a notice, not an assistant message, so the model never reads
+            // it as its own reply and the user sees their prompt did not go out.
+            let (url, api_key) = match self.endpoint_for(&model) {
+                Ok(endpoint) => endpoint,
+                Err(err) => {
+                    send_notice(ui, format!("Not sent: {}", err));
+                    return Err(err);
+                }
+            };
             let request = {
                 let msgs = messages.lock().unwrap();
                 self.build_request(&model, &msgs, &mcp)
@@ -697,24 +754,19 @@ impl Minerve {
             let cancelled = self.cancel_notify.notified();
             tokio::pin!(cancelled);
             cancelled.as_mut().enable();
-            let chat_result = match self
-                .endpoint_for(&model)
-                .and_then(|endpoint| Ok((endpoint, request?)))
-            {
-                Err(err) => Some(Err(err)),
-                Ok(_) if cancel_requested.load(Ordering::SeqCst) => None,
-                Ok(((url, api_key), request)) => {
-                    tokio::select! {
-                        result = post_request_with_token_count(
-                            &self.client,
-                            model.provider,
-                            &url,
-                            &api_key,
-                            request,
-                            self.token_counter.clone(),
-                        ) => Some(result.and_then(ChatCompletionResponse::take_first_message)),
-                        _ = &mut cancelled => None,
-                    }
+            let chat_result = if cancel_requested.load(Ordering::SeqCst) {
+                None
+            } else {
+                tokio::select! {
+                    result = post_request_with_token_count(
+                        &self.client,
+                        model.provider,
+                        &url,
+                        &api_key,
+                        request,
+                        self.token_counter.clone(),
+                    ) => Some(result.and_then(ChatCompletionResponse::take_first_message)),
+                    _ = &mut cancelled => None,
                 }
             };
 
@@ -734,6 +786,7 @@ impl Minerve {
                             is_headless,
                             &cancel_requested,
                             &self.cancel_notify,
+                            &self.skip_tool_call_notify,
                             &mut |msg| self.push_message(msg),
                         )
                         .await;

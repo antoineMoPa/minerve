@@ -67,6 +67,9 @@ pub fn run(
                 send_usage(&control, &minerve);
             }
             UiEvent::Notice(notice) => control.send(&MinerveEvent::Notice { notice: &notice }),
+            UiEvent::ToolCallSkippable(skippable) => {
+                control.send(&MinerveEvent::ToolCallSkippable { skippable })
+            }
             UiEvent::ModelList(provider, result) => {
                 extras.on_model_list(provider, result, &minerve, &control)
             }
@@ -88,6 +91,7 @@ pub fn run(
                     minerve.unqueue_newest_prompt();
                 }
                 ParentCommand::Cancel {} => minerve.cancel_turn(),
+                ParentCommand::SkipToolCall {} => minerve.skip_tool_call(),
                 ParentCommand::NewSession {} => {
                     if minerve.request_in_flight.load(Ordering::SeqCst) {
                         control.send(&MinerveEvent::Notice {
@@ -114,8 +118,8 @@ pub fn run(
                 }
             },
             UiEvent::ParentClosed => {
-                // No save: `end_turn` already saved every finished turn, and saving now could keep a
-                // half-done tool call or an empty chat.
+                // No save: every message was saved as it came. A tool call left without its result
+                // gets a placeholder result when the session is resumed.
                 minerve.cancel_turn();
                 // Lets go of Slack's lock if the window started the gateway.
                 crate::message_apps_runner::stop();

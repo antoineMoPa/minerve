@@ -3,6 +3,10 @@
 //! `std::process::Command::output` holds the turn's task until the command ends, so a stop had
 //! to wait for it. These commands are awaited instead: when the turn is cancelled the tool's
 //! future is dropped, and the command dies with everything it started.
+//!
+//! Every command also has a time limit, `DEFAULT_TIMEOUT` unless the tool call asks for more
+//! with `timeout_seconds`: a command that hangs (a prompt, a server in the foreground) is
+//! killed instead of holding the turn forever.
 
 use std::ffi::OsStr;
 use std::process::{Output, Stdio};
@@ -11,9 +15,25 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-/// A command in its own process group, killed as a group when its run is dropped.
+/// How long a command may run unless its tool call sets `timeout_seconds`.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(16);
+
+/// The parameter a tool call sets to give its command more time than `DEFAULT_TIMEOUT`.
+pub const TIMEOUT_PARAM: &str = "timeout_seconds";
+
+/// The time limit a tool call asks for, `DEFAULT_TIMEOUT` when it sets none.
+pub fn read_timeout_param(params: &super::ToolParams) -> Result<Duration, String> {
+    Ok(params
+        .get_usize_optional(TIMEOUT_PARAM)?
+        .map(|seconds| Duration::from_secs(seconds as u64))
+        .unwrap_or(DEFAULT_TIMEOUT))
+}
+
+/// A command in its own process group, killed as a group when its run is dropped or when it
+/// runs past its time limit.
 pub struct StoppableCommand {
     command: tokio::process::Command,
+    timeout: Duration,
 }
 
 impl StoppableCommand {
@@ -40,7 +60,16 @@ impl StoppableCommand {
                 Ok(())
             });
         }
-        Self { command }
+        Self {
+            command,
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Replaces `DEFAULT_TIMEOUT`.
+    pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.timeout = timeout;
+        self
     }
 
     /// `sh -c <line>`.
@@ -58,12 +87,23 @@ impl StoppableCommand {
     /// Runs the command to its end. Dropping this future kills the command's process group.
     /// Returns once the command exits, even if something it left in the background still holds
     /// its stdout or stderr open (`server &`): output written after `OUTPUT_GRACE` is not read.
+    /// Fails with `ErrorKind::TimedOut`, naming the limit and holding the output so far, when
+    /// the command runs past its time limit; it is then killed with its children.
     pub async fn output(&mut self) -> std::io::Result<Output> {
         let mut child = self.command.spawn()?;
         let mut group = ProcessGroupKilledOnDrop { id: child.id() };
         let stdout = spawn_pipe_reader(child.stdout.take());
         let stderr = spawn_pipe_reader(child.stderr.take());
-        let status = child.wait().await?;
+        let status = match tokio::time::timeout(self.timeout, child.wait()).await {
+            Ok(status) => status?,
+            Err(_) => {
+                drop(group);
+                let _ = child.kill().await;
+                let stdout = collect_pipe_output(stdout).await;
+                let stderr = collect_pipe_output(stderr).await;
+                return Err(describe_timeout(self.timeout, &stdout, &stderr));
+            }
+        };
         // Ended by itself: whatever it left in the background stays, as with a shell.
         group.id = None;
         Ok(Output {
@@ -72,6 +112,27 @@ impl StoppableCommand {
             stderr: collect_pipe_output(stderr).await,
         })
     }
+}
+
+/// What the model reads of a command killed at its time limit: what happened, how to give it
+/// more time on purpose, and the output it wrote until then.
+fn describe_timeout(timeout: Duration, stdout: &[u8], stderr: &[u8]) -> std::io::Error {
+    let mut message = format!(
+        "timed out after {}s and was killed. If it needs longer, run it again with {} set \
+         (e.g. 120). Start a server in the background instead (`cmd > log 2>&1 &`).",
+        timeout.as_secs(),
+        TIMEOUT_PARAM
+    );
+    for (name, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        if !bytes.is_empty() {
+            message.push_str(&format!(
+                "\n{} so far:\n{}",
+                name,
+                String::from_utf8_lossy(bytes)
+            ));
+        }
+    }
+    std::io::Error::new(std::io::ErrorKind::TimedOut, message)
 }
 
 /// How long the output of an exited command is still read, for pipes a background child keeps open.
@@ -177,6 +238,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.stdout.len(), 200000);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_past_its_time_limit_is_killed_with_its_output_so_far() {
+        let marker = std::env::temp_dir().join(format!("minerve-timeout-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let line = format!(
+            "echo started; (sleep 1; touch {}) & sleep 30",
+            marker.display()
+        );
+        let started = Instant::now();
+        let err = StoppableCommand::shell(&line)
+            .timeout(Duration::from_millis(300))
+            .output()
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        let message = err.to_string();
+        assert!(message.contains("timeout_seconds"), "{message}");
+        assert!(message.contains("stdout so far:\nstarted"), "{message}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!marker.exists(), "the shell's child outlived the timeout");
+    }
+
+    #[test]
+    fn the_time_limit_is_16_seconds_unless_the_call_sets_one() {
+        let params = |pairs: &[(&str, &str)]| {
+            super::super::ToolParams::new(
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            )
+        };
+        assert_eq!(
+            read_timeout_param(&params(&[])).unwrap(),
+            Duration::from_secs(16)
+        );
+        assert_eq!(
+            read_timeout_param(&params(&[("timeout_seconds", "120")])).unwrap(),
+            Duration::from_secs(120)
+        );
+        assert!(read_timeout_param(&params(&[("timeout_seconds", "soon")])).is_err());
     }
 
     #[cfg(unix)]

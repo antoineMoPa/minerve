@@ -43,6 +43,7 @@ async fn a_stop_ends_the_running_tool_call_and_answers_every_call() {
         false,
         &cancel_requested,
         &cancel_notify,
+        &Notify::new(),
         &mut |message| answers.push(message.content.unwrap_or_default()),
     )
     .await;
@@ -77,6 +78,7 @@ async fn a_tool_call_that_fails_is_answered_with_its_error_and_the_next_calls_st
         false,
         &AtomicBool::new(false),
         &Notify::new(),
+        &Notify::new(),
         &mut |message| answers.push(message.content.unwrap_or_default()),
     )
     .await;
@@ -84,5 +86,55 @@ async fn a_tool_call_that_fails_is_answered_with_its_error_and_the_next_calls_st
     assert!(should_continue, "the model gets to read the failure");
     assert!(answers[0].starts_with("Error:"), "{}", answers[0]);
     assert!(answers[0].contains("no_such_tool"), "{}", answers[0]);
-    assert_eq!(answers[1], "after\n");
+    assert_eq!(answers[1], "$ echo after\nafter\n");
+}
+
+/// A tool call running past `SKIPPABLE_AFTER` can be skipped: the model is told and the turn
+/// goes on to the next call.
+#[tokio::test]
+async fn a_tool_call_running_past_8_seconds_can_be_skipped_and_the_turn_goes_on() {
+    let tool_calls = [
+        build_shell_tool_call("1", "sleep 14"),
+        build_shell_tool_call("2", "echo after"),
+    ];
+    let skip_notify = Arc::new(Notify::new());
+    let (ui, events) = std::sync::mpsc::channel();
+    {
+        let skip_notify = skip_notify.clone();
+        // What the TUI's Ctrl+S does once minerve says the call can be skipped.
+        std::thread::spawn(move || {
+            while let Ok(event) = events.recv() {
+                if let crate::ui::UiEvent::ToolCallSkippable(true) = event {
+                    skip_notify.notify_waiters();
+                }
+            }
+        });
+    }
+
+    let mut answers = Vec::new();
+    let started = Instant::now();
+    let should_continue = run_tool_calls(
+        &tool_calls,
+        &McpServers::none(),
+        Some(ui),
+        false,
+        &AtomicBool::new(false),
+        &Notify::new(),
+        &skip_notify,
+        &mut |message| answers.push(message.content.unwrap_or_default()),
+    )
+    .await;
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= SKIPPABLE_AFTER && elapsed < Duration::from_secs(12),
+        "{elapsed:?}"
+    );
+    assert!(should_continue, "a skip does not end the turn");
+    assert!(
+        answers[0].starts_with("Skipped: the user stopped this tool call"),
+        "{}",
+        answers[0]
+    );
+    assert_eq!(answers[1], "$ echo after\nafter\n");
 }

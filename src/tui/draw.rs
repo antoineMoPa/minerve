@@ -247,7 +247,17 @@ impl App {
         if status != &self.status || status.is_empty() || elapsed < 3 {
             return self.status.clone();
         }
-        format!("{} {}", self.status, format_elapsed_seconds(elapsed))
+        let skip_hint = if self.tool_call_skippable {
+            "  ·  ctrl+s skips it"
+        } else {
+            ""
+        };
+        format!(
+            "{} {}{}",
+            self.status,
+            format_elapsed_seconds(elapsed),
+            skip_hint
+        )
     }
 
     pub(super) fn draw_chat(&mut self, frame: &mut Frame, area: Rect) {

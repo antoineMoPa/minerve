@@ -90,8 +90,7 @@ mod tests {
             model: String::from("x/one"),
             messages: vec![RequestMessage::from_message(&ChatCompletionMessage::user(
                 String::from("hi"),
-            ))
-            .unwrap()],
+            ))],
             tools: None,
             usage: None,
             session_id: None,
