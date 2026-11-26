@@ -364,7 +364,8 @@ impl RequestMessage {
                 cache_control: None,
             }],
             Some(RequestContent::Parts(parts)) => parts,
-            None => panic!("cache breakpoint on a message without content"),
+            // Nothing to mark: the request goes without this breakpoint.
+            None => return,
         };
         match parts
             .last_mut()
@@ -420,11 +421,21 @@ impl ChatCompletionResponse {
     /// The message the model answered with. Fails when the provider sent no choice at all,
     /// which some do instead of an error (a filtered or dropped answer).
     pub fn take_first_message(self) -> Result<ChatCompletionMessage, String> {
-        self.choices
+        let mut message = self
+            .choices
             .into_iter()
             .next()
             .map(|choice| choice.message)
-            .ok_or_else(|| String::from("the provider answered without a message (no choices)"))
+            .ok_or_else(|| String::from("the provider answered without a message (no choices)"))?;
+        // An empty list would send the turn back to the model with nothing to answer.
+        if message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| calls.is_empty())
+        {
+            message.tool_calls = None;
+        }
+        Ok(message)
     }
 }
 

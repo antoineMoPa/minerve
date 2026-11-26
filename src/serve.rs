@@ -76,6 +76,12 @@ pub fn run(
             UiEvent::ParentCommand(command) => match command {
                 // While a turn runs, the message waits for the turn's next request.
                 ParentCommand::Submit { text, images } => {
+                    // Copied, downscaled and size-capped like a pasted image: a file the
+                    // provider refuses would fail every later request.
+                    let (images, errors) = crate::images::prepare_images_to_send(images);
+                    for error in errors {
+                        control.send(&MinerveEvent::Notice { notice: &error });
+                    }
                     if let Err(prompt) =
                         minerve.queue_prompt_for_running_turn(QueuedPrompt { text, images })
                     {

@@ -314,12 +314,19 @@ fn submit_and_wait_for_ended_turn_showing(
         .write_all(b"{\"type\":\"submit\",\"text\":\"hello there\"}\n")
         .unwrap();
     assert_eq!(wait_for(reader, "state")["state"], "working");
+    // The chat and the notices shown with it: a failed request is told as a notice.
     let mut chat = String::new();
+    let mut notices = String::new();
     let mut ended = false;
-    while !(ended && expected.iter().all(|text| chat.contains(text))) {
+    while !(ended
+        && expected
+            .iter()
+            .all(|text| chat.contains(text) || notices.contains(text)))
+    {
         let event = read_event(reader);
         match event["type"].as_str() {
             Some("transcript") => chat = event["messages"].to_string(),
+            Some("notice") => notices.push_str(event["notice"].as_str().unwrap_or_default()),
             Some("state") => {
                 assert_eq!(event["state"], "waiting_for_input");
                 ended = true;
@@ -837,6 +844,62 @@ fn deleting_a_viewed_image_does_not_block_the_next_prompt() {
         assert!(post.contains("data:image/png;base64,"), "{post}");
         assert!(!post.contains("Request Error"), "{post}");
     }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A session that outgrew the model's context window: the request is refused until the history
+/// is compacted, then the prompt goes through instead of failing on every later message.
+#[test]
+fn a_conversation_too_long_for_the_model_is_compacted_and_answered() {
+    let call = build_shell_tool_call_answer("call_1", "printf 'x%.0s' $(seq 1 500)");
+    let done = r#"{"choices":[{"message":{"role":"assistant","content":"all done"}}]}"#.to_string();
+    let too_long = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = requests.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let request = read_whole_http_request(&mut stream);
+            let prompts = request.matches("hello there").count();
+            let (status, body) = match request.matches("\"role\":\"tool\"").count() {
+                0 => ("200 OK", call.as_str()),
+                // The second prompt is refused while the long output is still in the history.
+                _ if prompts > 1 && request.contains("xxxxxxxxxx") => ("400 Bad Request", too_long),
+                _ => ("200 OK", done.as_str()),
+            };
+            seen.lock().unwrap().push(request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+        }
+    });
+
+    let dir = std::env::temp_dir().join(format!("minerve-serve-compact-{}", std::process::id()));
+    let (mut child, stream) = start_with_model_at(&dir, &url);
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    wait_for(&mut reader, "usage");
+
+    submit_and_wait_for_ended_turn_showing(&mut writer, &mut reader, &["all done"]);
+    submit_and_wait_for_ended_turn_showing(
+        &mut writer,
+        &mut reader,
+        &["outgrew the model's context window", "all done"],
+    );
+
+    let requests = requests.lock().unwrap();
+    let last = requests.last().unwrap();
+    assert!(last.contains("Tool output dropped"), "{last}");
+    assert!(!last.contains("prompt is too long"), "{last}");
 
     let _ = child.kill();
     let _ = child.wait();

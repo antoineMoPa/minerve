@@ -12,6 +12,10 @@ use crate::chat::image_media_type;
 /// full Retina screenshot would otherwise pass its 5 MB per-image limit.
 const MAX_IMAGE_EDGE_PX: u32 = 1568;
 
+/// Largest image file sent. Anthropic refuses an image over 5 MB once base64-encoded (4/3 of
+/// its bytes), and one refused image fails every request of the session.
+const MAX_IMAGE_BYTES: u64 = 3_500_000;
+
 /// Where pasted images and the copies of sent images are written.
 fn images_dir() -> PathBuf {
     dirs::home_dir()
@@ -28,10 +32,57 @@ fn create_new_image_path(extension: &str) -> Result<PathBuf, String> {
 }
 
 /// The file to send for the image at `path`: a copy in `~/.minerve/images`, downscaled to PNG
-/// when its longest edge passes `MAX_IMAGE_EDGE_PX`. A file already in that folder (a pasted
-/// image) is sent as is. The returned path is absolute, so a resumed session finds it from any
-/// directory.
+/// when its longest edge passes `MAX_IMAGE_EDGE_PX`, then made a JPEG when still over
+/// `MAX_IMAGE_BYTES`. A file already in that folder (a pasted image) is sent as is. The
+/// returned path is absolute, so a resumed session finds it from any directory.
 pub fn image_to_send(path: &Path) -> Result<PathBuf, String> {
+    shrink_image_to_byte_cap(&image_within_edge_limit(path)?)
+}
+
+/// The images of a prompt sent by the GUI, made ready like a pasted one, and an error for each
+/// image that could not be.
+pub fn prepare_images_to_send(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<String>) {
+    let mut ready = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        match image_to_send(&path) {
+            Ok(path) => ready.push(path),
+            Err(err) => errors.push(format!("image not attached: {}", err)),
+        }
+    }
+    (ready, errors)
+}
+
+/// `path` itself when within `MAX_IMAGE_BYTES`, otherwise a JPEG copy, scaled down until it fits.
+fn shrink_image_to_byte_cap(path: &Path) -> Result<PathBuf, String> {
+    let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
+    if size(path) <= MAX_IMAGE_BYTES {
+        return Ok(path.to_path_buf());
+    }
+    let mut image = image::DynamicImage::ImageRgb8(
+        image::open(path)
+            .map_err(|err| format!("cannot read image {}: {}", path.display(), err))?
+            .to_rgb8(),
+    );
+    loop {
+        let jpeg = create_new_image_path("jpg")?;
+        image
+            .save_with_format(&jpeg, image::ImageFormat::Jpeg)
+            .map_err(|err| format!("cannot write {}: {}", jpeg.display(), err))?;
+        if size(&jpeg) <= MAX_IMAGE_BYTES || image.width().max(image.height()) <= 64 {
+            return Ok(jpeg);
+        }
+        let _ = std::fs::remove_file(&jpeg);
+        image = image.resize(
+            image.width() * 3 / 4,
+            image.height() * 3 / 4,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+}
+
+/// A copy of `path` in `~/.minerve/images`, downscaled to PNG past `MAX_IMAGE_EDGE_PX`.
+fn image_within_edge_limit(path: &Path) -> Result<PathBuf, String> {
     let path = std::fs::canonicalize(path)
         .map_err(|err| format!("cannot open {}: {}", path.display(), err))?;
     if image_media_type(&path).is_none() {
@@ -208,6 +259,31 @@ mod tests {
         let copy = image_to_send(&large).unwrap();
         assert_eq!(image::image_dimensions(&copy).unwrap(), (1568, 50));
         std::fs::remove_file(copy).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_too_heavy_to_send_becomes_a_jpeg_under_the_byte_cap() {
+        let dir =
+            std::env::temp_dir().join(format!("minerve-images-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Noise does not compress: about 7 MB as PNG, within the edge limit.
+        let noisy = dir.join("noisy.png");
+        let mut seed: u32 = 1;
+        image::RgbImage::from_fn(1500, 1500, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [r, g, b, _] = seed.to_le_bytes();
+            image::Rgb([r, g, b])
+        })
+        .save(&noisy)
+        .unwrap();
+        assert!(std::fs::metadata(&noisy).unwrap().len() > MAX_IMAGE_BYTES);
+
+        let sent = image_to_send(&noisy).unwrap();
+        assert_eq!(sent.extension().unwrap(), "jpg");
+        assert!(std::fs::metadata(&sent).unwrap().len() <= MAX_IMAGE_BYTES);
+
+        std::fs::remove_file(sent).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

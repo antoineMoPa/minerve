@@ -103,3 +103,88 @@ async fn a_prompt_that_cannot_be_sent_gets_a_notice_and_no_assistant_message() {
         "{notices:?}"
     );
 }
+
+/// A bug that panics mid-turn, even holding the conversation's lock, ends the turn: minerve
+/// takes prompts again instead of staying "working" for good.
+#[test]
+fn a_turn_that_panics_ends_and_minerve_takes_prompts_again() {
+    let minerve = Arc::new(build_minerve_without_keys());
+    let (ui, events) = std::sync::mpsc::channel();
+    minerve.start_turn(ChatCompletionMessage::user(String::from("hi")), &ui);
+    assert!(minerve.request_in_flight.load(Ordering::SeqCst));
+
+    let turn = {
+        let minerve = minerve.clone();
+        let ui = ui.clone();
+        crate::get_global_runtime().spawn(async move {
+            let _turn_guard = TurnEndsOnPanic::new(&minerve, &ui);
+            let _messages = minerve.messages.lock().unwrap();
+            panic!("a bug in a turn");
+        })
+    };
+    assert!(crate::get_global_runtime()
+        .block_on(turn)
+        .unwrap_err()
+        .is_panic());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while minerve.request_in_flight.load(Ordering::SeqCst) {
+        assert!(std::time::Instant::now() < deadline, "the turn never ended");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!minerve.messages.is_poisoned());
+    assert!(minerve.messages.lock().unwrap().len() > 1);
+    let notices: Vec<String> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            crate::ui::UiEvent::Notice(notice) => Some(notice),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices.iter().any(|n| n.contains("bug in minerve")),
+        "{notices:?}"
+    );
+}
+
+/// A history written by another provider (`/model` switched mid-session) used to fail every
+/// Anthropic request locally: arguments that are not JSON, ids Anthropic refuses, an empty answer.
+#[test]
+fn a_history_from_another_provider_still_makes_a_valid_anthropic_request() {
+    let minerve = build_minerve_without_keys();
+    let mut call = ChatCompletionMessage::assistant(String::new());
+    call.content = None;
+    call.tool_calls = Some(vec![crate::chat::ChatCompletionToolCall {
+        id: String::from("functions.bash:0"),
+        call_type: String::from("function"),
+        function: crate::chat::ChatCompletionFunctionCall {
+            name: String::from("run_shell_command"),
+            arguments: String::from(r#"{"command":"ls"#),
+        },
+    }]);
+    let mut empty_answer = ChatCompletionMessage::assistant(String::new());
+    empty_answer.content = None;
+    empty_answer.tool_calls = Some(vec![]);
+    let history = [
+        ChatCompletionMessage::system(String::from("system")),
+        ChatCompletionMessage::user(String::from("list files")),
+        call,
+        ChatCompletionMessage::tool_result(String::from("functions.bash:0"), String::from("a.rs")),
+        empty_answer,
+    ];
+
+    let request = minerve.build_request(
+        &ActiveModel::new(String::from("anthropic:claude-haiku-5-5")),
+        &history,
+        &McpServers::none(),
+    );
+    let body = crate::anthropic::to_messages_body(&request)
+        .unwrap()
+        .to_string();
+    assert!(body.contains(r#""id":"functions_bash_0""#), "{body}");
+    assert!(
+        body.contains(r#""tool_use_id":"functions_bash_0""#),
+        "{body}"
+    );
+    assert!(body.contains("[empty answer]"), "{body}");
+}

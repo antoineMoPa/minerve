@@ -41,9 +41,11 @@ async fn a_stop_ends_the_running_tool_call_and_answers_every_call() {
         &McpServers::none(),
         None,
         false,
-        &cancel_requested,
-        &cancel_notify,
-        &Notify::new(),
+        ToolCallStops {
+            cancel_requested: &cancel_requested,
+            cancel_notify: &cancel_notify,
+            skip_notify: &Notify::new(),
+        },
         &mut |message| answers.push(message.content.unwrap_or_default()),
     )
     .await;
@@ -76,9 +78,11 @@ async fn a_tool_call_that_fails_is_answered_with_its_error_and_the_next_calls_st
         &McpServers::none(),
         None,
         false,
-        &AtomicBool::new(false),
-        &Notify::new(),
-        &Notify::new(),
+        ToolCallStops {
+            cancel_requested: &AtomicBool::new(false),
+            cancel_notify: &Notify::new(),
+            skip_notify: &Notify::new(),
+        },
         &mut |message| answers.push(message.content.unwrap_or_default()),
     )
     .await;
@@ -118,9 +122,11 @@ async fn a_tool_call_running_past_8_seconds_can_be_skipped_and_the_turn_goes_on(
         &McpServers::none(),
         Some(ui),
         false,
-        &AtomicBool::new(false),
-        &Notify::new(),
-        &skip_notify,
+        ToolCallStops {
+            cancel_requested: &AtomicBool::new(false),
+            cancel_notify: &Notify::new(),
+            skip_notify: &skip_notify,
+        },
         &mut |message| answers.push(message.content.unwrap_or_default()),
     )
     .await;
