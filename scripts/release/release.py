@@ -126,7 +126,9 @@ def verify(directory):
 
 
 def gh(*args, capture=False):
-    return run("gh", *args, "--repo", REPO, capture=capture)
+    # Without a named GLAMOUR_STYLE, gh asks the terminal for its background colour; an answer that
+    # comes back after gh exits is typed into the shell as `11;rgb:0000/0000/0000;1R`.
+    return run("gh", *args, "--repo", REPO, capture=capture, env={**os.environ, "GLAMOUR_STYLE": "dark"})
 
 
 def ensure_workflow_on_default_branch():
